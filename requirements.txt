@@ -1,0 +1,6 @@
+flet
+cryptography
+requests
+qrcode
+pillow
+pystray
