@@ -23,6 +23,7 @@ class LunaWalletApp:
     
     def __init__(self):
         self.wallet_core = LunaLib(auto_scan=False)  # Don't auto-scan until unlocked
+        self.wallet_core.on_sync_progress = self.on_sync_progress
         self.minimized_to_tray = False
         self.current_tab_index = 0
         self.snack_bar = None
@@ -47,7 +48,15 @@ class LunaWalletApp:
         """Handle balance updates"""
         self.update_balance_display()
         self.auto_save_wallet()
-        
+    def on_sync_progress(self, progress, message):
+        """Handle sync progress updates"""
+        if not self.is_locked:
+            # Update progress in sidebar
+            self.refs['progress_sync'].current.value = progress / 100
+            self.refs['progress_sync'].current.visible = True
+            self.refs['lbl_sync_status'].current.value = f"Status: {message}"
+            self.refs['progress_sync'].current.update()
+            self.refs['lbl_sync_status'].current.update()
     def on_transaction_received(self):
         """Handle new transactions"""
         self.update_transaction_history()
@@ -70,17 +79,20 @@ class LunaWalletApp:
         self.page = page
         
         # Page setup with custom font
-        page.title = "🔴 Luna Wallet"
+        page.title = "Luna Wallet"
         page.theme_mode = ft.ThemeMode.DARK
         page.fonts = {
             "Custom": "./font.ttf"
         }
-        page.theme = ft.Theme(font_family="Custom")
+        page.theme = ft.Theme(
+            font_family="Custom", # Try this if available
+        )
+        
         page.padding = 0
-        page.window.width = 1000
-        page.window.height = 800
-        page.window.min_width = 1000
-        page.window.min_height = 800
+        page.window.width = 1024
+        page.window.height = 768
+        page.window.min_width = 800
+        page.window.min_height = 600
         page.window.center()
         
         # Set window icon
@@ -260,12 +272,25 @@ class LunaWalletApp:
                 
                 # Additional options
                 ft.Row([
-                    ft.TextButton(
-                        "Create New Wallet Instead",
-                        on_click=create_wallet,
-                        style=ft.ButtonStyle(color="#dc3545")
-                    ) if not show_create else ft.Container()
-                ], alignment=ft.MainAxisAlignment.CENTER)
+                    ft.Column([
+                        ft.TextButton(
+                            "Ling Country Treasury",
+                            on_click=lambda e: self.page.launch_url("https://bank.linglin.art"),
+                            style=ft.ButtonStyle(
+                                color="#dc3545",
+                                shape=ft.RoundedRectangleBorder(radius=2)
+                            )
+                        ),
+                        ft.TextButton(
+                            "Learn More about Luna Coin", 
+                            on_click=lambda e: self.page.launch_url("https://linglin.art/luna-coin"),
+                            style=ft.ButtonStyle(
+                                color="#dc3545",
+                                shape=ft.RoundedRectangleBorder(radius=2)
+                            )
+                        )
+                    ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=5)
+                ], alignment=ft.MainAxisAlignment.CENTER) if not show_create else ft.Container()
             ], horizontal_alignment=ft.CrossAxisAlignment.CENTER),
             alignment=ft.alignment.center,
             width=self.page.width,
@@ -417,28 +442,14 @@ class LunaWalletApp:
                     height=32
                 ),
                 ft.ElevatedButton(
-                    "🔄 Sync Now",
+                    "🔄 Sync",
                     ref=self.refs['btn_sync'],
                     on_click=lambda _: self.manual_sync(),
                     style=button_style,
                     height=32
                 ),
                 ft.ElevatedButton(
-                    "🆕 New Wallet",
-                    ref=self.refs['btn_new_wallet'],
-                    on_click=lambda _: self.show_create_wallet_dialog(),
-                    style=button_style,
-                    height=32
-                ),
-                ft.ElevatedButton(
-                    "📁 Import Wallet",
-                    ref=self.refs['btn_import'],
-                    on_click=lambda _: self.show_import_dialog(),
-                    style=button_style,
-                    height=32
-                ),
-                ft.ElevatedButton(
-                    "🔒 Lock Wallet",
+                    "🔒 Lock",
                     ref=self.refs['btn_lock'],
                     on_click=lambda _: self.lock_wallet(),
                     style=ft.ButtonStyle(
@@ -462,10 +473,11 @@ class LunaWalletApp:
         self.refs['lbl_sync_status'] = ft.Ref[ft.Text]()
         self.refs['progress_sync'] = ft.Ref[ft.ProgressBar]()
         
+        # Network status - UPDATE THIS SECTION
         network_status = ft.Container(
             content=ft.Column([
                 ft.Text("🌐 Network Status", size=14, color="#f8d7da"),
-                ft.Text("Status: 🔴 Disconnected", ref=self.refs['lbl_connection'], size=12, color="#f8d7da"),
+                ft.Text("Status: Checking...", ref=self.refs['lbl_connection'], size=12, color="#f8d7da"),
                 ft.Text("Last Sync: --", ref=self.refs['lbl_sync_status'], size=10, color="#f8d7da"),
                 ft.ProgressBar(
                     ref=self.refs['progress_sync'],
@@ -512,8 +524,8 @@ class LunaWalletApp:
                         content=ft.Text("☰", color="#f8d7da", size=14),
                         tooltip="System Menu",
                         items=[
-                            ft.PopupMenuItem(text="Lock Wallet", on_click=lambda _: self.lock_wallet()),
-                            ft.PopupMenuItem(text="Save Wallet", on_click=lambda _: self.manual_save_wallet()),
+                            ft.PopupMenuItem(text="Lock", on_click=lambda _: self.lock_wallet()),
+                            ft.PopupMenuItem(text="Save", on_click=lambda _: self.manual_save_wallet()),
                             ft.PopupMenuItem(),
                             ft.PopupMenuItem(text="Restore", on_click=lambda _: self.restore_from_tray() if self.minimized_to_tray else None),
                             ft.PopupMenuItem(text="Minimize to Tray", on_click=lambda _: self.minimize_to_tray()),
@@ -528,8 +540,8 @@ class LunaWalletApp:
                     ft.Container(
                         content=ft.Image(
                             src="./wallet_icon.png",
-                            width=24,
-                            height=24,
+                            width=32,
+                            height=32,
                             fit=ft.ImageFit.CONTAIN,
                             color="#dc3545",
                             color_blend_mode=ft.BlendMode.SRC_IN,
@@ -537,7 +549,7 @@ class LunaWalletApp:
                         ),
                         margin=ft.margin.only(right=8),
                     ),
-                    ft.Text("Luna Wallet", size=14, color="#f8d7da"),
+                    ft.Text("Luna Wallet", size=24, color="#f8d7da"),
                 ]),
                 width=sidebar_width - 30
             ),
@@ -556,7 +568,23 @@ class LunaWalletApp:
             padding=15,
             bgcolor="#1a0f0f"
         )
+    def start_network_monitor(self):
+        """Start background network monitoring"""
+        def monitor_loop():
+            while True:
+                try:
+                    is_connected = self.check_network_connection()
+                    status_text = "🟢 Connected" if is_connected else "🔴 Disconnected"
+                    
+                    if hasattr(self, 'refs') and 'lbl_connection' in self.refs and self.refs['lbl_connection'].current:
+                        self.refs['lbl_connection'].current.value = f"Status: {status_text}"
+                        self.refs['lbl_connection'].current.update()
+                        
+                except Exception as e:
+                    print(f"Network monitor error: {e}")
+                time.sleep(30)  # Check every 30 seconds
         
+        threading.Thread(target=monitor_loop, daemon=True).start()   
     def create_main_content(self):
         """Create the main content area with tabs"""
         # Transactions tab
@@ -643,8 +671,8 @@ class LunaWalletApp:
                 ft.DataColumn(ft.Text("Name", color="#f8d7da")),
                 ft.DataColumn(ft.Text("Address", color="#f8d7da")),
                 ft.DataColumn(ft.Text("Balance", color="#f8d7da")),
-                ft.DataColumn(ft.Text("Transactions", color="#f8d7da")),
-                ft.DataColumn(ft.Text("Actions", color="#f8d7da")),
+                ft.DataColumn(ft.Text("Tx(s)", color="#f8d7da")),
+                ft.DataColumn(ft.Text("Select", color="#f8d7da")),
             ],
             rows=[],
             vertical_lines=ft.BorderSide(1, "#5c2e2e"),
@@ -662,7 +690,21 @@ class LunaWalletApp:
         
         action_buttons = ft.Row([
             ft.ElevatedButton(
-                "🔑 Export Private Key",
+                "🆕 Create",
+                ref=self.refs['btn_new_wallet'],
+                on_click=lambda _: self.show_create_wallet_dialog(),
+                style=action_button_style,
+                height=32
+            ),
+            ft.ElevatedButton(
+                "📁 Import",
+                ref=self.refs['btn_import'],
+                on_click=lambda _: self.show_import_dialog(),
+                style=action_button_style,
+                height=32
+            ),
+            ft.ElevatedButton(
+                "🔑 Private Key",
                 on_click=lambda _: self.export_private_key(),
                 style=action_button_style,
                 height=32
@@ -674,7 +716,7 @@ class LunaWalletApp:
                 height=32
             ),
             ft.ElevatedButton(
-                "🔒 Lock Wallet",
+                "🔒 Lock",
                 on_click=lambda _: self.lock_wallet(),
                 style=ft.ButtonStyle(
                     color="#ffffff",
@@ -825,7 +867,7 @@ class LunaWalletApp:
         self.page.update()
         
     def update_transaction_history(self):
-        """Update transaction history table"""
+        """Update transaction history table - FIXED VERSION"""
         if not self.wallet_core.is_unlocked:
             return
             
@@ -844,14 +886,31 @@ class LunaWalletApp:
             tx_type = tx.get('type', 'transfer')
             type_icon = "💰" if tx_type == "reward" else "🔄"
             
-            # From/To
+            # From/To with proper incoming/outgoing detection
             from_addr = tx.get('from', 'Network')
             to_addr = tx.get('to', 'Unknown')
-            direction = f"← {to_addr}" if from_addr == "network" else f"{from_addr} → {to_addr}"
             
-            # Amount
+            # FIX: Properly detect if this is an incoming transaction
+            is_incoming = False
+            if tx_type == "reward":
+                # Mining rewards are always incoming
+                is_incoming = True
+                direction = f"← Mining Reward"
+            else:
+                # Check if any of our wallets is the recipient
+                for wallet in self.wallet_core.wallets:
+                    if to_addr and to_addr.lower() == wallet['address'].lower():
+                        is_incoming = True
+                        break
+                
+                if is_incoming:
+                    direction = f"← From: {from_addr}"
+                else:
+                    direction = f"→ To: {to_addr}"
+            
+            # Amount with proper color coding
             amount = tx.get('amount', 0)
-            amount_color = "#00ff00" if from_addr == "network" or to_addr in [w['address'] for w in self.wallet_core.wallets] else "#ff0000"
+            amount_color = "#00ff00" if is_incoming else "#ff0000"  # Green for incoming, red for outgoing
             
             # Status
             status = tx.get('status', 'unknown')
@@ -944,7 +1003,139 @@ class LunaWalletApp:
         if log_column:
             log_column.controls.clear()
             log_column.update()
+    def download_blockchain_with_progress(self, progress_callback=None) -> bool:
+        """Download blockchain with progress tracking - OPTIMIZED VERSION"""
+        try:
+            if progress_callback:
+                progress_callback(0, "Getting blockchain info...")
             
+            # Get current blockchain height using optimized endpoint
+            try:
+                response = requests.get("https://bank.linglin.art/blockchain/latest", timeout=10000)
+                if response.status_code == 200:
+                    latest_block = response.json()
+                    current_height = latest_block.get('index', 0)
+                else:
+                    # Fallback to full chain but only get length
+                    response = requests.get("https://bank.linglin.art/blockchain", timeout=30000)
+                    if response.status_code == 200:
+                        blockchain = response.json()
+                        current_height = len(blockchain) - 1 if blockchain else 0
+                    else:
+                        if progress_callback:
+                            progress_callback(0, f"API error: {response.status_code}")
+                        return False
+            except Exception as e:
+                if progress_callback:
+                    progress_callback(0, f"Network error: {str(e)}")
+                return False
+            
+            if current_height == 0:
+                if progress_callback:
+                    progress_callback(100, "No blocks available")
+                return True
+            
+            # Determine what we need to download
+            cached_height = self.wallet_core.blockchain_cache.get_highest_cached_height()
+            start_height = 0 if cached_height < 0 else cached_height + 1
+            
+            if start_height > current_height:
+                if progress_callback:
+                    progress_callback(100, "Up to date")
+                return True
+            
+            total_blocks = current_height - start_height + 1
+            if progress_callback:
+                progress_callback(0, f"Downloading {start_height} to {current_height} ({total_blocks} blocks)")
+            
+            # Download in batches with progress
+            batch_size = 50
+            downloaded = 0
+            
+            for batch_start in range(start_height, current_height + 1, batch_size):
+                batch_end = min(batch_start + batch_size - 1, current_height)
+                
+                # Update progress
+                downloaded += (batch_end - batch_start + 1)
+                progress = min(99, int((downloaded / total_blocks) * 100))
+                if progress_callback:
+                    progress_callback(progress, f"Downloading blocks {batch_start}-{batch_end}")
+                
+                # Get blocks using range endpoint if available
+                try:
+                    response = requests.get(
+                        f"https://bank.linglin.art/blockchain/range?start={batch_start}&end={batch_end}",
+                        timeout=30
+                    )
+                    if response.status_code == 200:
+                        blocks = response.json()
+                    else:
+                        # Fallback: get full chain and filter
+                        response = requests.get("https://bank.linglin.art/blockchain", timeout=60)
+                        if response.status_code == 200:
+                            full_chain = response.json()
+                            blocks = [block for block in full_chain 
+                                    if batch_start <= block.get('index', 0) <= batch_end]
+                        else:
+                            blocks = []
+                except Exception as e:
+                    print(f"Block range error: {e}")
+                    blocks = []
+                
+                if not blocks:
+                    if progress_callback:
+                        progress_callback(0, f"Failed to download blocks {batch_start}-{batch_end}")
+                    return False
+                
+                # Cache blocks using the existing blockchain cache
+                for block in blocks:
+                    height = block.get('index', batch_start)
+                    block_hash = block.get('hash', '')
+                    self.wallet_core.blockchain_cache.save_block(height, block_hash, block)
+                
+                # Small delay to be nice to the server
+                time.sleep(0.05)
+            
+            if progress_callback:
+                progress_callback(100, "Download complete")
+            return True
+            
+        except Exception as e:
+            print(f"Download error: {e}")
+            if progress_callback:
+                progress_callback(0, f"Error: {str(e)}")
+            return False
+
+    def get_mempool_with_progress(self, progress_callback=None):
+        """Get mempool with progress tracking"""
+        try:
+            if progress_callback:
+                progress_callback(0, "Loading mempool...")
+            
+            response = requests.get("https://bank.linglin.art/mempool", timeout=15)
+            if response.status_code == 200:
+                mempool = response.json()
+                if progress_callback:
+                    progress_callback(100, f"Loaded {len(mempool)} transactions")
+                return mempool
+            else:
+                if progress_callback:
+                    progress_callback(0, f"Mempool error: {response.status_code}")
+                return []
+                
+        except Exception as e:
+            print(f"Mempool error: {e}")
+            if progress_callback:
+                progress_callback(0, f"Error: {str(e)}")
+            return []
+
+    def check_network_connection(self) -> bool:
+        """Check if we can connect to the network"""
+        try:
+            response = requests.get("https://bank.linglin.art/health", timeout=5)
+            return response.status_code == 200
+        except:
+            return False
     def show_receive_dialog(self):
         """Show receive dialog with wallet selection and QR code"""
         if self.is_locked or not self.wallet_core.is_unlocked or not self.wallet_core.wallets:
@@ -1405,7 +1596,7 @@ class LunaWalletApp:
                 ),
                 margin=ft.margin.only(right=12),
             ),
-            ft.Text("🆕 Create New Wallet", size=24, color="#dc3545", weight="bold"),
+            ft.Text("🆕 Create", size=24, color="#dc3545", weight="bold"),
         ], alignment=ft.MainAxisAlignment.START)
         
         # Create the dialog content
@@ -1838,6 +2029,8 @@ class LunaWalletApp:
                         self.update_wallets_list()
                         self.update_transaction_history()
                         self.show_snack_bar("Wallet unlocked!")
+                        # Start network monitoring when wallet unlocks
+                        self.start_network_monitor()
                         
                         # Start auto-scan now that we're unlocked
                         self.wallet_core.start_auto_scan()
@@ -2014,36 +2207,79 @@ class LunaWalletApp:
         self.page.update()
         
     def manual_sync(self):
-        """Manual blockchain synchronization"""
+        """Manual blockchain synchronization with detailed progress"""
         if self.is_locked or not self.wallet_core.is_unlocked:
             self.show_snack_bar("Please unlock your wallet first")
             return
             
         self.add_log_message("Starting manual synchronization...", "info")
         
-        # Show progress
+        # Show progress in sidebar
         self.refs['progress_sync'].current.visible = True
         self.refs['progress_sync'].current.value = 0
         self.refs['lbl_sync_status'].current.value = "Status: Starting sync..."
         self.refs['progress_sync'].current.update()
         self.refs['lbl_sync_status'].current.update()
-        
-        # Perform sync in background thread
+
+        def progress_callback(progress, message):
+            """Update sync progress in UI"""
+            if hasattr(self, 'refs') and 'progress_sync' in self.refs and self.refs['progress_sync'].current:
+                self.refs['progress_sync'].current.value = progress / 100
+                self.refs['progress_sync'].current.visible = True
+                self.refs['lbl_sync_status'].current.value = f"Status: {message}"
+                self.refs['progress_sync'].current.update()
+                self.refs['lbl_sync_status'].current.update()
+
         def sync_thread():
-            success = self.wallet_core.scan_blockchain()
-            self.refs['progress_sync'].current.visible = False
-            self.refs['lbl_sync_status'].current.value = f"Last Sync: {datetime.now().strftime('%H:%M:%S')}"
-            self.refs['progress_sync'].current.update()
-            self.refs['lbl_sync_status'].current.update()
-            
-            if success:
-                self.add_log_message("Synchronization completed", "success")
-                self.auto_save_wallet()
-            else:
-                self.add_log_message("Synchronization failed", "error")
+            try:
+                # Step 1: Download blockchain data
+                progress_callback(10, "Downloading blockchain...")
+                download_success = self.download_blockchain_with_progress(
+                    lambda p, msg: progress_callback(10 + (p * 0.4), f"Download: {msg}")
+                )
                 
+                if not download_success:
+                    progress_callback(0, "Download failed")
+                    return
+
+                # Step 2: Load mempool
+                progress_callback(60, "Loading mempool...")
+                mempool = self.get_mempool_with_progress(
+                    lambda p, msg: progress_callback(60 + (p * 0.2), f"Mempool: {msg}")
+                )
+                
+                # Step 3: Trigger wallet core sync
+                progress_callback(85, "Scanning for transactions...")
+                sync_success = self.wallet_core.scan_blockchain(force_full_scan=True)
+                
+                if sync_success:
+                    progress_callback(100, "Sync completed")
+                    self.add_log_message("Synchronization completed successfully", "success")
+                    self.auto_save_wallet()
+                    
+                    # Update all displays
+                    self.update_balance_display()
+                    self.update_transaction_history()
+                    self.update_wallets_list()
+                else:
+                    progress_callback(0, "Sync failed")
+                    self.add_log_message("Synchronization failed", "error")
+                    
+            except Exception as e:
+                progress_callback(0, f"Sync error: {str(e)}")
+                self.add_log_message(f"Sync error: {str(e)}", "error")
+            finally:
+                # Hide progress bar after a delay
+                def hide_progress():
+                    time.sleep(2)
+                    self.refs['progress_sync'].current.visible = False
+                    self.refs['lbl_sync_status'].current.value = f"Last Sync: {datetime.now().strftime('%H:%M:%S')}"
+                    self.refs['progress_sync'].current.update()
+                    self.refs['lbl_sync_status'].current.update()
+                    
+                threading.Thread(target=hide_progress, daemon=True).start()
+            
         threading.Thread(target=sync_thread, daemon=True).start()
-        
     def manual_save_wallet(self):
         """Manually save the wallet"""
         if self.is_locked or not self.wallet_core.is_unlocked:

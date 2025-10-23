@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Luna Wallet - Library Module
-Optimized version with incremental blockchain scanning and performance improvements
+Optimized version with incremental blockchain scanning, mempool monitoring, and caching
 """
 import sys
 import io
@@ -12,9 +12,12 @@ import hashlib
 import secrets
 import threading
 import requests
+import sqlite3
+import pickle
+import gzip
 from cryptography.fernet import Fernet
 import base64
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Set
 from dataclasses import dataclass
 try:
     import cupy as cp
@@ -22,6 +25,175 @@ try:
 except ImportError:
     CUDA_AVAILABLE = False
     cp = None
+
+class BlockchainCache:
+    """Cache blockchain data locally to avoid redownloading"""
+    
+    def __init__(self, cache_dir=None):
+        if cache_dir is None:
+            cache_dir = SecureDataManager.get_data_dir()
+        self.cache_dir = cache_dir
+        self.cache_file = os.path.join(cache_dir, "blockchain_cache.db")
+        self._init_cache()
+    
+    def _init_cache(self):
+        """Initialize SQLite cache database"""
+        conn = sqlite3.connect(self.cache_file)
+        cursor = conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS blocks (
+                height INTEGER PRIMARY KEY,
+                hash TEXT UNIQUE,
+                block_data BLOB,
+                timestamp REAL,
+                last_accessed REAL
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS mempool (
+                tx_hash TEXT PRIMARY KEY,
+                tx_data BLOB,
+                received_time REAL,
+                address_involved TEXT
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS cache_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        ''')
+        conn.commit()
+        conn.close()
+    
+    def save_block(self, height: int, block_hash: str, block_data: dict):
+        """Save block to cache"""
+        try:
+            conn = sqlite3.connect(self.cache_file)
+            cursor = conn.cursor()
+            # Compress block data
+            compressed_data = gzip.compress(pickle.dumps(block_data))
+            cursor.execute('''
+                INSERT OR REPLACE INTO blocks 
+                (height, hash, block_data, timestamp, last_accessed)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (height, block_hash, compressed_data, time.time(), time.time()))
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            print(f"Cache save error: {e}")
+    
+    def get_block(self, height: int) -> Optional[dict]:
+        """Get block from cache"""
+        try:
+            conn = sqlite3.connect(self.cache_file)
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT block_data FROM blocks WHERE height = ?
+            ''', (height,))
+            result = cursor.fetchone()
+            cursor.execute('''
+                UPDATE blocks SET last_accessed = ? WHERE height = ?
+            ''', (time.time(), height))
+            conn.commit()
+            conn.close()
+            
+            if result:
+                return pickle.loads(gzip.decompress(result[0]))
+        except Exception as e:
+            print(f"Cache read error: {e}")
+        return None
+    
+    def get_block_range(self, start_height: int, end_height: int) -> List[dict]:
+        """Get multiple blocks from cache"""
+        blocks = []
+        try:
+            conn = sqlite3.connect(self.cache_file)
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT height, block_data FROM blocks 
+                WHERE height BETWEEN ? AND ? 
+                ORDER BY height
+            ''', (start_height, end_height))
+            results = cursor.fetchall()
+            conn.close()
+            
+            for height, block_data in results:
+                try:
+                    block = pickle.loads(gzip.decompress(block_data))
+                    blocks.append(block)
+                    # Update access time
+                    self.get_block(height)  # This updates last_accessed
+                except:
+                    continue
+                    
+        except Exception as e:
+            print(f"Block range cache error: {e}")
+        return blocks
+    
+    def save_mempool_tx(self, tx_hash: str, tx_data: dict, address_involved: str = ""):
+        """Save mempool transaction to cache"""
+        try:
+            conn = sqlite3.connect(self.cache_file)
+            cursor = conn.cursor()
+            compressed_data = gzip.compress(pickle.dumps(tx_data))
+            cursor.execute('''
+                INSERT OR REPLACE INTO mempool 
+                (tx_hash, tx_data, received_time, address_involved)
+                VALUES (?, ?, ?, ?)
+            ''', (tx_hash, compressed_data, time.time(), address_involved))
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            print(f"Mempool cache error: {e}")
+    
+    def get_mempool_txs_for_address(self, address: str) -> List[dict]:
+        """Get mempool transactions for specific address"""
+        try:
+            conn = sqlite3.connect(self.cache_file)
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT tx_data FROM mempool 
+                WHERE address_involved = ? OR address_involved = ''
+            ''', (address.lower(),))
+            results = cursor.fetchall()
+            conn.close()
+            
+            txs = []
+            for result in results:
+                try:
+                    tx = pickle.loads(gzip.decompress(result[0]))
+                    txs.append(tx)
+                except:
+                    continue
+            return txs
+        except Exception as e:
+            print(f"Mempool read error: {e}")
+            return []
+    
+    def clear_old_mempool(self, max_age_hours=2):
+        """Clear mempool transactions older than specified hours"""
+        try:
+            cutoff = time.time() - (max_age_hours * 3600)
+            conn = sqlite3.connect(self.cache_file)
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM mempool WHERE received_time < ?', (cutoff,))
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            print(f"Mempool cleanup error: {e}")
+    
+    def get_highest_cached_height(self) -> int:
+        """Get the highest block height we have cached"""
+        try:
+            conn = sqlite3.connect(self.cache_file)
+            cursor = conn.cursor()
+            cursor.execute('SELECT MAX(height) FROM blocks')
+            result = cursor.fetchone()
+            conn.close()
+            return result[0] if result[0] is not None else -1
+        except:
+            return -1
 
 class SecureDataManager:
     """Handles encrypted storage and data management"""
@@ -200,7 +372,7 @@ class NodeConfig:
 class LunaLib:
     """
     Main Luna Wallet library class
-    Optimized with incremental blockchain scanning and performance improvements
+    Optimized with incremental blockchain scanning, mempool monitoring, and caching
     """
 
     def __init__(self, auto_scan=True):
@@ -226,10 +398,23 @@ class LunaLib:
         self.max_blocks_per_scan = 500  # Limit blocks per scan
         self.full_scan_interval = 3600  # Force full scan every hour
 
+        # Blockchain cache
+        self.blockchain_cache = BlockchainCache()
+        
+        # Network monitoring
+        self.network_connected = False
+        self.sync_progress = 0
+        self.sync_status = "disconnected"
+        self.last_network_check = 0
+        self.mempool_watcher = None
+        self.mempool_monitoring = False
+        self.watched_tx_hashes: Set[str] = set()
+        
         # Event callbacks
         self.on_balance_changed = None
         self.on_transaction_received = None
         self.on_sync_complete = None
+        self.on_sync_progress = None
         self.on_error = None
 
         if auto_scan:
@@ -315,6 +500,9 @@ class LunaLib:
                             'last_scan_time': 0
                         }
 
+                # Start mempool monitoring
+                self.start_mempool_monitoring()
+                
                 self._trigger_callback(self.on_balance_changed)
                 return True
             return False
@@ -327,6 +515,7 @@ class LunaLib:
         self.is_unlocked = False
         self.wallets = []
         self.pending_txs = []
+        self.stop_mempool_monitoring()
 
     def save_wallet(self, password=None):
         """Save wallet with encryption"""
@@ -475,27 +664,287 @@ class LunaLib:
             }
         return None
 
-    # Optimized Blockchain Operations
+    # Network and Blockchain Operations
+    def check_network_connection(self) -> bool:
+        """Check if we can connect to the network"""
+        try:
+            response = requests.get("https://bank.linglin.art/health", timeout=5)
+            self.network_connected = response.status_code == 200
+            self.last_network_check = time.time()
+            return self.network_connected
+        except:
+            self.network_connected = False
+            return False
+
+    def _update_sync_progress(self, progress: int, message: str):
+        """Update sync progress"""
+        self.sync_progress = progress
+        self.sync_status = message
+        self._trigger_callback(self.on_sync_progress, progress, message)
+
+    def download_blockchain_with_progress(self, progress_callback=None) -> bool:
+        """Download blockchain with progress tracking - OPTIMIZED VERSION"""
+        try:
+            if progress_callback:
+                progress_callback(0, "Getting blockchain info...")
+            
+            # Get current blockchain height using optimized endpoint
+            try:
+                response = requests.get("https://bank.linglin.art/blockchain/latest", timeout=10)
+                if response.status_code == 200:
+                    latest_block = response.json()
+                    current_height = latest_block.get('index', 0)
+                else:
+                    # Fallback to full chain but only get length
+                    response = requests.get("https://bank.linglin.art/blockchain", timeout=30)
+                    if response.status_code == 200:
+                        blockchain = response.json()
+                        current_height = len(blockchain) - 1 if blockchain else 0
+                    else:
+                        if progress_callback:
+                            progress_callback(0, f"API error: {response.status_code}")
+                        return False
+            except Exception as e:
+                if progress_callback:
+                    progress_callback(0, f"Network error: {str(e)}")
+                return False
+            
+            if current_height == 0:
+                if progress_callback:
+                    progress_callback(100, "No blocks available")
+                return True
+            
+            # Determine what we need to download
+            cached_height = self.wallet_core.blockchain_cache.get_highest_cached_height()
+            start_height = 0 if cached_height < 0 else cached_height + 1
+            
+            if start_height > current_height:
+                if progress_callback:
+                    progress_callback(100, "Up to date")
+                return True
+            
+            total_blocks = current_height - start_height + 1
+            if progress_callback:
+                progress_callback(0, f"Downloading {start_height} to {current_height} ({total_blocks} blocks)")
+            
+            # Download in batches with progress
+            batch_size = 50
+            downloaded = 0
+            
+            for batch_start in range(start_height, current_height + 1, batch_size):
+                batch_end = min(batch_start + batch_size - 1, current_height)
+                
+                # Update progress
+                downloaded += (batch_end - batch_start + 1)
+                progress = min(99, int((downloaded / total_blocks) * 100))
+                if progress_callback:
+                    progress_callback(progress, f"Downloading blocks {batch_start}-{batch_end}")
+                
+                # Get blocks using range endpoint if available
+                try:
+                    response = requests.get(
+                        f"https://bank.linglin.art/blockchain/range?start={batch_start}&end={batch_end}",
+                        timeout=30
+                    )
+                    if response.status_code == 200:
+                        blocks = response.json()
+                    else:
+                        # Fallback: get full chain and filter
+                        response = requests.get("https://bank.linglin.art/blockchain", timeout=60)
+                        if response.status_code == 200:
+                            full_chain = response.json()
+                            blocks = [block for block in full_chain 
+                                    if batch_start <= block.get('index', 0) <= batch_end]
+                        else:
+                            blocks = []
+                except Exception as e:
+                    print(f"Block range error: {e}")
+                    blocks = []
+                
+                if not blocks:
+                    if progress_callback:
+                        progress_callback(0, f"Failed to download blocks {batch_start}-{batch_end}")
+                    return False
+                
+                # Cache blocks using the existing blockchain cache
+                for block in blocks:
+                    height = block.get('index', batch_start)
+                    block_hash = block.get('hash', '')
+                    self.wallet_core.blockchain_cache.save_block(height, block_hash, block)
+                
+                # Small delay to be nice to the server
+                time.sleep(0.05)
+            
+            if progress_callback:
+                progress_callback(100, "Download complete")
+            return True
+            
+        except Exception as e:
+            print(f"Download error: {e}")
+            if progress_callback:
+                progress_callback(0, f"Error: {str(e)}")
+            return False
+
+    def get_mempool_with_progress(self, progress_callback=None):
+        """Get mempool with progress tracking"""
+        try:
+            if progress_callback:
+                progress_callback(0, "Loading mempool...")
+            
+            response = requests.get("https://bank.linglin.art/mempool", timeout=15)
+            if response.status_code == 200:
+                mempool = response.json()
+                if progress_callback:
+                    progress_callback(100, f"Loaded {len(mempool)} transactions")
+                return mempool
+            else:
+                if progress_callback:
+                    progress_callback(0, f"Mempool error: {response.status_code}")
+                return []
+                
+        except Exception as e:
+            print(f"Mempool error: {e}")
+            if progress_callback:
+                progress_callback(0, f"Error: {str(e)}")
+            return []
+
+    def check_network_connection(self) -> bool:
+        """Check if we can connect to the network"""
+        try:
+            response = requests.get("https://bank.linglin.art/health", timeout=5)
+            return response.status_code == 200
+        except:
+            return False
+
+    # Mempool Monitoring
+    def start_mempool_monitoring(self):
+        """Start monitoring mempool for incoming transactions"""
+        if self.mempool_monitoring:
+            return
+        
+        self.mempool_monitoring = True
+        self.mempool_watcher = threading.Thread(target=self._mempool_monitor, daemon=True)
+        self.mempool_watcher.start()
+        print("DEBUG: Mempool monitoring started")
+
+    def stop_mempool_monitoring(self):
+        """Stop mempool monitoring"""
+        self.mempool_monitoring = False
+        self.mempool_watcher = None
+        print("DEBUG: Mempool monitoring stopped")
+
+    def _mempool_monitor(self):
+        """Monitor mempool for transactions involving our addresses"""
+        check_count = 0
+        while self.mempool_monitoring and self.is_unlocked:
+            try:
+                check_count += 1
+                
+                # Get our addresses
+                our_addresses = {wallet['address'].lower() for wallet in self.wallets}
+                if not our_addresses:
+                    time.sleep(10)
+                    continue
+                
+                # Get current mempool (check every 5 scans to reduce load)
+                if check_count % 5 == 0:
+                    mempool_txs = self._get_mempool()
+                    if mempool_txs:
+                        new_txs_found = self._process_mempool_transactions(mempool_txs, our_addresses)
+                        if new_txs_found:
+                            self._trigger_callback(self.on_transaction_received)
+                
+                # Clean old mempool data periodically
+                if check_count % 50 == 0:
+                    self.blockchain_cache.clear_old_mempool()
+                
+                time.sleep(2)  # Check every 2 seconds
+                
+            except Exception as e:
+                print(f"Mempool monitor error: {e}")
+                time.sleep(10)
+
+    def _get_mempool(self) -> List[dict]:
+        """Get current mempool transactions"""
+        try:
+            response = requests.get("https://bank.linglin.art/mempool", timeout=10)
+            if response.status_code == 200:
+                return response.json()
+        except Exception as e:
+            print(f"Mempool fetch error: {e}")
+        return []
+
+    def _process_mempool_transactions(self, mempool_txs: List[dict], our_addresses: Set[str]) -> bool:
+        """Process mempool transactions for our addresses - returns True if new transactions found"""
+        new_txs_found = False
+        
+        for tx in mempool_txs:
+            tx_hash = tx.get('hash')
+            if not tx_hash or tx_hash in self.watched_tx_hashes:
+                continue
+            
+            # Check if this involves our addresses
+            from_addr = (tx.get('from') or tx.get('sender') or '').lower()
+            to_addr = (tx.get('to') or tx.get('receiver') or '').lower()
+            
+            if from_addr in our_addresses or to_addr in our_addresses:
+                # This is our transaction - add to watched list
+                self.watched_tx_hashes.add(tx_hash)
+                
+                # Cache the transaction
+                involved_address = from_addr if from_addr in our_addresses else to_addr
+                self.blockchain_cache.save_mempool_tx(tx_hash, tx, involved_address)
+                
+                # Add to pending transactions if it's outgoing
+                if from_addr in our_addresses and tx_hash not in [ptx.get('hash') for ptx in self.pending_txs]:
+                    self.pending_txs.append({
+                        "hash": tx_hash,
+                        "from": from_addr,
+                        "to": to_addr,
+                        "amount": float(tx.get('amount', 0)),
+                        "status": "pending",
+                        "timestamp": time.time(),
+                        "type": "transfer"
+                    })
+                    new_txs_found = True
+                    print(f"DEBUG: New pending transaction detected: {tx_hash}")
+                
+                # Update wallet balances for pending state
+                for wallet in self.wallets:
+                    if wallet['address'].lower() == from_addr:
+                        wallet['pending_send'] += float(tx.get('amount', 0))
+                        new_txs_found = True
+                
+                if new_txs_found:
+                    self._trigger_callback(self.on_balance_changed)
+        
+        return new_txs_found
+
+    # Optimized Blockchain Scanning
     def scan_blockchain(self, force_full_scan=False):
-        """Optimized blockchain scan - only scans new blocks"""
+        """Optimized blockchain scan - uses cache and checks mempool"""
         if not self.is_unlocked:
             return False
 
         print("DEBUG: Starting optimized blockchain scan...")
+        self._update_sync_progress(0, "Starting blockchain scan...")
         
-        # Get current blockchain height first (fast operation)
+        # Get current blockchain height
         current_height = self._get_current_blockchain_height()
         if current_height is None:
-            print("DEBUG: Could not get blockchain height")
+            self._update_sync_progress(0, "Could not get blockchain height")
             return False
 
         print(f"DEBUG: Current blockchain height: {current_height}")
 
-        # Check if we need a full scan (once per hour or if forced)
+        # Check if we need a full scan
         needs_full_scan = (force_full_scan or 
                           time.time() - self.last_full_scan > self.full_scan_interval)
 
         updates = False
+        total_wallets = len([w for w in self.wallets if w.get("is_our_wallet", True)])
+        processed_wallets = 0
+
         for wallet in self.wallets:
             if not wallet.get("is_our_wallet", True):
                 continue
@@ -542,26 +991,35 @@ class LunaLib:
                         
                         self._save_scan_state()
 
+                    # Check mempool for this wallet
+                    mempool_txs = self.blockchain_cache.get_mempool_txs_for_address(address)
+                    for tx in mempool_txs:
+                        if self._add_transaction_to_wallet(wallet, tx, "pending"):
+                            updates = True
+
                     if (wallet["balance"] != old_balance or 
                         len(wallet["transactions"]) != old_tx_count):
                         updates = True
                         print(f"DEBUG: Wallet {address} updated - Balance: {wallet['balance']}, Transactions: {len(wallet['transactions'])}")
-                        self._trigger_callback(self.on_transaction_received)
 
-        # Update pending transactions with recent blocks only
-        recent_blocks = self._get_recent_blocks(20)  # Only get recent blocks for pending check
-        if recent_blocks:
-            self._update_pending_transactions(recent_blocks)
+            processed_wallets += 1
+            progress = int((processed_wallets / total_wallets) * 100)
+            self._update_sync_progress(progress, f"Scanning wallet {processed_wallets}/{total_wallets}")
+
+        # Update pending transactions status
+        self._update_pending_transactions()
 
         if updates:
             self.save_wallet()
             self._trigger_callback(self.on_balance_changed)
+            self._trigger_callback(self.on_transaction_received)
 
+        self._update_sync_progress(100, "Scan complete")
         self._trigger_callback(self.on_sync_complete)
         return True
 
     def _scan_wallet_blocks(self, wallet, start_height, end_height):
-        """Scan specific block range for wallet transactions"""
+        """Scan specific block range for wallet transactions using cache"""
         if start_height > end_height:
             return 0
 
@@ -571,26 +1029,78 @@ class LunaLib:
         
         print(f"DEBUG: Scanning blocks {start_height} to {end_height} for {address}")
 
-        # Scan in batches to avoid memory issues and be gentle on the server
-        for batch_start in range(start_height, end_height + 1, self.scan_batch_size):
-            batch_end = min(batch_start + self.scan_batch_size - 1, end_height)
-            
-            print(f"DEBUG: Fetching blocks {batch_start} to {batch_end}")
-            blocks = self._get_blocks_range(batch_start, batch_end)
-            if not blocks:
-                print(f"DEBUG: No blocks received for range {batch_start}-{batch_end}")
-                continue
-
-            for block in blocks:
+        # Try to get blocks from cache first
+        cached_blocks = self.blockchain_cache.get_block_range(start_height, end_height)
+        if cached_blocks:
+            print(f"DEBUG: Found {len(cached_blocks)} blocks in cache")
+            for block in cached_blocks:
                 blocks_scanned += 1
                 self._process_block_for_wallet(wallet, block, known_tx_hashes)
+        
+        # If we didn't get all blocks from cache, fetch the rest from network
+        cached_count = len(cached_blocks)
+        expected_count = end_height - start_height + 1
+        
+        if cached_count < expected_count:
+            missing_start = start_height + cached_count
+            missing_end = end_height
+            
+            print(f"DEBUG: Fetching {missing_end - missing_start + 1} missing blocks from network")
+            
+            for batch_start in range(missing_start, missing_end + 1, self.scan_batch_size):
+                batch_end = min(batch_start + self.scan_batch_size - 1, missing_end)
+                
+                blocks = self._get_blocks_range(batch_start, batch_end)
+                if not blocks:
+                    print(f"DEBUG: No blocks received for range {batch_start}-{batch_end}")
+                    continue
 
-            # Small delay to avoid overwhelming the server
-            time.sleep(0.05)
+                for block in blocks:
+                    blocks_scanned += 1
+                    self._process_block_for_wallet(wallet, block, known_tx_hashes)
+                    # Cache the block
+                    block_height = block.get('index', batch_start)
+                    block_hash = block.get('hash', '')
+                    self.blockchain_cache.save_block(block_height, block_hash, block)
+
+                # Small delay to avoid overwhelming the server
+                time.sleep(0.05)
 
         # Recalculate final balance
         wallet["balance"] = self._calculate_balance_from_transactions(wallet["transactions"], address)
         return blocks_scanned
+
+    def _add_transaction_to_wallet(self, wallet, tx, status="confirmed"):
+        """Add a transaction to wallet if not already present"""
+        tx_hash = tx.get('hash')
+        if not tx_hash:
+            return False
+            
+        # Check if transaction already exists
+        for existing_tx in wallet['transactions']:
+            if existing_tx.get('hash') == tx_hash:
+                return False
+        
+        # Add new transaction
+        from_addr = tx.get('from') or tx.get('sender', '')
+        to_addr = tx.get('to') or tx.get('receiver', '')
+        amount = float(tx.get('amount', 0))
+        
+        new_tx = {
+            'type': 'transfer',
+            'from': from_addr,
+            'to': to_addr,
+            'amount': amount,
+            'timestamp': tx.get('timestamp', time.time()),
+            'block_height': tx.get('block_height'),
+            'hash': tx_hash,
+            'status': status,
+            'fee': float(tx.get('fee', 0)),
+            'memo': tx.get('memo', '')
+        }
+        
+        wallet['transactions'].append(new_tx)
+        return True
 
     def _process_block_for_wallet(self, wallet, block, known_tx_hashes):
         """Process a single block for wallet transactions"""
@@ -691,20 +1201,6 @@ class LunaLib:
         
         return []
 
-    def _get_recent_blocks(self, count=20):
-        """Get only recent blocks for pending transaction checks"""
-        try:
-            current_height = self._get_current_blockchain_height()
-            if current_height is None:
-                return []
-                
-            start_height = max(0, current_height - count + 1)
-            return self._get_blocks_range(start_height, current_height)
-            
-        except Exception as e:
-            print(f"DEBUG: Recent blocks error: {e}")
-            return []
-
     def _get_blockchain(self):
         """Get full blockchain data from network (fallback method)"""
         try:
@@ -741,21 +1237,44 @@ class LunaLib:
 
         return max(0.0, balance)
 
-    def _update_pending_transactions(self, blockchain):
-        """Update pending transactions status"""
-        blockchain_hashes = set()
+    def _update_pending_transactions(self):
+        """Update pending transactions status based on blockchain"""
+        if not self.pending_txs:
+            return
 
-        for block in blockchain:
+        # Get recent blocks to check for confirmations
+        current_height = self._get_current_blockchain_height()
+        if current_height is None:
+            return
+
+        start_height = max(0, current_height - 20)  # Check last 20 blocks
+        recent_blocks = self.blockchain_cache.get_block_range(start_height, current_height)
+        if not recent_blocks:
+            recent_blocks = self._get_blocks_range(start_height, current_height)
+
+        blockchain_hashes = set()
+        for block in recent_blocks:
             for tx in block.get("transactions", []):
                 blockchain_hashes.add(tx.get("hash"))
 
         updated = False
         for pending_tx in self.pending_txs[:]:
-            if pending_tx.get("hash") in blockchain_hashes:
+            tx_hash = pending_tx.get("hash")
+            if tx_hash in blockchain_hashes:
+                # Transaction confirmed
                 pending_tx["status"] = "confirmed"
                 updated = True
-                print(f"DEBUG: Transaction {pending_tx['hash']} confirmed")
+                print(f"DEBUG: Transaction {tx_hash} confirmed")
+                
+                # Remove from pending_send
+                for wallet in self.wallets:
+                    if wallet["address"] == pending_tx.get("from"):
+                        wallet["pending_send"] = max(
+                            0,
+                            wallet["pending_send"] - float(pending_tx.get("amount", 0)),
+                        )
             elif pending_tx.get("timestamp", 0) < time.time() - 3600:
+                # Transaction failed (older than 1 hour)
                 pending_tx["status"] = "failed"
                 updated = True
 
@@ -766,7 +1285,7 @@ class LunaLib:
                             0,
                             wallet["pending_send"] - float(pending_tx.get("amount", 0)),
                         )
-                print(f"DEBUG: Transaction {pending_tx['hash']} failed")
+                print(f"DEBUG: Transaction {tx_hash} failed")
 
         if updated:
             SecureDataManager.save_json(self.pending_file, self.pending_txs)
@@ -832,17 +1351,23 @@ class LunaLib:
             print(f"DEBUG: Broadcasting transaction to {to_address} for {amount} LKC")
             response = requests.post("https://bank.linglin.art/mempool/add", json=tx, timeout=30)
             if response.status_code == 201:
-                # Add to pending
+                # Add to pending and watched list
                 self.pending_txs.append({
                     "hash": tx["hash"],
                     "from": wallet["address"],
                     "to": to_address,
                     "amount": amount,
                     "status": "pending",
-                    "timestamp": current_time
+                    "timestamp": current_time,
+                    "type": "transfer"
                 })
                 
                 wallet["pending_send"] += amount
+                self.watched_tx_hashes.add(tx["hash"])
+                
+                # Cache in mempool
+                self.blockchain_cache.save_mempool_tx(tx["hash"], tx, wallet["address"].lower())
+                
                 self.save_wallet()
                 self._trigger_callback(self.on_balance_changed)
                 print(f"DEBUG: Transaction broadcast successful: {tx['hash']}")
@@ -985,5 +1510,6 @@ class LunaLib:
     def __del__(self):
         """Cleanup on destruction"""
         self.stop_auto_scan()
+        self.stop_mempool_monitoring()
         if hasattr(self, "is_unlocked") and self.is_unlocked:
             self.save_wallet()
