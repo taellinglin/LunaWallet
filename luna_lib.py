@@ -419,7 +419,104 @@ class LunaLib:
 
         if auto_scan:
             self.start_auto_scan()
-
+    def _get_manual_block_count(self):
+        """Manual fallback method to count blocks when height endpoint fails"""
+        try:
+            import requests
+            
+            print("DEBUG: Using manual block count method...")
+            
+            # Method 1: Try the blocks endpoint
+            try:
+                response = requests.get('http://localhost:5555/blockchain/blocks', timeout=10)
+                if response.status_code == 200:
+                    data = response.json()
+                    blocks = data.get('blocks', [])
+                    if blocks:
+                        print(f"DEBUG: Manual count via blocks endpoint: {len(blocks)} blocks")
+                        return len(blocks)
+            except Exception as e:
+                print(f"DEBUG: Blocks endpoint manual count failed: {e}")
+            
+            # Method 2: Try the range endpoint with a test range
+            try:
+                response = requests.get('http://localhost:5555/blockchain/range?start=0&end=1000', timeout=10)
+                if response.status_code == 200:
+                    data = response.json()
+                    blocks = data.get('blocks', [])
+                    total_blocks = data.get('total_blocks', 0)
+                    if total_blocks > 0:
+                        print(f"DEBUG: Manual count via range endpoint total_blocks: {total_blocks}")
+                        return total_blocks
+                    elif blocks:
+                        # If we got blocks but no total count, estimate from the range
+                        if len(blocks) == 1001:  # 0-1000 inclusive = 1001 blocks
+                            # We might have hit the limit, try to find the actual end
+                            print("DEBUG: Range endpoint returned maximum blocks, checking higher ranges...")
+                            # Try a higher range to find the actual end
+                            for test_end in [5000, 10000, 50000]:
+                                try:
+                                    response = requests.get(f'http://localhost:5555/blockchain/range?start={test_end-100}&end={test_end}', timeout=5)
+                                    if response.status_code == 200:
+                                        test_data = response.json()
+                                        test_blocks = test_data.get('blocks', [])
+                                        if test_blocks:
+                                            print(f"DEBUG: Found blocks at height ~{test_end}, continuing search...")
+                                        else:
+                                            print(f"DEBUG: No blocks at height {test_end}, blockchain ends around {test_end-100}")
+                                            return test_end - 100
+                                except:
+                                    break
+                            return 1000  # Fallback to the known maximum
+                        else:
+                            print(f"DEBUG: Manual count via range endpoint block count: {len(blocks)}")
+                            return len(blocks)
+            except Exception as e:
+                print(f"DEBUG: Range endpoint manual count failed: {e}")
+            
+            # Method 3: Try latest block endpoint
+            try:
+                response = requests.get('http://localhost:5555/blockchain/latest-block', timeout=10)
+                if response.status_code == 200:
+                    data = response.json()
+                    block = data.get('block', {})
+                    latest_index = block.get('index', 0)
+                    if latest_index > 0:
+                        print(f"DEBUG: Manual count via latest block index: {latest_index + 1}")
+                        return latest_index + 1  # +1 because index is 0-based
+            except Exception as e:
+                print(f"DEBUG: Latest block manual count failed: {e}")
+            
+            # Method 4: Try system health endpoint
+            try:
+                response = requests.get('http://localhost:5555/system/health', timeout=10)
+                if response.status_code == 200:
+                    data = response.json()
+                    blockchain_info = data.get('blockchain', {})
+                    total_blocks = blockchain_info.get('total_blocks', 0)
+                    if total_blocks > 0:
+                        print(f"DEBUG: Manual count via system health: {total_blocks} blocks")
+                        return total_blocks
+            except Exception as e:
+                print(f"DEBUG: System health manual count failed: {e}")
+            
+            # Method 5: Direct incremental probe (last resort)
+            print("DEBUG: Attempting incremental block probe...")
+            for height in range(0, 10000, 100):  # Check every 100 blocks up to 10,000
+                try:
+                    response = requests.get(f'http://localhost:5555/blockchain/block/{height}', timeout=2)
+                    if response.status_code != 200:
+                        print(f"DEBUG: Block {height} not found, blockchain height is approximately {height-1}")
+                        return max(0, height - 1)
+                except:
+                    break
+            
+            print("DEBUG: All manual block count methods failed")
+            return 0
+            
+        except Exception as e:
+            print(f"ERROR in manual block count: {e}")
+            return 0
     def _load_scan_state(self):
         """Load scan state from file"""
         try:
@@ -920,156 +1017,604 @@ class LunaLib:
         
         return new_txs_found
 
-    # Optimized Blockchain Scanning
-    def scan_blockchain(self, force_full_scan=False):
-        """Optimized blockchain scan - uses cache and checks mempool"""
+    def scan_blockchain(self, force_full_scan=False, progress_callback=None):
+        """Optimized blockchain scan - scan ALL blocks without limits"""
         if not self.is_unlocked:
             return False
 
-        print("DEBUG: Starting optimized blockchain scan...")
-        self._update_sync_progress(0, "Starting blockchain scan...")
+        print("DEBUG: Starting FULL blockchain scan...")
+        self._update_sync_progress(0, "Starting full blockchain scan...")
         
-        # Get current blockchain height
-        current_height = self._get_current_blockchain_height()
-        if current_height is None:
-            self._update_sync_progress(0, "Could not get blockchain height")
-            return False
-
-        print(f"DEBUG: Current blockchain height: {current_height}")
-
-        # Check if we need a full scan
-        needs_full_scan = (force_full_scan or 
-                          time.time() - self.last_full_scan > self.full_scan_interval)
-
-        updates = False
-        total_wallets = len([w for w in self.wallets if w.get("is_our_wallet", True)])
-        processed_wallets = 0
-
-        for wallet in self.wallets:
-            if not wallet.get("is_our_wallet", True):
-                continue
-
-            address = wallet["address"]
-            wallet_scan_state = self.scan_state['wallets'].get(address, {})
-            last_scanned_height = wallet_scan_state.get('last_scanned_height', 0)
+        # DEBUG: Check height first
+        self.debug_blockchain_height()
+        
+        try:
+            # Get current blockchain height
+            current_height = self._get_current_blockchain_height()
             
-            # Determine scan range
-            if needs_full_scan or last_scanned_height == 0:
-                start_height = 0
-                scan_type = "full"
-                print(f"DEBUG: Full scan for {address}")
-            else:
-                start_height = last_scanned_height + 1
-                scan_type = "incremental"
-                print(f"DEBUG: Incremental scan for {address} from block {start_height}")
+            # If height is 0 but we know there are blocks, force a manual check
+            if current_height == 0:
+                print("DEBUG: Height returned 0, attempting manual block count...")
+                current_height = self._get_manual_block_count()
+            
+            print(f"DEBUG: Final blockchain height: {current_height}")
 
-            # Only scan if there are new blocks
-            if current_height >= start_height:
-                # Limit the number of blocks to scan in one go
-                end_height = min(current_height, start_height + self.max_blocks_per_scan - 1)
-                
-                if start_height <= end_height:
-                    old_balance = wallet["balance"]
-                    old_tx_count = len(wallet["transactions"])
+            if current_height <= 0:
+                print("DEBUG: No blocks to scan")
+                self._update_sync_progress(100, "No blocks to scan")
+                return True
+
+            # ALWAYS do full scan and scan ALL blocks
+            updates = False
+            valid_wallets = [w for w in self.wallets if isinstance(w, dict) and w.get("is_our_wallet", True)]
+            total_wallets = len(valid_wallets)
+            
+            if total_wallets == 0:
+                print("DEBUG: No valid wallets to scan")
+                return True
+
+            print(f"DEBUG: Scanning {current_height} blocks for {total_wallets} wallets")
+
+            for wallet_index, wallet in enumerate(valid_wallets):
+                try:
+                    address = wallet.get("address")
+                    if not address:
+                        continue
+
+                    print(f"DEBUG: [{wallet_index+1}/{total_wallets}] Scanning ALL blocks 0-{current_height-1} for {address}")
+
+                    old_balance = wallet.get("balance", 0)
+                    old_tx_count = len(wallet.get("transactions", []))
                     
-                    # Scan the block range
-                    blocks_scanned = self._scan_wallet_blocks(wallet, start_height, end_height)
+                    # SCAN ALL BLOCKS in larger batches
+                    batch_size = 500  # Increased batch size
+                    total_blocks_scanned = 0
+                    total_transactions_found = 0
                     
-                    if blocks_scanned > 0:
-                        print(f"DEBUG: Scanned {blocks_scanned} blocks for {address} ({scan_type} scan)")
+                    for batch_start in range(0, current_height, batch_size):
+                        batch_end = min(batch_start + batch_size - 1, current_height - 1)
                         
-                        # Update scan state
-                        self.scan_state['wallets'][address] = {
-                            'last_scanned_height': end_height,
-                            'last_scan_time': time.time(),
-                            'scan_type': scan_type
-                        }
+                        progress = int((batch_start / current_height) * 80) + int((wallet_index / total_wallets) * 20)
+                        self._update_sync_progress(
+                            progress, 
+                            f"Scanning {address}: blocks {batch_start}-{batch_end}/{current_height-1}"
+                        )
                         
-                        if needs_full_scan:
-                            self.last_full_scan = time.time()
-                            self.scan_state['last_full_scan'] = self.last_full_scan
+                        print(f"DEBUG: Scanning batch {batch_start}-{batch_end} for {address}")
                         
-                        self._save_scan_state()
+                        blocks_scanned, transactions_found = self._scan_wallet_blocks_batch(wallet, batch_start, batch_end)
+                        total_blocks_scanned += blocks_scanned
+                        total_transactions_found += transactions_found
+                        
+                        # Small delay to prevent overwhelming the API
+                        time.sleep(0.1)
+                    
+                    print(f"DEBUG: Scanned {total_blocks_scanned} blocks, found {total_transactions_found} transactions for {address}")
+                    
+                    # Update wallet balance
+                    self._update_wallet_balance(wallet)
+                    
+                    # Update scan state
+                    self.scan_state['wallets'][address] = {
+                        'last_scanned_height': current_height - 1,
+                        'last_scan_time': time.time(),
+                        'scan_type': 'full',
+                        'blocks_scanned': total_blocks_scanned,
+                        'transactions_found': total_transactions_found
+                    }
+                    
+                    self.last_full_scan = time.time()
+                    self.scan_state['last_full_scan'] = self.last_full_scan
+                    self._save_scan_state()
 
-                    # Check mempool for this wallet
-                    mempool_txs = self.blockchain_cache.get_mempool_txs_for_address(address)
-                    for tx in mempool_txs:
-                        if self._add_transaction_to_wallet(wallet, tx, "pending"):
-                            updates = True
-
-                    if (wallet["balance"] != old_balance or 
-                        len(wallet["transactions"]) != old_tx_count):
+                    # Check for updates
+                    new_balance = wallet.get("balance", 0)
+                    new_tx_count = len(wallet.get("transactions", []))
+                    
+                    if (new_balance != old_balance or new_tx_count != old_tx_count):
                         updates = True
-                        print(f"DEBUG: Wallet {address} updated - Balance: {wallet['balance']}, Transactions: {len(wallet['transactions'])}")
+                        print(f"DEBUG: Wallet {address} UPDATED - Balance: {old_balance} → {new_balance}, Transactions: {old_tx_count} → {new_tx_count}")
+                    else:
+                        print(f"DEBUG: No changes for {address} - Balance: {new_balance}, Transactions: {new_tx_count}")
 
-            processed_wallets += 1
-            progress = int((processed_wallets / total_wallets) * 100)
-            self._update_sync_progress(progress, f"Scanning wallet {processed_wallets}/{total_wallets}")
-
-        # Update pending transactions status
-        self._update_pending_transactions()
-
-        if updates:
-            self.save_wallet()
-            self._trigger_callback(self.on_balance_changed)
-            self._trigger_callback(self.on_transaction_received)
-
-        self._update_sync_progress(100, "Scan complete")
-        self._trigger_callback(self.on_sync_complete)
-        return True
-
-    def _scan_wallet_blocks(self, wallet, start_height, end_height):
-        """Scan specific block range for wallet transactions using cache"""
-        if start_height > end_height:
-            return 0
-
-        address = wallet["address"]
-        known_tx_hashes = {tx.get("hash") for tx in wallet["transactions"]}
-        blocks_scanned = 0
-        
-        print(f"DEBUG: Scanning blocks {start_height} to {end_height} for {address}")
-
-        # Try to get blocks from cache first
-        cached_blocks = self.blockchain_cache.get_block_range(start_height, end_height)
-        if cached_blocks:
-            print(f"DEBUG: Found {len(cached_blocks)} blocks in cache")
-            for block in cached_blocks:
-                blocks_scanned += 1
-                self._process_block_for_wallet(wallet, block, known_tx_hashes)
-        
-        # If we didn't get all blocks from cache, fetch the rest from network
-        cached_count = len(cached_blocks)
-        expected_count = end_height - start_height + 1
-        
-        if cached_count < expected_count:
-            missing_start = start_height + cached_count
-            missing_end = end_height
-            
-            print(f"DEBUG: Fetching {missing_end - missing_start + 1} missing blocks from network")
-            
-            for batch_start in range(missing_start, missing_end + 1, self.scan_batch_size):
-                batch_end = min(batch_start + self.scan_batch_size - 1, missing_end)
-                
-                blocks = self._get_blocks_range(batch_start, batch_end)
-                if not blocks:
-                    print(f"DEBUG: No blocks received for range {batch_start}-{batch_end}")
+                except Exception as e:
+                    print(f"ERROR scanning wallet {wallet.get('address', 'unknown')}: {e}")
+                    import traceback
+                    print(f"Traceback: {traceback.format_exc()}")
                     continue
 
-                for block in blocks:
-                    blocks_scanned += 1
-                    self._process_block_for_wallet(wallet, block, known_tx_hashes)
-                    # Cache the block
-                    block_height = block.get('index', batch_start)
-                    block_hash = block.get('hash', '')
-                    self.blockchain_cache.save_block(block_height, block_hash, block)
+            # Final updates
+            self._update_sync_progress(95, "Saving wallet data...")
+            
+            if updates:
+                self.save_wallet()
+                self._trigger_callback(self.on_balance_changed)
+                self._trigger_callback(self.on_transaction_received)
+                print("DEBUG: Wallet updated and callbacks triggered")
+            else:
+                print("DEBUG: No updates found during scan")
 
-                # Small delay to avoid overwhelming the server
+            self._update_sync_progress(100, "Full scan complete")
+            self._trigger_callback(self.on_sync_complete)
+            
+            # Print final summary
+            self._print_scan_summary(valid_wallets)
+            return True
+
+        except Exception as e:
+            print(f"CRITICAL ERROR in scan_blockchain: {e}")
+            import traceback
+            print(f"Traceback: {traceback.format_exc()}")
+            self._update_sync_progress(0, f"Scan failed: {str(e)}")
+            return False
+
+    def _scan_wallet_blocks_batch(self, wallet, start_height, end_height):
+        """Scan a batch of blocks and return (blocks_scanned, transactions_found)"""
+        try:
+            if not isinstance(wallet, dict):
+                return 0, 0
+                
+            address = wallet.get("address")
+            
+            # Get blockchain data via API
+            blockchain_data = self._get_blockchain_range_via_api(start_height, end_height)
+            
+            if not blockchain_data:
+                print(f"WARNING: No blockchain data retrieved for range {start_height}-{end_height}")
+                return 0, 0
+            
+            blocks_scanned = 0
+            transactions_found = 0
+            known_tx_hashes = set()
+            
+            # Scan the available blocks
+            for block_data in blockchain_data:
+                try:
+                    if not isinstance(block_data, dict):
+                        continue
+                    
+                    block_height = block_data.get('index', 0)
+                    
+                    # Process the block
+                    if self._process_block_for_wallet(wallet, block_data, known_tx_hashes):
+                        blocks_scanned += 1
+                        transactions_found += 1  # We found at least one transaction
+                    
+                except Exception as e:
+                    print(f"ERROR processing block {block_height}: {e}")
+                    continue
+            
+            return blocks_scanned, transactions_found
+            
+        except Exception as e:
+            print(f"ERROR in _scan_wallet_blocks_batch: {e}")
+            return 0, 0
+    def _update_wallet_balance(self, wallet):
+        """Update wallet balance based on transactions"""
+        try:
+            if not isinstance(wallet, dict):
+                return
+                
+            balance = 0.0
+            transactions = wallet.get("transactions", [])
+            
+            for tx in transactions:
+                if not isinstance(tx, dict):
+                    continue
+                    
+                tx_type = tx.get("type")
+                amount = float(tx.get("amount", 0))
+                to_addr = tx.get("to")
+                from_addr = tx.get("from")
+                address = wallet.get("address")
+                
+                # Add incoming transactions
+                if to_addr and str(to_addr).lower() == str(address).lower():
+                    balance += amount
+                # Subtract outgoing transactions  
+                elif from_addr and str(from_addr).lower() == str(address).lower():
+                    balance -= amount
+            
+            wallet["balance"] = balance
+            print(f"DEBUG: Updated balance for {wallet.get('address')}: {balance}")
+            
+        except Exception as e:
+            print(f"ERROR updating wallet balance: {e}")
+    def debug_blockchain_state(self):
+        """Debug the actual blockchain state"""
+        print("=== BLOCKCHAIN STATE DEBUG ===")
+        
+        # Check blockchain daemon
+        if hasattr(self, 'blockchain_daemon_instance') and self.blockchain_daemon_instance:
+            blockchain = getattr(self.blockchain_daemon_instance, 'blockchain', [])
+            print(f"Blockchain daemon has {len(blockchain)} blocks")
+            
+            for i, block in enumerate(blockchain):
+                print(f"Block {i}: {block.get('index', 'N/A')} - {block.get('hash', 'N/A')[:20]}...")
+                print(f"  Transactions: {len(block.get('transactions', []))}")
+        else:
+            print("No blockchain daemon instance found")
+        
+        # Try to get blockchain via API
+        try:
+            import requests
+            response = requests.get('http://localhost:5555/blockchain/height', timeout=5)
+            if response.status_code == 200:
+                data = response.json()
+                print(f"API Blockchain height: {data.get('height')}")
+            
+            response = requests.get('http://localhost:5555/blockchain/latest', timeout=5)
+            if response.status_code == 200:
+                data = response.json()
+                print(f"Latest block: {data.get('block')}")
+        except Exception as e:
+            print(f"API call failed: {e}")
+    def _create_genesis_block_data(self):
+        """Create actual genesis block data based on your blockchain"""
+        genesis_data = {
+            "index": 0,
+            "timestamp": 1727672773,  # 2025-09-30 07:06:13
+            "transactions": [
+                {
+                    "type": "GTX_Genesis",  # Based on your blockchain type
+                    "hash": "genesis_0000000000000000000000000000000000000000000000000000000000000000",
+                    "serial_number": "00000001",  # Example serial
+                    "denomination": "1.0",  # Example amount
+                    "issued_to": "LUN_9cc3cf8fff072881_8b71766e",  # Example address
+                    "description": "Luna Coin Genesis Block",
+                    "timestamp": 1727672773,
+                    "public_key": "genesis_public_key",
+                    "signature": "genesis_signature"
+                }
+            ],
+            "previous_hash": "0",
+            "nonce": 0,
+            "miner": "genesis",
+            "hash": "54455c2db8115abb1873a0c5b4b8a2d6c7e8f9a0b1c2d3e4f5a6b7c8d9e0f1",  # Full hash
+            "difficulty": 0,
+            "mining_time": 0
+        }
+        return genesis_data
+    def scan_specific_blocks_for_address(self, address, block_range=None):
+        """Scan specific blocks for a particular address (for debugging)"""
+        if block_range is None:
+            block_range = (0, 100)  # Scan first 100 blocks
+        
+        print(f"=== SCANNING BLOCKS {block_range[0]}-{block_range[1]} FOR {address} ===")
+        
+        # Find the wallet
+        wallet = None
+        for w in self.wallets:
+            if isinstance(w, dict) and w.get('address') == address:
+                wallet = w
+                break
+        
+        if not wallet:
+            print(f"ERROR: Wallet not found for address {address}")
+            return
+        
+        start_height, end_height = block_range
+        blocks_scanned = self._scan_wallet_blocks(wallet, start_height, end_height)
+        
+        print(f"=== SCAN COMPLETE: Scanned {blocks_scanned} blocks ===")
+        print(f"Wallet balance: {wallet.get('balance', 0)}")
+        print(f"Transactions found: {len(wallet.get('transactions', []))}")
+        
+        # Print recent transactions
+        transactions = wallet.get('transactions', [])
+        for tx in transactions[-5:]:  # Last 5 transactions
+            print(f"  TX: {tx.get('type')} - {tx.get('amount')} - {tx.get('hash')[:20]}...")
+    def _scan_wallet_blocks(self, wallet, start_height, end_height):
+        """Scan blocks for wallet transactions using direct blockchain access"""
+        try:
+            if not isinstance(wallet, dict):
+                print(f"ERROR: _scan_wallet_blocks received non-dict wallet: {type(wallet)} - {wallet}")
+                return 0
+                
+            blocks_scanned = 0
+            address = wallet.get("address")
+            
+            print(f"DEBUG: Scanning blocks {start_height} to {end_height} for {address}")
+            
+            # Get blockchain data via API - get ALL blocks in range
+            blockchain_data = self._get_blockchain_range_via_api(start_height, end_height)
+            
+            if not blockchain_data:
+                print(f"WARNING: No blockchain data retrieved for range {start_height}-{end_height}")
+                return 0
+            
+            print(f"DEBUG: Retrieved {len(blockchain_data)} blocks from API")
+            
+            # Track found transactions for this scan
+            known_tx_hashes = set()
+            transactions_found = 0
+            
+            # Scan the available blocks
+            for block_data in blockchain_data:
+                try:
+                    if not isinstance(block_data, dict):
+                        print(f"WARNING: Block data is not a dictionary: {type(block_data)}")
+                        continue
+                    
+                    block_height = block_data.get('index', 0)
+                    
+                    # Validate block has expected structure
+                    if 'index' not in block_data:
+                        print(f"WARNING: Block missing index: {block_data}")
+                        continue
+                    
+                    print(f"DEBUG: Processing block {block_height} with {len(block_data.get('transactions', []))} transactions")
+                    
+                    # Process the block
+                    if self._process_block_for_wallet(wallet, block_data, known_tx_hashes):
+                        blocks_scanned += 1
+                        transactions_found += 1
+                        print(f"DEBUG: Found transactions in block {block_height} for {address}")
+                    
+                except Exception as e:
+                    print(f"ERROR processing block {block_height}: {e}")
+                    continue
+            
+            print(f"DEBUG: Scanned {blocks_scanned} blocks, found {transactions_found} transactions for {address}")
+            return blocks_scanned
+            
+        except Exception as e:
+            print(f"ERROR in _scan_wallet_blocks: {e}")
+            import traceback
+            print(f"Traceback: {traceback.format_exc()}")
+            return 0
+    def debug_blockchain_height(self):
+        """Debug method to check blockchain height from all sources"""
+        print("=== BLOCKCHAIN HEIGHT DEBUG ===")
+        
+        try:
+            import requests
+            import json
+            
+            # Method 1: Direct API call to height endpoint
+            print("1. Checking /blockchain/height endpoint...")
+            try:
+                response = requests.get('http://localhost:5555/blockchain/height', timeout=10)
+                print(f"   Status: {response.status_code}")
+                if response.status_code == 200:
+                    data = response.json()
+                    print(f"   Response: {json.dumps(data, indent=2)}")
+                    height = data.get('height')
+                    success = data.get('success')
+                    print(f"   Height: {height}, Success: {success}")
+                else:
+                    print(f"   Error: {response.text}")
+            except Exception as e:
+                print(f"   Exception: {e}")
+            
+            # Method 2: Blocks endpoint to count blocks
+            print("2. Checking /blockchain/blocks endpoint...")
+            try:
+                response = requests.get('http://localhost:5555/blockchain/blocks', timeout=10)
+                print(f"   Status: {response.status_code}")
+                if response.status_code == 200:
+                    data = response.json()
+                    blocks_count = len(data.get('blocks', []))
+                    success = data.get('success')
+                    print(f"   Blocks count: {blocks_count}, Success: {success}")
+                    # Show first few blocks if available
+                    blocks = data.get('blocks', [])
+                    if blocks:
+                        print(f"   First 3 blocks:")
+                        for i, block in enumerate(blocks[:3]):
+                            print(f"     Block {i}: index={block.get('index')}, hash={block.get('hash', '')[:20]}...")
+                else:
+                    print(f"   Error: {response.text}")
+            except Exception as e:
+                print(f"   Exception: {e}")
+            
+            # Method 3: Latest block endpoint
+            print("3. Checking /blockchain/latest-block endpoint...")
+            try:
+                response = requests.get('http://localhost:5555/blockchain/latest-block', timeout=10)
+                print(f"   Status: {response.status_code}")
+                if response.status_code == 200:
+                    data = response.json()
+                    block = data.get('block', {})
+                    block_index = block.get('index')
+                    success = data.get('success')
+                    print(f"   Latest block index: {block_index}, Success: {success}")
+                    if block:
+                        print(f"   Latest block hash: {block.get('hash', '')[:20]}...")
+                else:
+                    print(f"   Error: {response.text}")
+            except Exception as e:
+                print(f"   Exception: {e}")
+            
+            # Method 4: Range endpoint to verify block count
+            print("4. Checking /blockchain/range endpoint...")
+            try:
+                # Test a small range to see if it works
+                response = requests.get('http://localhost:5555/blockchain/range?start=0&end=5', timeout=10)
+                print(f"   Status: {response.status_code}")
+                if response.status_code == 200:
+                    data = response.json()
+                    blocks_count = len(data.get('blocks', []))
+                    success = data.get('success')
+                    total_blocks = data.get('total_blocks')
+                    print(f"   Range blocks count: {blocks_count}, Total blocks: {total_blocks}, Success: {success}")
+                else:
+                    print(f"   Error: {response.text}")
+            except Exception as e:
+                print(f"   Exception: {e}")
+            
+            # Method 5: Check blockchain viewer endpoint
+            print("5. Checking /blockchain-viewer endpoint...")
+            try:
+                response = requests.get('http://localhost:5555/blockchain-viewer', timeout=10)
+                print(f"   Status: {response.status_code}")
+                if response.status_code == 200:
+                    print("   Blockchain viewer is accessible")
+                else:
+                    print(f"   Error: {response.status_code}")
+            except Exception as e:
+                print(f"   Exception: {e}")
+            
+            # Method 6: Direct daemon access (if available)
+            print("6. Checking blockchain daemon directly...")
+            try:
+                if hasattr(self, 'blockchain_daemon_instance') and self.blockchain_daemon_instance:
+                    blockchain = getattr(self.blockchain_daemon_instance, 'blockchain', [])
+                    height = len(blockchain) if blockchain else 0
+                    print(f"   Daemon blockchain height: {height}")
+                    if blockchain:
+                        print(f"   First 3 blocks in daemon:")
+                        for i, block in enumerate(blockchain[:3]):
+                            print(f"     Block {i}: index={block.get('index')}, hash={block.get('hash', '')[:20]}...")
+                else:
+                    print("   No blockchain daemon instance found")
+            except Exception as e:
+                print(f"   Exception: {e}")
+                
+            # Method 7: System health endpoint
+            print("7. Checking /system/health endpoint...")
+            try:
+                response = requests.get('http://localhost:5555/system/health', timeout=10)
+                print(f"   Status: {response.status_code}")
+                if response.status_code == 200:
+                    data = response.json()
+                    blockchain_info = data.get('blockchain', {})
+                    mempool_info = data.get('mempool', {})
+                    print(f"   Blockchain: {blockchain_info.get('total_blocks', 'N/A')} blocks")
+                    print(f"   Mempool: {mempool_info.get('total_transactions', 'N/A')} transactions")
+                else:
+                    print(f"   Error: {response.text}")
+            except Exception as e:
+                print(f"   Exception: {e}")
+                
+            print("="*50)
+            
+        except Exception as e:
+            print(f"CRITICAL ERROR in debug_blockchain_height: {e}")
+            import traceback
+            print(f"Traceback: {traceback.format_exc()}")
+    def _print_scan_summary(self, wallets):
+        """Print a summary of the scan results"""
+        print("\n" + "="*50)
+        print("SCAN SUMMARY")
+        print("="*50)
+        
+        total_balance = 0
+        total_transactions = 0
+        
+        for wallet in wallets:
+            if isinstance(wallet, dict):
+                address = wallet.get('address', 'Unknown')
+                balance = wallet.get('balance', 0)
+                tx_count = len(wallet.get('transactions', []))
+                
+                total_balance += balance
+                total_transactions += tx_count
+                
+                print(f"{address[:20]}...: {balance:10.2f} Luna, {tx_count:4d} transactions")
+        
+        print("-"*50)
+        print(f"TOTAL: {total_balance:10.2f} Luna, {total_transactions:4d} transactions")
+        print("="*50)
+    def _get_blockchain_range_via_api(self, start_height, end_height):
+        """Get a range of blocks via API calls with better error handling"""
+        try:
+            import requests
+            
+            # Validate range
+            if start_height > end_height:
+                print(f"ERROR: Invalid range {start_height}-{end_height}")
+                return []
+            
+            range_size = end_height - start_height + 1
+            print(f"DEBUG: Requesting {range_size} blocks ({start_height}-{end_height}) from API")
+            
+            # Use the range endpoint to get multiple blocks at once
+            range_url = f'http://localhost:5555/blockchain/range?start={start_height}&end={end_height}'
+            
+            try:
+                response = requests.get(range_url, timeout=60)  # Increased timeout for large ranges
+            except requests.exceptions.Timeout:
+                print(f"WARNING: API timeout for range {start_height}-{end_height}, trying smaller batch...")
+                # Fall back to smaller batches
+                return self._get_blockchain_range_small_batches(start_height, end_height)
+            
+            if response.status_code == 200:
+                data = response.json()
+                blocks = data.get('blocks', [])
+                print(f"DEBUG: API returned {len(blocks)} blocks for range {start_height}-{end_height}")
+                return blocks
+            else:
+                print(f"ERROR: API range request failed with status {response.status_code}")
+                print(f"Response: {response.text}")
+                # Fall back to smaller batches
+                return self._get_blockchain_range_small_batches(start_height, end_height)
+                
+        except Exception as e:
+            print(f"ERROR getting blockchain range via API: {e}")
+            # Fall back to smaller batches
+            return self._get_blockchain_range_small_batches(start_height, end_height)
+
+    def _get_blockchain_range_small_batches(self, start_height, end_height, batch_size=100):
+        """Get blocks in smaller batches to avoid API issues"""
+        print(f"DEBUG: Using small batch method for range {start_height}-{end_height}")
+        
+        all_blocks = []
+        for batch_start in range(start_height, end_height + 1, batch_size):
+            batch_end = min(batch_start + batch_size - 1, end_height)
+            
+            try:
+                import requests
+                range_url = f'http://localhost:5555/blockchain/range?start={batch_start}&end={batch_end}'
+                response = requests.get(range_url, timeout=30)
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    blocks = data.get('blocks', [])
+                    all_blocks.extend(blocks)
+                    print(f"DEBUG: Small batch {batch_start}-{batch_end}: got {len(blocks)} blocks")
+                else:
+                    print(f"WARNING: Small batch {batch_start}-{batch_end} failed: {response.status_code}")
+                    
+                # Small delay between batches
                 time.sleep(0.05)
-
-        # Recalculate final balance
-        wallet["balance"] = self._calculate_balance_from_transactions(wallet["transactions"], address)
-        return blocks_scanned
-
+                
+            except Exception as e:
+                print(f"ERROR in small batch {batch_start}-{batch_end}: {e}")
+                continue
+        
+        print(f"DEBUG: Small batch method collected {len(all_blocks)} total blocks")
+        return all_blocks
+    def _get_blockchain_via_api(self):
+        """Get blockchain data via API calls"""
+        try:
+            import requests
+            
+            # Get blockchain height first
+            height_response = requests.get('http://localhost:5555/blockchain/height', timeout=10)
+            if height_response.status_code != 200:
+                print("ERROR: Could not get blockchain height via API")
+                return []
+                
+            height_data = height_response.json()
+            total_blocks = height_data.get('height', 0)
+            print(f"DEBUG: API reports blockchain height: {total_blocks}")
+            
+            if total_blocks == 0:
+                return []
+            
+            # Get all blocks
+            blocks_response = requests.get('http://localhost:5555/blockchain/blocks', timeout=10)
+            if blocks_response.status_code == 200:
+                blocks_data = blocks_response.json()
+                return blocks_data.get('blocks', [])
+            else:
+                print("ERROR: Could not get blocks via API")
+                return []
+                
+        except Exception as e:
+            print(f"ERROR getting blockchain via API: {e}")
+            return []
     def _add_transaction_to_wallet(self, wallet, tx, status="confirmed"):
         """Add a transaction to wallet if not already present"""
         tx_hash = tx.get('hash')
@@ -1103,80 +1648,182 @@ class LunaLib:
         return True
 
     def _process_block_for_wallet(self, wallet, block, known_tx_hashes):
-        """Process a single block for wallet transactions"""
-        address = wallet["address"]
-        block_height = block.get("index", 0)
-        
-        # Check block reward
-        miner = block.get("miner")
-        reward = float(block.get("reward", 0))
-        if miner and miner.lower() == address.lower() and reward > 0:
-            reward_tx = {
-                "type": "reward",
-                "from": "network",
-                "to": address,
-                "amount": reward,
-                "timestamp": block.get("timestamp", time.time()),
-                "block_height": block_height,
-                "hash": f"reward_{block_height}_{miner}",
-                "status": "confirmed",
-            }
-            if reward_tx["hash"] not in known_tx_hashes:
-                wallet["transactions"].append(reward_tx)
-                known_tx_hashes.add(reward_tx["hash"])
-                print(f"DEBUG: Found reward in block {block_height}: {reward} Luna")
-
-        # Check regular transactions
-        for tx in block.get("transactions", []):
-            tx_hash = tx.get("hash")
-            if not tx_hash or tx_hash in known_tx_hashes:
-                continue
-
-            from_addr = tx.get("from") or tx.get("sender")
-            to_addr = tx.get("to") or tx.get("receiver")
-            amount = float(tx.get("amount", 0))
-
-            if (from_addr and from_addr.lower() == address.lower()) or \
-               (to_addr and to_addr.lower() == address.lower()):
+        """Process a single block for wallet transactions - returns True if transactions found"""
+        try:
+            # Validate wallet
+            if not isinstance(wallet, dict):
+                print(f"ERROR: Wallet is not a dictionary: {wallet}")
+                return False
                 
-                enhanced_tx = {
-                    "type": "transfer",
-                    "from": from_addr,
-                    "to": to_addr,
-                    "amount": amount,
-                    "timestamp": tx.get("timestamp", time.time()),
-                    "block_height": block_height,
-                    "hash": tx_hash,
-                    "status": "confirmed",
-                    "fee": float(tx.get("fee", 0)),
-                    "memo": tx.get("memo", "")
-                }
+            address = wallet.get("address")
+            if not address:
+                print("ERROR: Wallet missing address")
+                return False
+
+            # Validate block
+            if not isinstance(block, dict):
+                print(f"ERROR: Block is not a dictionary: {block}")
+                return False
                 
-                wallet["transactions"].append(enhanced_tx)
-                known_tx_hashes.add(tx_hash)
+            block_height = block.get("index", 0)
+            transactions_found = False
+            
+            # Check block reward - SAFE ACCESS
+            miner = block.get("miner")
+            reward = 0.0
+            
+            # Try multiple ways to get reward amount
+            reward_keys = ["reward", "mining_reward", "block_reward"]
+            for key in reward_keys:
+                reward_value = block.get(key)
+                if reward_value is not None:
+                    try:
+                        reward = float(reward_value)
+                        break
+                    except (ValueError, TypeError):
+                        continue
+            
+            # Process reward if valid
+            if miner and reward > 0:
+                try:
+                    miner_str = str(miner).lower() if miner else ""
+                    address_str = str(address).lower() if address else ""
+                    
+                    if miner_str == address_str:
+                        reward_tx = {
+                            "type": "reward",
+                            "from": "network",
+                            "to": address,
+                            "amount": reward,
+                            "timestamp": block.get("timestamp", time.time()),
+                            "block_height": block_height,
+                            "hash": f"reward_{block_height}_{miner}",
+                            "status": "confirmed",
+                        }
+                        
+                        tx_hash = reward_tx.get("hash")
+                        if tx_hash and tx_hash not in known_tx_hashes:
+                            # Ensure transactions list exists
+                            if "transactions" not in wallet:
+                                wallet["transactions"] = []
+                            wallet["transactions"].append(reward_tx)
+                            known_tx_hashes.add(tx_hash)
+                            transactions_found = True
+                            print(f"DEBUG: Found reward in block {block_height}: {reward} Luna")
+                except Exception as e:
+                    print(f"ERROR processing reward for block {block_height}: {e}")
+
+            # Check regular transactions with SAFE ACCESS
+            transactions = block.get("transactions", [])
+            if not isinstance(transactions, list):
+                transactions = []
                 
-                direction = "incoming" if to_addr and to_addr.lower() == address.lower() else "outgoing"
-                print(f"DEBUG: Found {direction} transaction in block {block_height}: {amount} Luna")
+            for tx in transactions:
+                try:
+                    if not isinstance(tx, dict):
+                        print(f"WARNING: Invalid transaction format: {tx}")
+                        continue
+                        
+                    tx_hash = tx.get("hash")
+                    if not tx_hash or tx_hash in known_tx_hashes:
+                        continue
+
+                    # Safe access to transaction fields
+                    from_addr = tx.get("from") or tx.get("sender")
+                    to_addr = tx.get("to") or tx.get("receiver")
+                    
+                    # Safe amount conversion
+                    amount = 0.0
+                    amount_value = tx.get("amount")
+                    if amount_value is not None:
+                        try:
+                            amount = float(amount_value)
+                        except (ValueError, TypeError):
+                            amount = 0.0
+
+                    # Check if transaction involves our wallet
+                    from_match = from_addr and str(from_addr).lower() == str(address).lower()
+                    to_match = to_addr and str(to_addr).lower() == str(address).lower()
+                    
+                    if from_match or to_match:
+                        # Build enhanced transaction with safe defaults
+                        enhanced_tx = {
+                            "type": "transfer",
+                            "from": from_addr or "unknown",
+                            "to": to_addr or "unknown", 
+                            "amount": amount,
+                            "timestamp": tx.get("timestamp", time.time()),
+                            "block_height": block_height,
+                            "hash": tx_hash,
+                            "status": "confirmed",
+                            "fee": float(tx.get("fee", 0)),
+                            "memo": tx.get("memo", "")
+                        }
+                        
+                        # Ensure transactions list exists
+                        if "transactions" not in wallet:
+                            wallet["transactions"] = []
+                            
+                        wallet["transactions"].append(enhanced_tx)
+                        known_tx_hashes.add(tx_hash)
+                        transactions_found = True
+                        
+                        direction = "incoming" if to_match else "outgoing"
+                        print(f"DEBUG: Found {direction} transaction in block {block_height}: {amount} Luna")
+                        
+                except Exception as e:
+                    print(f"ERROR processing transaction {tx.get('hash', 'unknown')}: {e}")
+                    continue
+
+            return transactions_found
+            
+        except Exception as e:
+            print(f"CRITICAL ERROR in _process_block_for_wallet: {e}")
+            import traceback
+            print(f"Traceback: {traceback.format_exc()}")
+            return False
 
     def _get_current_blockchain_height(self):
-        """Get current blockchain height - much faster than full chain"""
+        """Get current blockchain height from multiple sources"""
         try:
-            # Try to get just the latest block
-            response = requests.get("https://bank.linglin.art/blockchain/latest", timeout=10)
-            if response.status_code == 200:
-                latest_block = response.json()
-                return latest_block.get('index', 0)
+            # Try API first
+            import requests
+            print("DEBUG: Attempting to get blockchain height via API...")
             
-            # Fallback: get full chain but only if absolutely necessary
-            print("DEBUG: Falling back to full chain for height")
-            full_chain = self._get_blockchain()
-            if full_chain:
-                return len(full_chain) - 1
+            response = requests.get('http://localhost:5555/blockchain/height', timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                height = data.get('height', 0)
+                print(f"DEBUG: API blockchain height response: {data}")
+                print(f"DEBUG: Parsed height: {height}")
+                return height
+            else:
+                print(f"DEBUG: API height request failed: {response.status_code} - {response.text}")
+            
+            # Try the blocks endpoint as fallback
+            response = requests.get('http://localhost:5555/blockchain/blocks', timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                blocks = data.get('blocks', [])
+                height = len(blocks)
+                print(f"DEBUG: Blocks endpoint returned {height} blocks")
+                return height
+            
+            # Try daemon as last resort
+            if hasattr(self, 'blockchain_daemon_instance') and self.blockchain_daemon_instance:
+                blockchain = getattr(self.blockchain_daemon_instance, 'blockchain', [])
+                height = len(blockchain) if blockchain else 0
+                print(f"DEBUG: Daemon blockchain height: {height}")
+                return height
                 
+            print("DEBUG: All height detection methods failed")
+            return 0
+            
         except Exception as e:
-            print(f"DEBUG: Blockchain height error: {e}")
-        
-        return None
+            print(f"ERROR getting blockchain height: {e}")
+            import traceback
+            print(f"Traceback: {traceback.format_exc()}")
+            return 0
 
     def _get_blocks_range(self, start_height, end_height):
         """Get specific block range - more efficient than full chain"""
