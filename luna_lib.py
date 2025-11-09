@@ -1178,7 +1178,8 @@ class LunaLib:
                     # Process the block
                     if self._process_block_for_wallet(wallet, block_data, known_tx_hashes):
                         blocks_scanned += 1
-                        transactions_found += 1  # We found at least one transaction
+                        transactions_found += len([tx for tx in block_data.get('transactions', []) 
+                                                if tx.get('hash') in known_tx_hashes])
                     
                 except Exception as e:
                     print(f"ERROR processing block {block_height}: {e}")
@@ -1616,15 +1617,19 @@ class LunaLib:
             print(f"ERROR getting blockchain via API: {e}")
             return []
     def _add_transaction_to_wallet(self, wallet, tx, status="confirmed"):
-        """Add a transaction to wallet if not already present"""
+        """Add a transaction to wallet if not already present - returns True if added"""
         tx_hash = tx.get('hash')
         if not tx_hash:
             return False
             
-        # Check if transaction already exists
+        # Ensure transactions list exists
+        if "transactions" not in wallet:
+            wallet["transactions"] = []
+        
+        # Check if transaction already exists by hash
         for existing_tx in wallet['transactions']:
             if existing_tx.get('hash') == tx_hash:
-                return False
+                return False  # Transaction already exists
         
         # Add new transaction
         from_addr = tx.get('from') or tx.get('sender', '')
@@ -1668,6 +1673,13 @@ class LunaLib:
             block_height = block.get("index", 0)
             transactions_found = False
             
+            # Ensure transactions list exists and create a set of existing transaction hashes
+            if "transactions" not in wallet:
+                wallet["transactions"] = []
+            
+            # Create a set of existing transaction hashes for duplicate checking
+            existing_tx_hashes = {tx.get("hash") for tx in wallet["transactions"] if tx.get("hash")}
+            
             # Check block reward - SAFE ACCESS
             miner = block.get("miner")
             reward = 0.0
@@ -1690,24 +1702,24 @@ class LunaLib:
                     address_str = str(address).lower() if address else ""
                     
                     if miner_str == address_str:
-                        reward_tx = {
-                            "type": "reward",
-                            "from": "network",
-                            "to": address,
-                            "amount": reward,
-                            "timestamp": block.get("timestamp", time.time()),
-                            "block_height": block_height,
-                            "hash": f"reward_{block_height}_{miner}",
-                            "status": "confirmed",
-                        }
+                        reward_tx_hash = f"reward_{block_height}_{miner}"
                         
-                        tx_hash = reward_tx.get("hash")
-                        if tx_hash and tx_hash not in known_tx_hashes:
-                            # Ensure transactions list exists
-                            if "transactions" not in wallet:
-                                wallet["transactions"] = []
+                        # Check if this reward transaction already exists
+                        if reward_tx_hash not in existing_tx_hashes and reward_tx_hash not in known_tx_hashes:
+                            reward_tx = {
+                                "type": "reward",
+                                "from": "network",
+                                "to": address,
+                                "amount": reward,
+                                "timestamp": block.get("timestamp", time.time()),
+                                "block_height": block_height,
+                                "hash": reward_tx_hash,
+                                "status": "confirmed",
+                            }
+                            
                             wallet["transactions"].append(reward_tx)
-                            known_tx_hashes.add(tx_hash)
+                            existing_tx_hashes.add(reward_tx_hash)
+                            known_tx_hashes.add(reward_tx_hash)
                             transactions_found = True
                             print(f"DEBUG: Found reward in block {block_height}: {reward} Luna")
                 except Exception as e:
@@ -1725,7 +1737,11 @@ class LunaLib:
                         continue
                         
                     tx_hash = tx.get("hash")
-                    if not tx_hash or tx_hash in known_tx_hashes:
+                    if not tx_hash:
+                        continue
+                    
+                    # Check if transaction already exists in wallet or in current scan session
+                    if tx_hash in existing_tx_hashes or tx_hash in known_tx_hashes:
                         continue
 
                     # Safe access to transaction fields
@@ -1760,11 +1776,9 @@ class LunaLib:
                             "memo": tx.get("memo", "")
                         }
                         
-                        # Ensure transactions list exists
-                        if "transactions" not in wallet:
-                            wallet["transactions"] = []
-                            
+                        # Add to wallet transactions
                         wallet["transactions"].append(enhanced_tx)
+                        existing_tx_hashes.add(tx_hash)
                         known_tx_hashes.add(tx_hash)
                         transactions_found = True
                         
