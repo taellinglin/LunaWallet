@@ -22,7 +22,7 @@ class LunaWalletApp:
     """Luna Wallet Application with Red Theme - Responsive Mobile Support"""
     
     def __init__(self):
-        self.wallet_core = LunaLib(auto_scan=False)
+        self.wallet_core = LunaLib(auto_scan=True)
         self.wallet_core.on_sync_progress = self.on_sync_progress
         self.minimized_to_tray = False
         self.current_tab_index = 0
@@ -84,10 +84,10 @@ class LunaWalletApp:
         
         page.padding = 0
         if not self.is_mobile:
-            page.window.width = 1024
-            page.window.height = 768
-            page.window.min_width = 800
-            page.window.min_height = 600
+            page.window.width = 1080
+            page.window.height = 1920
+            page.window.min_width = 1080
+            page.window.min_height = 1080
             page.window.center()
             
         page.window.icon = "./wallet_icon.png"
@@ -97,14 +97,18 @@ class LunaWalletApp:
         page.on_click = self.on_mouse_activity
         page.on_resize = self.on_page_resize
         
+        # Create main layout but DON'T add it to page yet
         self.main_layout = self.create_main_layout()
-        page.add(self.main_layout)
         
+        # Show lock screen FIRST before adding main content
         wallet_file_path = os.path.join(SecureDataManager.get_data_dir(), "wallet_encrypted.dat")
         if os.path.exists(wallet_file_path):
             self.show_lock_screen("Welcome Back", "Please unlock your wallet to continue")
         else:
             self.show_lock_screen("Welcome to Luna Wallet", "Create your first wallet to get started", show_create=True)
+        
+        # Now add the main layout (it will be behind the lock screen overlay)
+        page.add(self.main_layout)
         
         threading.Thread(target=self.activity_monitor, daemon=True).start()
 
@@ -331,22 +335,12 @@ class LunaWalletApp:
     def show_lock_screen(self, title, subtitle, show_create=False):
         self.is_locked = True
 
-        # Adjust lock screen for mobile
-        if self.is_mobile:
-            content_width = min(400, self.page.width - 40)
-            content_padding = 20
-        else:
-            content_width = 500
-            content_padding = 40
-
+        # Create a full-screen overlay that covers EVERYTHING
         overlay_container = ft.Container(
-            width=self.page.width,
-            height=self.page.height,
-            left=0,
-            top=-self.page.height,
-            bgcolor="#1a0f0f",
-            padding=content_padding,
-            animate_position=ft.Animation(500, "easeOut"),
+            expand=True,
+            bgcolor="#1a0f0f",  # Same as main background
+            padding=20,
+            alignment=ft.alignment.center,
         )
 
         def unlock_wallet(e=None):
@@ -358,6 +352,7 @@ class LunaWalletApp:
                 self.show_snack_bar("Please enter a password")
                 return
             
+            # Disable UI during unlock
             for control in main_content.content.controls:
                 if isinstance(control, ft.Row) and control.controls:
                     if isinstance(control.controls[0], ft.ElevatedButton):
@@ -382,9 +377,7 @@ class LunaWalletApp:
                         self.update_wallets_list()
                         self.update_transaction_history()
                         
-                        overlay_container.top = -self.page.height
-                        self.page.update()
-                        time.sleep(0.5)
+                        # Remove overlay completely
                         self.page.overlay.clear()
                         self.page.update()
                         
@@ -412,78 +405,88 @@ class LunaWalletApp:
             threading.Thread(target=unlock_thread, daemon=True).start()
 
         def create_wallet(e):
-            overlay_container.top = -self.page.height
-            self.page.update()
-            time.sleep(0.5)
+            # Remove overlay first
             self.page.overlay.clear()
             self.page.update()
+            time.sleep(0.1)  # Small delay for clean transition
             self.show_create_wallet_dialog()
 
-        # Adjust icon size for mobile
+        # Adjust content for mobile
+        content_width = min(400, self.page.width - 40) if self.is_mobile else 500
         icon_size = 60 if self.is_mobile else 100
         title_size = 24 if self.is_mobile else 32
         subtitle_size = 14 if self.is_mobile else 18
 
-        main_content = ft.Container(
-            content=ft.Column([
-                ft.Row([
-                    ft.Container(
-                        content=ft.Image(
-                            src="./wallet_icon.png",
-                            width=icon_size,
-                            height=icon_size,
-                            fit=ft.ImageFit.CONTAIN,
-                            color="#dc3545",
-                            color_blend_mode=ft.BlendMode.SRC_IN,
-                            error_content=ft.Text("🔴", size=icon_size//2)
-                        ),
-                        margin=ft.margin.only(right=20 if self.is_mobile else 25),
-                        bgcolor="#00000000",
-                    ),
-                    ft.Column([
-                        ft.Text(title, size=title_size, color="#dc3545", weight="bold"),
-                        ft.Text(subtitle, size=subtitle_size, color="#f8d7da"),
-                    ])
-                ], alignment=ft.MainAxisAlignment.CENTER),
-                
-                ft.Container(height=30 if self.is_mobile else 40),
-                
+        # Create the lock screen content
+        lock_content = [
+            ft.Row([
                 ft.Container(
-                    content=ft.TextField(
-                        label="Wallet Password",
-                        hint_text="Enter your wallet password",
-                        password=True,
-                        can_reveal_password=True,
-                        width=content_width,
-                        color="#f8d7da",
-                        border_color="#5c2e2e",
-                        autofocus=True,
-                        on_submit=unlock_wallet if not show_create else None
-                    ) if not show_create else ft.Container(height=0),
+                    content=ft.Image(
+                        src="./wallet_icon.png",
+                        width=icon_size,
+                        height=icon_size,
+                        fit=ft.ImageFit.CONTAIN,
+                        color="#dc3545",
+                        color_blend_mode=ft.BlendMode.SRC_IN,
+                        error_content=ft.Text("🔴", size=icon_size//2)
+                    ),
+                    margin=ft.margin.only(right=20 if self.is_mobile else 25),
+                ),
+                ft.Column([
+                    ft.Text(title, size=title_size, color="#dc3545", weight="bold"),
+                    ft.Text(subtitle, size=subtitle_size, color="#f8d7da"),
+                ])
+            ], alignment=ft.MainAxisAlignment.CENTER),
+            
+            ft.Container(height=30 if self.is_mobile else 40),
+        ]
+
+        # Add password field only if not creating new wallet
+        password_field = None
+        if not show_create:
+            password_field = ft.TextField(
+                label="Wallet Password",
+                hint_text="Enter your wallet password",
+                password=True,
+                can_reveal_password=True,
+                width=content_width,
+                color="#f8d7da",
+                border_color="#5c2e2e",
+                autofocus=True,
+                on_submit=unlock_wallet
+            )
+            lock_content.extend([
+                ft.Container(
+                    content=password_field,
                     alignment=ft.alignment.center
                 ),
-                
                 ft.Container(height=15 if self.is_mobile else 20),
-                
-                ft.Row([
-                    ft.ElevatedButton(
-                        "Create New Wallet" if show_create else "Unlock Wallet",
-                        on_click=create_wallet if show_create else unlock_wallet,
-                        style=ft.ButtonStyle(
-                            color="#ffffff",
-                            bgcolor="#dc3545",
-                            padding=ft.padding.symmetric(
-                                horizontal=25 if self.is_mobile else 30, 
-                                vertical=12 if self.is_mobile else 15
-                            ),
-                            shape=ft.RoundedRectangleBorder(radius=4)
+            ])
+
+        # Add action button
+        lock_content.extend([
+            ft.Row([
+                ft.ElevatedButton(
+                    "Create New Wallet" if show_create else "Unlock Wallet",
+                    on_click=create_wallet if show_create else unlock_wallet,
+                    style=ft.ButtonStyle(
+                        color="#ffffff",
+                        bgcolor="#dc3545",
+                        padding=ft.padding.symmetric(
+                            horizontal=25 if self.is_mobile else 30, 
+                            vertical=12 if self.is_mobile else 15
                         ),
-                        height=45
-                    )
-                ], alignment=ft.MainAxisAlignment.CENTER),
-                
+                        shape=ft.RoundedRectangleBorder(radius=4)
+                    ),
+                    height=45
+                )
+            ], alignment=ft.MainAxisAlignment.CENTER),
+        ])
+
+        # Add links only for unlock screen
+        if not show_create:
+            lock_content.extend([
                 ft.Container(height=15 if self.is_mobile else 20),
-                
                 ft.Row([
                     ft.Column([
                         ft.TextButton(
@@ -497,25 +500,21 @@ class LunaWalletApp:
                             style=ft.ButtonStyle(color="#dc3545", shape=ft.RoundedRectangleBorder(radius=2))
                         )
                     ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=5)
-                ], alignment=ft.MainAxisAlignment.CENTER) if not show_create else ft.Container()
-            ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, scroll=ft.ScrollMode.ADAPTIVE),
+                ], alignment=ft.MainAxisAlignment.CENTER)
+            ])
+
+        main_content = ft.Container(
+            content=ft.Column(lock_content, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
             alignment=ft.alignment.center,
             width=self.page.width,
             height=self.page.height,
         )
         
-        password_field = None
-        if not show_create:
-            for control in main_content.content.controls:
-                if hasattr(control, 'content') and isinstance(control.content, ft.TextField):
-                    password_field = control.content
-                    break
-        
         overlay_container.content = main_content
-        self.page.overlay.append(overlay_container)
-        self.page.update()
         
-        overlay_container.top = 0
+        # Clear any existing overlays and add this one
+        self.page.overlay.clear()
+        self.page.overlay.append(overlay_container)
         self.page.update()
 
     def create_sidebar(self):
@@ -2269,6 +2268,12 @@ class LunaWalletApp:
     def lock_wallet(self):
         self.is_locked = True
         self.wallet_core.lock_wallet()
+        
+        # Clear any existing overlays first
+        self.page.overlay.clear()
+        self.page.update()
+        
+        # Then show the lock screen
         self.show_lock_screen("Wallet Locked", "Please unlock to continue")
         self.add_log_message("Wallet locked", "info")
         
