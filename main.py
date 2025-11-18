@@ -1,29 +1,44 @@
 import flet as ft
 import threading
 import time
-import json
-import io
 import os
-import sys
-from typing import Dict, List, Optional
-import hashlib
-import secrets
-import base64
-from cryptography.fernet import Fernet
+import json
+import shutil
 from datetime import datetime
-from PIL import Image
-import requests
+import base64
+from typing import Dict
+# Import GUI components
+from gui.page_create_wallet import CreateWalletPage
+from gui.page_export_key import ExportKeyPage
+from gui.page_import_wallet import ImportWalletPage
+from gui.page_lock import LockPage
+from gui.page_receive import ReceivePage
+from gui.page_send import SendPage
+from gui.page_wallet import WalletPage
+from gui.tab_menu import MenuTab
+from gui.tab_transactions import TransactionsTab
+from gui.tab_wallets import WalletsTab
 
-# Import the wallet library
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from luna_lib import LunaLib, SecureDataManager
+# Import lunalib components
+from lunalib.core.wallet import LunaWallet
+from lunalib.core.blockchain import BlockchainManager
+from lunalib.transactions.transactions import TransactionManager
+from lunalib.storage.encryption import EncryptionManager
+from lunalib.storage.database import WalletDatabase
+
+# Import utils
+from utils import format_address, format_balance, format_timestamp, get_transaction_color, get_transaction_icon
 
 class LunaWalletApp:
     """Luna Wallet Application with Red Theme - Responsive Mobile Support"""
     
     def __init__(self):
-        self.wallet_core = LunaLib(auto_scan=True)
-        self.wallet_core.on_sync_progress = self.on_sync_progress
+        self.wallet_core = LunaWallet()
+        self.blockchain_manager = BlockchainManager(endpoint_url="https://bank.linglin.art")
+        self.transaction_manager = TransactionManager()
+        self.encryption_manager = EncryptionManager()
+        self.database = WalletDatabase()
+        
         self.minimized_to_tray = False
         self.current_tab_index = 0
         self.snack_bar = None
@@ -33,43 +48,465 @@ class LunaWalletApp:
         self.is_locked = True
         self.is_mobile = False
         self.is_landscape = False
-        self.current_layout = "desktop"  # desktop, mobile_portrait, mobile_landscape
-
-        # Set up wallet callbacks
-        self.wallet_core.on_balance_changed = self.on_balance_changed
-        self.wallet_core.on_transaction_received = self.on_transaction_received
-        self.wallet_core.on_sync_complete = self.on_sync_complete
-        self.wallet_core.on_error = self.on_error
+        self.current_layout = "desktop"
+        self.sidebar_collapsed = False
+        self.sidebar_width = 240
+        self.sidebar_collapsed_width = 60
 
         # Refs for UI elements
         self.refs = {}
 
+        # Initialize page references
+        self.current_page = None
+        self.pages = {}
+
+        # Wallet persistence state - ENHANCED
+        self.wallet_file_path = self._get_wallet_file_path()
+        self.last_save_time = 0
+        self.save_cooldown = 2  # seconds between saves to prevent too frequent saves
+        self.backup_count = 0
+        self.max_backups = 5
+        
+        # NEW: Initialize data directory and load any existing wallet metadata
+        self._ensure_data_directory()
+        self._load_wallet_metadata()
+
+    def _load_wallet_metadata(self):
+        """Load basic wallet metadata without requiring password"""
+        try:
+            if os.path.exists(self.wallet_file_path):
+                print(f"DEBUG: Wallet file exists at: {self.wallet_file_path}")
+                
+                # Check file size first
+                file_size = os.path.getsize(self.wallet_file_path)
+                print(f"DEBUG: Wallet file size: {file_size} bytes")
+                
+                if file_size == 0:
+                    print("DEBUG: Wallet file is empty")
+                    self.wallet_count = 0
+                    self.existing_wallet_address = None
+                    return
+                
+                with open(self.wallet_file_path, 'r', encoding='utf-8') as f:
+                    wallet_data = json.load(f)
+                
+                # Store basic info for UI display
+                if 'wallets' in wallet_data:
+                    # Handle both dict and list formats
+                    wallets = wallet_data['wallets']
+                    if isinstance(wallets, dict):
+                        self.wallet_count = len(wallets)
+                        if self.wallet_count > 0:
+                            # Get first wallet address from dict keys
+                            first_address = list(wallets.keys())[0]
+                            self.existing_wallet_address = first_address
+                            print(f"DEBUG: Found {self.wallet_count} wallets (dict format), first address: {self.existing_wallet_address}")
+                        else:
+                            self.wallet_count = 0
+                            self.existing_wallet_address = None
+                            print("DEBUG: Wallet file exists but has 0 wallets (dict)")
+                    elif isinstance(wallets, list):
+                        self.wallet_count = len(wallets)
+                        if self.wallet_count > 0:
+                            # Get first wallet address from list
+                            first_wallet = wallets[0]
+                            if isinstance(first_wallet, dict):
+                                self.existing_wallet_address = first_wallet.get('address', '')
+                            else:
+                                self.existing_wallet_address = str(first_wallet)
+                            print(f"DEBUG: Found {self.wallet_count} wallets (list format), first address: {self.existing_wallet_address}")
+                        else:
+                            self.wallet_count = 0
+                            self.existing_wallet_address = None
+                            print("DEBUG: Wallet file exists but has 0 wallets (list)")
+                    else:
+                        self.wallet_count = 0
+                        self.existing_wallet_address = None
+                        print(f"DEBUG: Unexpected wallets format: {type(wallets)}")
+                else:
+                    self.wallet_count = 0
+                    self.existing_wallet_address = None
+                    print("DEBUG: Wallet file exists but no 'wallets' key found")
+                    
+            else:
+                self.wallet_count = 0
+                self.existing_wallet_address = None
+                print(f"DEBUG: No wallet file found at: {self.wallet_file_path}")
+        except Exception as e:
+            print(f"DEBUG: Error loading wallet metadata: {e}")
+            import traceback
+            traceback.print_exc()
+            self.wallet_count = 0
+            self.existing_wallet_address = None
+
+    def _get_wallet_file_path(self):
+        """Get the path for wallet data file"""
+        data_dir = self._get_data_directory()
+        wallet_file = os.path.join(data_dir, "wallet_data.json")
+        return wallet_file
+
+    def _get_backup_path(self, backup_id):
+        """Get path for backup file"""
+        data_dir = self._get_data_directory()
+        backup_dir = os.path.join(data_dir, "backups")
+        os.makedirs(backup_dir, exist_ok=True)
+        return os.path.join(backup_dir, f"wallet_backup_{backup_id}.json")
+
+    def _ensure_data_directory(self):
+        """Ensure data directory exists"""
+        data_dir = self._get_data_directory()
+        os.makedirs(data_dir, exist_ok=True)
+        backup_dir = os.path.join(data_dir, "backups")
+        os.makedirs(backup_dir, exist_ok=True)
+        return data_dir
+
+    def _get_data_directory(self):
+        """Get the application data directory"""
+        try:
+            # Try to get data directory from database or wallet core
+            if hasattr(self.database, 'data_dir') and self.database.data_dir:
+                return self.database.data_dir
+            elif hasattr(self.wallet_core, 'data_dir') and self.wallet_core.data_dir:
+                return self.wallet_core.data_dir
+            else:
+                # Default data directories to check
+                default_dirs = [
+                    os.path.join(os.path.expanduser("~"), ".luna_wallet"),
+                    os.path.join(os.path.expanduser("~"), "LunaWallet"),
+                    os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"),
+                    "./data"
+                ]
+                for dir_path in default_dirs:
+                    if os.path.exists(dir_path):
+                        return dir_path
+                # Create the first default if none exist
+                os.makedirs(default_dirs[0], exist_ok=True)
+                return default_dirs[0]
+        except Exception as e:
+            print(f"DEBUG: Error getting data directory: {e}")
+            fallback_dir = os.path.join(os.path.expanduser("~"), ".luna_wallet")
+            os.makedirs(fallback_dir, exist_ok=True)
+            return fallback_dir
+
+    def save_wallet_data(self, force_save=False, is_backup=False):
+        """Save wallet data to persistent storage"""
+        try:
+            current_time = time.time()
+            
+            # Rate limiting for normal saves
+            if not force_save and not is_backup:
+                if current_time - self.last_save_time < self.save_cooldown:
+                    return True
+            
+            if self.is_locked:
+                print("DEBUG: Wallet is locked, skipping save")
+                return False
+            
+            # Ensure data directory exists
+            self._ensure_data_directory()
+            
+            # Prepare wallet data for saving
+            wallet_data = self._prepare_wallet_data()
+            if not wallet_data:
+                print("DEBUG: No wallet data to save")
+                return False
+            
+            # Determine file path
+            if is_backup:
+                self.backup_count = (self.backup_count % self.max_backups) + 1
+                save_path = self._get_backup_path(self.backup_count)
+            else:
+                save_path = self.wallet_file_path
+            
+            # Create temporary file first for atomic write
+            temp_path = save_path + ".tmp"
+            
+            try:
+                # Save to temporary file
+                with open(temp_path, 'w', encoding='utf-8') as f:
+                    json.dump(wallet_data, f, indent=2, ensure_ascii=False)
+                
+                # Atomic replace
+                if os.path.exists(save_path):
+                    os.replace(temp_path, save_path)
+                else:
+                    os.rename(temp_path, save_path)
+                
+                self.last_save_time = current_time
+                
+                if not is_backup:
+                    print(f"DEBUG: Wallet data saved successfully to {save_path}")
+                else:
+                    print(f"DEBUG: Wallet backup created: {save_path}")
+                
+                return True
+                
+            except Exception as e:
+                # Clean up temporary file on error
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+                raise e
+                
+        except Exception as e:
+            print(f"DEBUG: Error saving wallet data: {e}")
+            return False
+
+    def _prepare_wallet_data(self):
+        """Prepare wallet data for saving - compatible with LunaWallet structure"""
+        try:
+            wallet_data = {
+                'version': '1.0',
+                'timestamp': datetime.now().isoformat(),
+                'last_sync': getattr(self, 'last_sync_time', None),
+                'wallets': {},
+                'current_wallet_address': None,
+                'settings': {
+                    'auto_lock_minutes': self.auto_lock_minutes,
+                    'selected_wallet_index': self.selected_wallet_index
+                }
+            }
+            
+            # Get wallet information from LunaWallet
+            if hasattr(self.wallet_core, 'wallets') and self.wallet_core.wallets:
+                # LunaWallet stores wallets as dict: {address: wallet_data}
+                for address, wallet_info in self.wallet_core.wallets.items():
+                    # Convert wallet info to serializable format
+                    serializable_wallet = wallet_info.copy()
+                    
+                    # Handle encrypted_private_key - ensure it's bytes for LunaWallet
+                    encrypted_key = serializable_wallet.get('encrypted_private_key')
+                    if encrypted_key and isinstance(encrypted_key, bytes):
+                        # Keep as bytes for LunaWallet compatibility
+                        serializable_wallet['encrypted_private_key'] = base64.b64encode(encrypted_key).decode('utf-8')
+                    
+                    wallet_data['wallets'][address] = serializable_wallet
+                
+                print(f"DEBUG: Prepared {len(wallet_data['wallets'])} wallets for saving")
+            
+            # Get current wallet address
+            if hasattr(self.wallet_core, 'current_wallet_address') and self.wallet_core.current_wallet_address:
+                wallet_data['current_wallet_address'] = self.wallet_core.current_wallet_address
+            
+            return wallet_data
+            
+        except Exception as e:
+            print(f"DEBUG: Error preparing wallet data: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+
+    def load_wallet_data(self):
+        """Load wallet data from persistent storage - compatible with LunaWallet"""
+        try:
+            if not os.path.exists(self.wallet_file_path):
+                print("DEBUG: No wallet data file found")
+                return False
+            
+            print(f"DEBUG: Loading wallet data from: {self.wallet_file_path}")
+            
+            with open(self.wallet_file_path, 'r', encoding='utf-8') as f:
+                wallet_data = json.load(f)
+            
+            print("DEBUG: Wallet data loaded from file")
+            
+            # Restore wallet information to LunaWallet
+            if 'wallets' in wallet_data and wallet_data['wallets']:
+                # Clear existing wallets
+                if hasattr(self.wallet_core, 'wallets'):
+                    self.wallet_core.wallets = {}
+                
+                # Load each wallet
+                for address, wallet_info in wallet_data['wallets'].items():
+                    # Convert back to proper format for LunaWallet
+                    restored_wallet = wallet_info.copy()
+                    
+                    # Handle encrypted_private_key - convert back to bytes
+                    encrypted_key = restored_wallet.get('encrypted_private_key')
+                    if encrypted_key and isinstance(encrypted_key, str):
+                        try:
+                            restored_wallet['encrypted_private_key'] = base64.b64decode(encrypted_key)
+                        except:
+                            # If it's already bytes or in different format, keep as is
+                            pass
+                    
+                    self.wallet_core.wallets[address] = restored_wallet
+                
+                print(f"DEBUG: Restored {len(wallet_data['wallets'])} wallets to LunaWallet")
+                
+                # Restore current wallet address
+                if 'current_wallet_address' in wallet_data and wallet_data['current_wallet_address']:
+                    current_address = wallet_data['current_wallet_address']
+                    self.wallet_core.current_wallet_address = current_address
+                    
+                    # Set current wallet data if it exists
+                    if current_address in self.wallet_core.wallets:
+                        self.wallet_core._set_current_wallet(self.wallet_core.wallets[current_address])
+                        print(f"DEBUG: Restored current wallet: {current_address}")
+                
+                return True
+            
+            print("DEBUG: No wallets found in loaded data")
+            return False
+            
+        except Exception as e:
+            print(f"DEBUG: Error loading wallet data: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+    def _load_from_backup(self):
+        """Try to load wallet data from backup files"""
+        try:
+            backup_dir = os.path.join(self._get_data_directory(), "backups")
+            if not os.path.exists(backup_dir):
+                return False
+            
+            # Get all backup files sorted by modification time (newest first)
+            backup_files = []
+            for file in os.listdir(backup_dir):
+                if file.startswith("wallet_backup_") and file.endswith(".json"):
+                    file_path = os.path.join(backup_dir, file)
+                    backup_files.append((file_path, os.path.getmtime(file_path)))
+            
+            backup_files.sort(key=lambda x: x[1], reverse=True)
+            
+            # Try each backup file until one works
+            for backup_path, _ in backup_files:
+                try:
+                    with open(backup_path, 'r', encoding='utf-8') as f:
+                        wallet_data = json.load(f)
+                    
+                    # Restore from backup
+                    if 'wallets' in wallet_data and wallet_data['wallets']:
+                        if hasattr(self.wallet_core, 'wallets'):
+                            self.wallet_core.wallets = wallet_data['wallets']
+                        
+                        # Copy backup to main file
+                        shutil.copy2(backup_path, self.wallet_file_path)
+                        print(f"DEBUG: Restored wallet from backup: {backup_path}")
+                        return True
+                        
+                except Exception as e:
+                    print(f"DEBUG: Failed to load backup {backup_path}: {e}")
+                    continue
+            
+            return False
+            
+        except Exception as e:
+            print(f"DEBUG: Error loading from backups: {e}")
+            return False
+
+    def create_backup(self):
+        """Create a backup of wallet data"""
+        return self.save_wallet_data(force_save=True, is_backup=True)
+
+    def auto_save_wallet(self):
+        """Auto-save wallet data with rate limiting"""
+        try:
+            if not self.is_locked:
+                self.save_wallet_data(force_save=False)
+        except Exception as e:
+            print(f"DEBUG: Auto-save error: {e}")
+
+    def check_existing_wallets(self):
+        """Check if there's an actual primary wallet created"""
+        try:
+            print("DEBUG: Checking for primary wallet...")
+            
+            # First try to load from persistent storage
+            if self.load_wallet_data():
+                print("DEBUG: Wallet data loaded from persistent storage")
+                return True
+            
+            # Method 1: Check if wallet core has a primary wallet with address
+            if hasattr(self.wallet_core, 'wallets') and self.wallet_core.wallets:
+                if len(self.wallet_core.wallets) > 0:
+                    first_wallet = self.wallet_core.wallets[0]
+                    if first_wallet.get('address'):
+                        print("DEBUG: Found primary wallet in memory")
+                        # Save the loaded wallet data
+                        self.save_wallet_data(force_save=True)
+                        return True
+            
+            # Method 2: Try to get the current wallet address from core
+            if hasattr(self.wallet_core, 'current_wallet_address'):
+                if self.wallet_core.current_wallet_address:
+                    print("DEBUG: Found current wallet address")
+                    return True
+            
+            # Method 3: Check if we can detect any wallet creation
+            if hasattr(self.wallet_core, 'is_wallet_created'):
+                if self.wallet_core.is_wallet_created():
+                    print("DEBUG: Wallet core indicates wallet is created")
+                    return True
+            
+            print("DEBUG: No primary wallet found")
+            return False
+            
+        except Exception as e:
+            print(f"DEBUG: Error checking wallets: {e}")
+            return False
+
+    def _is_database_initialized_but_empty(self):
+        """Check if database exists but has no actual wallet data"""
+        try:
+            data_dir = self._get_data_directory()
+            db_path = os.path.join(data_dir, "wallets.db")
+            wallet_json_path = os.path.join(data_dir, "wallet_data.json")
+            
+            # Check if we have JSON wallet data
+            if os.path.exists(wallet_json_path) and os.path.getsize(wallet_json_path) > 100:
+                return False
+                
+            if not os.path.exists(db_path):
+                return False
+                
+            # Check file size - very small files are likely empty
+            if os.path.getsize(db_path) < 1024:  # Less than 1KB
+                return True
+                
+            # Try to query for actual wallet data
+            if hasattr(self.database, 'get_all_wallets'):
+                wallets = self.database.get_all_wallets()
+                if not wallets or len(wallets) == 0:
+                    return True
+                    
+            return False
+        except:
+            return False
+
     def on_balance_changed(self):
+        """Handle balance changes with auto-save"""
         self.update_balance_display()
-        self.auto_save_wallet()
+        self.save_wallet_data(force_save=True)  # Force save on balance changes
+        self.create_backup()  # Create backup for important changes
 
     def on_sync_progress(self, progress, message):
-        if not self.is_locked:
-            self.refs['progress_sync'].current.value = progress / 100
-            self.refs['progress_sync'].current.visible = True
-            self.refs['lbl_sync_status'].current.value = f"Status: {message}"
-            self.refs['progress_sync'].current.update()
-            self.refs['lbl_sync_status'].current.update()
+        if not self.is_locked and hasattr(self, 'page'):
+            if 'progress_sync' in self.refs and self.refs['progress_sync'].current:
+                self.refs['progress_sync'].current.value = progress / 100
+                self.refs['progress_sync'].current.visible = True
+            if 'lbl_sync_status' in self.refs and self.refs['lbl_sync_status'].current:
+                self.refs['lbl_sync_status'].current.value = f"Status: {message}"
+            self.update_refs()
 
     def on_transaction_received(self):
+        """Handle incoming transactions with auto-save"""
         self.update_transaction_history()
-        self.add_log_message("New transaction received", "success")
-        self.auto_save_wallet()
+        self.show_snackbar("New transaction received", "success")
+        self.save_wallet_data(force_save=True)  # Force save on new transactions
+        self.create_backup()  # Create backup for important changes
         
     def on_sync_complete(self):
+        """Handle sync completion with auto-save"""
         self.update_balance_display()
         self.update_transaction_history()
-        self.add_log_message("Blockchain sync completed", "success")
-        self.auto_save_wallet()
+        self.show_snackbar("Blockchain sync completed", "success")
+        self.save_wallet_data(force_save=True)  # Force save after sync
+        self.create_backup()  # Create backup after sync
         
     def on_error(self, error_msg):
-        self.add_log_message(f"Error: {error_msg}", "error")
-        
+        self.show_snackbar(f"Error: {error_msg}", "error")
+
     def create_main_ui(self, page: ft.Page):
         self.page = page
         
@@ -79,47 +516,67 @@ class LunaWalletApp:
         
         page.title = "Luna Wallet"
         page.theme_mode = ft.ThemeMode.DARK
-        page.fonts = {"Custom": "./font.ttf"}
-        page.theme = ft.Theme(font_family="Custom")
-        
         page.padding = 0
+        
         if not self.is_mobile:
-            page.window.width = 1080
-            page.window.height = 1920
-            page.window.min_width = 1080
-            page.window.min_height = 1080
+            page.window.width = 1024
+            page.window.height = 768
+            page.window.min_width = 768
+            page.window.min_height = 768
             page.window.center()
             
         page.window.icon = "./wallet_icon.png"
         
-        page.on_window_event = self.on_window_event
-        page.on_keyboard_event = self.on_keyboard_activity
-        page.on_click = self.on_mouse_activity
         page.on_resize = self.on_page_resize
         
-        # Create main layout but DON'T add it to page yet
-        self.main_layout = self.create_main_layout()
-        
-        # Show lock screen FIRST before adding main content
-        wallet_file_path = os.path.join(SecureDataManager.get_data_dir(), "wallet_encrypted.dat")
-        if os.path.exists(wallet_file_path):
-            self.show_lock_screen("Welcome Back", "Please unlock your wallet to continue")
-        else:
-            self.show_lock_screen("Welcome to Luna Wallet", "Create your first wallet to get started", show_create=True)
-        
-        # Now add the main layout (it will be behind the lock screen overlay)
-        page.add(self.main_layout)
-        
-        threading.Thread(target=self.activity_monitor, daemon=True).start()
+        # Check for existing wallets and show appropriate screen
+        self.initialize_wallet_state()
+
+    def initialize_wallet_state(self):
+        """Initialize wallet state and show appropriate screen"""
+        try:
+            print("=" * 50)
+            print("DEBUG: Initializing wallet state...")
+            
+            # Use the pre-loaded metadata to determine wallet existence
+            has_existing_wallets = self.wallet_count > 0
+            
+            print(f"DEBUG: Wallet detection result: {has_existing_wallets}")
+            print(f"DEBUG: Existing wallet address: {self.existing_wallet_address}")
+            
+            if has_existing_wallets:
+                print("DEBUG: Wallets found in persistence - showing unlock screen")
+                # Show unlock screen with existing wallet message
+                self.show_lock_page(
+                    title="Welcome Back", 
+                    subtitle=f"Unlock your existing wallet\n{self.existing_wallet_address}",
+                    wallet_exists=True,
+                    show_create=False
+                )
+            else:
+                print("DEBUG: No wallets found - showing create screen")
+                # Show create wallet screen for new users
+                self.show_lock_page(
+                    title="Welcome to Luna Wallet", 
+                    subtitle="Create your first wallet to get started", 
+                    show_create=True,
+                    wallet_exists=False
+                )
+            print("=" * 50)
+                
+        except Exception as e:
+            print(f"DEBUG: Error in initialize_wallet_state: {e}")
+            import traceback
+            traceback.print_exc()
+            # Fallback to create wallet screen
+            self.show_lock_page(show_create=True, wallet_exists=False)
 
     def detect_orientation(self):
-        """Detect if device is in landscape mode"""
         if not self.is_mobile:
             self.is_landscape = False
             self.current_layout = "desktop"
             return
             
-        # For mobile, check window dimensions to determine orientation
         if hasattr(self.page, 'window') and self.page.window:
             width = self.page.window.width
             height = self.page.window.height
@@ -127,2201 +584,818 @@ class LunaWalletApp:
             self.current_layout = "mobile_landscape" if self.is_landscape else "mobile_portrait"
 
     def on_page_resize(self, e):
-        """Handle page resize for responsive layout"""
         self.detect_orientation()
         self.update_layout()
 
     def update_layout(self):
-        """Update the layout based on current device and orientation"""
         if not hasattr(self, 'page') or not self.page:
             return
             
-        # Remove current layout
-        if hasattr(self, 'main_layout'):
-            self.page.controls.clear()
-            
-        # Create new layout for current mode
-        self.main_layout = self.create_main_layout()
-        self.page.add(self.main_layout)
-        self.page.update()
-        
-        # Update UI elements if wallet is unlocked
-        if not self.is_locked:
-            self.update_balance_display()
-            self.update_transaction_history()
-            self.update_wallets_list()
-
-    def create_main_layout(self):
-        """Create main layout based on current device and orientation"""
-        if self.current_layout == "desktop":
-            return self.create_desktop_layout()
-        elif self.current_layout == "mobile_landscape":
-            return self.create_mobile_landscape_layout()
-        else:  # mobile_portrait
-            return self.create_mobile_portrait_layout()
-
-    def create_desktop_layout(self):
-        """Desktop layout with sidebar"""
-        sidebar = self.create_sidebar()
-        main_content = self.create_main_content()
-        
-        return ft.Row(
-            [sidebar, ft.VerticalDivider(width=1, color="#5c2e2e"), main_content],
-            expand=True,
-            spacing=0
-        )
-
-    def create_mobile_portrait_layout(self):
-        """Mobile portrait layout - bottom navigation"""
-        main_content = self.create_main_content()
-        bottom_nav = self.create_bottom_navigation()
-        
-        return ft.Column([
-            main_content,
-            bottom_nav
-        ], expand=True, spacing=0)
-
-    def create_mobile_landscape_layout(self):
-        """Mobile landscape layout - compact sidebar"""
-        sidebar = self.create_mobile_sidebar()
-        main_content = self.create_main_content()
-        
-        return ft.Row([
-            sidebar,
-            ft.VerticalDivider(width=1, color="#5c2e2e"),
-            main_content
-        ], expand=True, spacing=0)
-
-    def create_bottom_navigation(self):
-        """Bottom navigation bar for mobile portrait"""
-        return ft.Container(
-            content=ft.Row([
-                ft.IconButton(
-                    icon=ft.Icons.RECEIPT,
-                    selected_icon=ft.Icons.RECEIPT,
-                    selected=self.current_tab_index == 0,
-                    on_click=lambda e: self.switch_mobile_tab(0),
-                    icon_color="#f8d7da",
-                    selected_icon_color="#dc3545",
-                    tooltip="Transactions"
-                ),
-                ft.IconButton(
-                    icon=ft.Icons.ACCOUNT_BALANCE_WALLET,
-                    selected_icon=ft.Icons.ACCOUNT_BALANCE_WALLET,
-                    selected=self.current_tab_index == 1,
-                    on_click=lambda e: self.switch_mobile_tab(1),
-                    icon_color="#f8d7da",
-                    selected_icon_color="#dc3545",
-                    tooltip="Wallets"
-                ),
-                ft.IconButton(
-                    icon=ft.Icons.DOWNLOAD,
-                    selected_icon=ft.Icons.DOWNLOAD,
-                    selected=False,
-                    on_click=lambda _: self.show_receive_dialog(),
-                    icon_color="#f8d7da",
-                    selected_icon_color="#dc3545",
-                    tooltip="Receive"
-                ),
-                ft.IconButton(
-                    icon=ft.Icons.UPLOAD,
-                    selected_icon=ft.Icons.UPLOAD,
-                    selected=False,
-                    on_click=lambda _: self.show_send_dialog(),
-                    icon_color="#f8d7da",
-                    selected_icon_color="#dc3545",
-                    tooltip="Send"
-                ),
-                ft.IconButton(
-                    icon=ft.Icons.MENU,
-                    selected_icon=ft.Icons.MENU,
-                    selected=self.current_tab_index == 2,
-                    on_click=lambda e: self.switch_mobile_tab(2),
-                    icon_color="#f8d7da",
-                    selected_icon_color="#dc3545",
-                    tooltip="Menu"
-                ),
-            ], alignment=ft.MainAxisAlignment.SPACE_AROUND),
-            bgcolor="#1a0f0f",
-            padding=10,
-            border=ft.border.only(top=ft.BorderSide(1, "#5c2e2e"))
-        )
-
-    def create_mobile_sidebar(self):
-        """Compact sidebar for mobile landscape"""
-        sidebar_width = 80
-        
-        quick_actions = ft.Container(
-            content=ft.Column([
-                ft.IconButton(
-                    icon=ft.Icons.RECEIPT,
-                    on_click=lambda e: self.switch_mobile_tab(0),
-                    icon_color="#dc3545" if self.current_tab_index == 0 else "#f8d7da",
-                    tooltip="Transactions"
-                ),
-                ft.IconButton(
-                    icon=ft.Icons.ACCOUNT_BALANCE_WALLET,
-                    on_click=lambda e: self.switch_mobile_tab(1),
-                    icon_color="#dc3545" if self.current_tab_index == 1 else "#f8d7da",
-                    tooltip="Wallets"
-                ),
-                ft.IconButton(
-                    icon=ft.Icons.DOWNLOAD,
-                    on_click=lambda _: self.show_receive_dialog(),
-                    icon_color="#f8d7da",
-                    tooltip="Receive"
-                ),
-                ft.IconButton(
-                    icon=ft.Icons.UPLOAD,
-                    on_click=lambda _: self.show_send_dialog(),
-                    icon_color="#f8d7da",
-                    tooltip="Send"
-                ),
-                ft.IconButton(
-                    icon=ft.Icons.SYNC,
-                    on_click=lambda _: self.manual_sync(),
-                    icon_color="#f8d7da",
-                    tooltip="Sync"
-                ),
-                ft.IconButton(
-                    icon=ft.Icons.LOCK,
-                    on_click=lambda _: self.lock_wallet(),
-                    icon_color="#f8d7da",
-                    tooltip="Lock"
-                ),
-            ], spacing=15, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
-            padding=10,
-            margin=5,
-            width=sidebar_width - 10
-        )
-        
-        return ft.Container(
-            content=ft.Column([
-                ft.Container(
-                    content=ft.IconButton(
-                        icon=ft.Icons.MENU,
-                        icon_color="#f8d7da",
-                        tooltip="Menu"
-                    ),
-                    padding=5,
-                    margin=ft.margin.only(bottom=20)
-                ),
-                quick_actions,
-                ft.Container(expand=True),
-            ], spacing=10, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
-            width=sidebar_width,
-            padding=5,
-            bgcolor="#1a0f0f"
-        )
-
-    def switch_mobile_tab(self, tab_index):
-        """Switch tabs in mobile view"""
-        self.current_tab_index = tab_index
-        self.update_mobile_content()
-
-    def update_mobile_content(self):
-        """Update main content for mobile view"""
-        main_content = self.create_main_content()
-        
-        if self.current_layout == "mobile_portrait":
-            # Replace main content in portrait mode
-            self.page.controls[0].controls[0] = main_content
-        else:  # mobile_landscape
-            # Replace main content in landscape mode  
-            self.page.controls[0].controls[2] = main_content
-            
+        self.page.controls.clear()
+        self.show_current_page()
         self.page.update()
 
-    def show_lock_screen(self, title, subtitle, show_create=False):
-        self.is_locked = True
+    def show_current_page(self):
+        self.page.controls.clear()
+        if self.current_page:
+            # For lock and create pages, center them
+            if isinstance(self.current_page, (LockPage, CreateWalletPage, ImportWalletPage)):
+                centered_content = ft.Container(
+                    content=self.current_page,
+                    expand=True,
+                    alignment=ft.alignment.center,
+                    padding=20
+                )
+                self.page.add(centered_content)
+            else:
+                # For wallet pages, use full layout
+                self.page.add(self.current_page)
+        else:
+            self.show_lock_page()
+        self.page.update()
 
-        # Create a full-screen overlay that covers EVERYTHING
-        overlay_container = ft.Container(
+    def show_lock_page(self, title="Welcome to Luna Wallet", subtitle="Access your wallet", show_create=True, wallet_exists=False):
+        """Show lock page with appropriate options based on wallet existence"""
+        print(f"DEBUG: Showing lock page - title: {title}, show_create: {show_create}, wallet_exists: {wallet_exists}")
+        
+        # If no wallets exist, force show_create to True to display create/import options
+        if not wallet_exists:
+            show_create = True
+            print("DEBUG: No wallets exist - forcing show_create to True")
+        
+        lock_page = LockPage(
+            self, 
+            on_unlock=self.unlock_wallet,
+            onCreate_wallet=self.show_create_wallet,
+            wallet_exists=wallet_exists,
+            title=title,
+            subtitle=subtitle,
+            show_create_option=show_create
+        )
+        self.current_page = lock_page.create()
+        
+        # Clear and add with proper centering
+        self.page.controls.clear()
+        centered_content = ft.Container(
+            content=self.current_page,
             expand=True,
-            bgcolor="#1a0f0f",  # Same as main background
-            padding=20,
             alignment=ft.alignment.center,
+            padding=20
         )
+        self.page.add(centered_content)
+        self.page.update()
 
-        def unlock_wallet(e=None):
-            if not password_field:
-                return
-            password = password_field.value
+    def attempt_wallet_load(self):
+        """Attempt to load wallet metadata without password to confirm existence"""
+        try:
+            # Try to load from persistent storage first
+            if self.load_wallet_data():
+                return True
             
-            if not password:
-                self.show_snack_bar("Please enter a password")
-                return
+            # Try to see if we can detect wallet structure without unlocking
+            if hasattr(self.wallet_core, 'get_wallet_info'):
+                info = self.wallet_core.get_wallet_info()
+                return info is not None
             
-            # Disable UI during unlock
-            for control in main_content.content.controls:
-                if isinstance(control, ft.Row) and control.controls:
-                    if isinstance(control.controls[0], ft.ElevatedButton):
-                        control.controls[0].disabled = True
-                        control.controls[0].text = "Unlocking..."
-                        break
-            
-            if password_field:
-                password_field.disabled = True
-            
-            self.page.update()
-            
-            def unlock_thread():
-                success = self.wallet_core.unlock_wallet(password)
-            
+            # Check if we can access any wallet properties that don't require password
+            if hasattr(self.wallet_core, 'wallets') and self.wallet_core.wallets:
+                return True
+                
+            return False
+        except Exception as e:
+            print(f"DEBUG: Wallet load attempt failed: {e}")
+            return False
+
+    def unlock_wallet(self, password):
+        """Unlock existing wallet with password using only LunaWallet methods"""
+        def unlock_thread():
+            try:
+                print("DEBUG: Starting unlock process...")
+                print(f"DEBUG: Password length: {len(password)}")
+                
+                success = False
+                
+                # FIRST: Load the wallet data from persistence
+                print("DEBUG: Loading wallet data from file...")
+                load_success = self.load_wallet_data()
+                print(f"DEBUG: Wallet data load result: {load_success}")
+                
+                if not load_success:
+                    print("DEBUG: Failed to load wallet data")
+                    def show_load_error():
+                        self.show_snackbar("Failed to load wallet data", "error")
+                    self.page.run_thread(show_load_error)
+                    return
+
+                # Method 1: Use LunaWallet's unlock_wallet method
+                print("DEBUG: Using LunaWallet.unlock_wallet method")
+                
+                if hasattr(self.wallet_core, 'wallets') and self.wallet_core.wallets:
+                    print(f"DEBUG: Found {len(self.wallet_core.wallets)} wallets")
+                    
+                    # Try to unlock each wallet in the collection
+                    for wallet_address in self.wallet_core.wallets.keys():
+                        try:
+                            print(f"DEBUG: Attempting to unlock wallet: {wallet_address}")
+                            
+                            # Use LunaWallet's unlock_wallet method with correct signature
+                            success = self.wallet_core.unlock_wallet(wallet_address, password)
+                            
+                            if success:
+                                print(f"DEBUG: SUCCESS! Unlocked wallet: {wallet_address}")
+                                
+                                # Set this as the current wallet
+                                self.wallet_core.current_wallet_address = wallet_address
+                                current_wallet = self.wallet_core.wallets[wallet_address]
+                                self.wallet_core._set_current_wallet(current_wallet)
+                                
+                                break
+                            else:
+                                print(f"DEBUG: Failed to unlock wallet: {wallet_address}")
+                                
+                        except Exception as wallet_error:
+                            print(f"DEBUG: Unlock error for {wallet_address}: {wallet_error}")
+                            continue
+                
+                # Method 2: If we have wallets but unlock_wallet didn't work, try switch_wallet with password
+                if not success and hasattr(self.wallet_core, 'switch_wallet'):
+                    print("DEBUG: Trying switch_wallet with password...")
+                    
+                    if self.wallet_core.wallets:
+                        first_wallet_address = list(self.wallet_core.wallets.keys())[0]
+                        try:
+                            print(f"DEBUG: Switching to wallet: {first_wallet_address}")
+                            success = self.wallet_core.switch_wallet(first_wallet_address, password)
+                            print(f"DEBUG: switch_wallet result: {success}")
+                        except Exception as switch_error:
+                            print(f"DEBUG: switch_wallet failed: {switch_error}")
+                
+                # Method 3: Try load_from_file if we have a file path
+                if not success and hasattr(self.wallet_core, 'load_from_file'):
+                    print("DEBUG: Trying load_from_file with password...")
+                    try:
+                        # Try to load from the main wallet file
+                        success = self.wallet_core.load_from_file("wallet_data.json", password)
+                        print(f"DEBUG: load_from_file result: {success}")
+                    except Exception as load_error:
+                        print(f"DEBUG: load_from_file failed: {load_error}")
+
+                print(f"DEBUG: Final unlock result: {success}")
+                
                 def update_ui():
                     if success:
+                        print("DEBUG: Unlock successful - transitioning to wallet page")
                         self.is_locked = False
                         self.last_activity_time = time.time()
-                        self.add_log_message("Wallet unlocked successfully", "success")
-                        self.update_balance_display()
-                        self.update_wallets_list()
-                        self.update_transaction_history()
+                        self.show_snackbar("Wallet unlocked successfully", "success")
                         
-                        # Remove overlay completely
-                        self.page.overlay.clear()
-                        self.page.update()
+                        # Verify the wallet is actually unlocked
+                        if hasattr(self.wallet_core, 'is_unlocked'):
+                            print(f"DEBUG: Wallet unlocked status: {self.wallet_core.is_unlocked}")
+                        if hasattr(self.wallet_core, 'private_key') and self.wallet_core.private_key:
+                            print("DEBUG: Private key is available")
                         
-                        self.wallet_core.start_auto_scan()
-                        self.show_snack_bar("Wallet unlocked!")
+                        # Save wallet state after successful unlock
+                        save_success = self.save_wallet_data(force_save=True)
+                        if save_success:
+                            print("DEBUG: Wallet state saved after unlock")
+                        
+                        self.show_wallet_page()
+                        # Start blockchain sync
+                        self.start_blockchain_sync()
                     else:
-                        self.add_log_message("Failed to unlock wallet", "error")
-                        for control in main_content.content.controls:
-                            if isinstance(control, ft.Row) and control.controls:
-                                if isinstance(control.controls[0], ft.ElevatedButton):
-                                    control.controls[0].disabled = False
-                                    control.controls[0].text = "Unlock Wallet"
-                                    break
-                        
-                        if password_field:
-                            password_field.disabled = False
-                            password_field.value = ""
-                            password_field.focus()
-                        
-                        self.page.update()
-                        self.show_snack_bar("Failed to unlock wallet - wrong password")
-                        
+                        print("DEBUG: Unlock failed - showing error")
+                        self.show_snackbar("Failed to unlock wallet - wrong password", "error")
+                        # Keep the lock screen visible for retry
+                    
                 self.page.run_thread(update_ui)
-            
-            threading.Thread(target=unlock_thread, daemon=True).start()
-
-        def create_wallet(e):
-            # Remove overlay first
-            self.page.overlay.clear()
-            self.page.update()
-            time.sleep(0.1)  # Small delay for clean transition
-            self.show_create_wallet_dialog()
-
-        # Adjust content for mobile
-        content_width = min(400, self.page.width - 40) if self.is_mobile else 500
-        icon_size = 60 if self.is_mobile else 100
-        title_size = 24 if self.is_mobile else 32
-        subtitle_size = 14 if self.is_mobile else 18
-
-        # Create the lock screen content
-        lock_content = [
-            ft.Row([
-                ft.Container(
-                    content=ft.Image(
-                        src="./wallet_icon.png",
-                        width=icon_size,
-                        height=icon_size,
-                        fit=ft.ImageFit.CONTAIN,
-                        color="#dc3545",
-                        color_blend_mode=ft.BlendMode.SRC_IN,
-                        error_content=ft.Text("🔴", size=icon_size//2)
-                    ),
-                    margin=ft.margin.only(right=20 if self.is_mobile else 25),
-                ),
-                ft.Column([
-                    ft.Text(title, size=title_size, color="#dc3545", weight="bold"),
-                    ft.Text(subtitle, size=subtitle_size, color="#f8d7da"),
-                ])
-            ], alignment=ft.MainAxisAlignment.CENTER),
-            
-            ft.Container(height=30 if self.is_mobile else 40),
-        ]
-
-        # Add password field only if not creating new wallet
-        password_field = None
-        if not show_create:
-            password_field = ft.TextField(
-                label="Wallet Password",
-                hint_text="Enter your wallet password",
-                password=True,
-                can_reveal_password=True,
-                width=content_width,
-                color="#f8d7da",
-                border_color="#5c2e2e",
-                autofocus=True,
-                on_submit=unlock_wallet
-            )
-            lock_content.extend([
-                ft.Container(
-                    content=password_field,
-                    alignment=ft.alignment.center
-                ),
-                ft.Container(height=15 if self.is_mobile else 20),
-            ])
-
-        # Add action button
-        lock_content.extend([
-            ft.Row([
-                ft.ElevatedButton(
-                    "Create New Wallet" if show_create else "Unlock Wallet",
-                    on_click=create_wallet if show_create else unlock_wallet,
-                    style=ft.ButtonStyle(
-                        color="#ffffff",
-                        bgcolor="#dc3545",
-                        padding=ft.padding.symmetric(
-                            horizontal=25 if self.is_mobile else 30, 
-                            vertical=12 if self.is_mobile else 15
-                        ),
-                        shape=ft.RoundedRectangleBorder(radius=4)
-                    ),
-                    height=45
-                )
-            ], alignment=ft.MainAxisAlignment.CENTER),
-        ])
-
-        # Add links only for unlock screen
-        if not show_create:
-            lock_content.extend([
-                ft.Container(height=15 if self.is_mobile else 20),
-                ft.Row([
-                    ft.Column([
-                        ft.TextButton(
-                            "Ling Country Treasury",
-                            on_click=lambda e: self.page.launch_url("https://bank.linglin.art"),
-                            style=ft.ButtonStyle(color="#dc3545", shape=ft.RoundedRectangleBorder(radius=2))
-                        ),
-                        ft.TextButton(
-                            "Learn More about Luna Coin", 
-                            on_click=lambda e: self.page.launch_url("https://linglin.art/luna-coin"),
-                            style=ft.ButtonStyle(color="#dc3545", shape=ft.RoundedRectangleBorder(radius=2))
-                        )
-                    ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=5)
-                ], alignment=ft.MainAxisAlignment.CENTER)
-            ])
-
-        main_content = ft.Container(
-            content=ft.Column(lock_content, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
-            alignment=ft.alignment.center,
-            width=self.page.width,
-            height=self.page.height,
-        )
-        
-        overlay_container.content = main_content
-        
-        # Clear any existing overlays and add this one
-        self.page.overlay.clear()
-        self.page.overlay.append(overlay_container)
-        self.page.update()
-
-    def create_sidebar(self):
-        """Desktop sidebar"""
-        sidebar_width = 240
-        
-        self.refs['lbl_wallet_name'] = ft.Ref[ft.Text]()
-        self.refs['lbl_address'] = ft.Ref[ft.Text]()
-        self.refs['lbl_balance'] = ft.Ref[ft.Text]()
-        self.refs['lbl_available'] = ft.Ref[ft.Text]()
-        self.refs['lbl_pending'] = ft.Ref[ft.Text]()
-        self.refs['lbl_transactions'] = ft.Ref[ft.Text]()
-        
-        wallet_status = ft.Container(
-            content=ft.Column([
-                ft.Text("👛 Wallet Status", size=14, color="#f8d7da"),
-                ft.Text("Name: --", ref=self.refs['lbl_wallet_name'], size=12, color="#f8d7da"),
-                ft.Text("Address: --", ref=self.refs['lbl_address'], size=10, color="#f8d7da"),
-                ft.Text("Balance: --", ref=self.refs['lbl_balance'], size=12, color="#f8d7da"),
-                ft.Text("Available: --", ref=self.refs['lbl_available'], size=10, color="#f8d7da"),
-                ft.Text("Pending: --", ref=self.refs['lbl_pending'], size=10, color="#f8d7da"),
-                ft.Text("Transactions: --", ref=self.refs['lbl_transactions'], size=10, color="#f8d7da"),
-            ], spacing=4),
-            padding=10,
-            bgcolor="#2c1a1a",
-            border_radius=4,
-            margin=5,
-            width=sidebar_width - 30
-        )
-        
-        button_style = ft.ButtonStyle(
-            color="#ffffff",
-            bgcolor="#dc3545",
-            padding=ft.padding.symmetric(horizontal=16, vertical=6),
-            shape=ft.RoundedRectangleBorder(radius=2)
-        )
-        
-        self.refs['btn_receive'] = ft.Ref[ft.ElevatedButton]()
-        self.refs['btn_send'] = ft.Ref[ft.ElevatedButton]()
-        self.refs['btn_sync'] = ft.Ref[ft.ElevatedButton]()
-        self.refs['btn_lock'] = ft.Ref[ft.ElevatedButton]()
-        
-        quick_actions = ft.Container(
-            content=ft.Column([
-                ft.Text("Quick Actions", size=12, color="#f8d7da"),
-                ft.ElevatedButton(
-                    "📥 Receive",
-                    ref=self.refs['btn_receive'],
-                    on_click=lambda _: self.show_receive_dialog(),
-                    style=button_style,
-                    height=32
-                ),
-                ft.ElevatedButton(
-                    "📤 Send",
-                    ref=self.refs['btn_send'],
-                    on_click=lambda _: self.show_send_dialog(),
-                    style=button_style,
-                    height=32
-                ),
-                ft.ElevatedButton(
-                    "🔄 Sync",
-                    ref=self.refs['btn_sync'],
-                    on_click=lambda _: self.manual_sync(),
-                    style=button_style,
-                    height=32
-                ),
-                ft.ElevatedButton(
-                    "🔒 Lock",
-                    ref=self.refs['btn_lock'],
-                    on_click=lambda _: self.lock_wallet(),
-                    style=ft.ButtonStyle(
-                        color="#ffffff",
-                        bgcolor="#6c757d",
-                        padding=ft.padding.symmetric(horizontal=16, vertical=10),
-                        shape=ft.RoundedRectangleBorder(radius=3)
-                    ),
-                    height=32
-                ),
-            ], spacing=8),
-            padding=10,
-            bgcolor="#2c1a1a",
-            border_radius=2,
-            margin=5,
-            width=sidebar_width - 30
-        )
-        
-        self.refs['lbl_connection'] = ft.Ref[ft.Text]()
-        self.refs['lbl_sync_status'] = ft.Ref[ft.Text]()
-        self.refs['progress_sync'] = ft.Ref[ft.ProgressBar]()
-        
-        network_status = ft.Container(
-            content=ft.Column([
-                ft.Text("🌐 Network Status", size=14, color="#f8d7da"),
-                ft.Text("Status: Checking...", ref=self.refs['lbl_connection'], size=12, color="#f8d7da"),
-                ft.Text("Last Sync: --", ref=self.refs['lbl_sync_status'], size=10, color="#f8d7da"),
-                ft.ProgressBar(
-                    ref=self.refs['progress_sync'],
-                    visible=False,
-                    color="#dc3545",
-                    bgcolor="#5c2e2e"
-                )
-            ], spacing=6),
-            padding=10,
-            bgcolor="#2c1a1a",
-            border_radius=4,
-            margin=5,
-            width=sidebar_width - 30
-        )
-        
-        app_icon = ft.Container(
-            content=ft.Row([
-                ft.Container(
-                    content=ft.Image(
-                        src="./wallet_icon.png",
-                        width=64,
-                        height=64,
-                        fit=ft.ImageFit.CONTAIN,
-                        color="#dc3545",
-                        color_blend_mode=ft.BlendMode.SRC_IN,
-                        error_content=ft.Text("🔴", size=24)
-                    ),
-                    padding=10,
-                    bgcolor="#00000000",
-                    border_radius=4,
-                )
-            ], alignment=ft.MainAxisAlignment.CENTER),
-            padding=10,
-            margin=5,
-            width=sidebar_width - 30
-        )
-        
-        sidebar_content = ft.Column([
-            ft.Container(
-                content=ft.Row([
-                    ft.PopupMenuButton(
-                        content=ft.Text("☰", color="#f8d7da", size=14),
-                        tooltip="System Menu",
-                        items=[
-                            ft.PopupMenuItem(text="Lock", on_click=lambda _: self.lock_wallet()),
-                            ft.PopupMenuItem(text="Save", on_click=lambda _: self.manual_save_wallet()),
-                            ft.PopupMenuItem(),
-                            ft.PopupMenuItem(text="Start Auto-Sync", on_click=lambda _: self.wallet_core.start_auto_scan()),
-                            ft.PopupMenuItem(text="Stop Auto-Sync", on_click=lambda _: self.wallet_core.stop_auto_scan()),
-                            ft.PopupMenuItem(),
-                            ft.PopupMenuItem(text="About", on_click=lambda _: self.show_about_dialog()),
-                            ft.PopupMenuItem(text="Exit", on_click=lambda _: self.page.window.close()),
-                        ]
-                    ),
-                    ft.Container(
-                        content=ft.Image(
-                            src="./wallet_icon.png",
-                            width=32,
-                            height=32,
-                            fit=ft.ImageFit.CONTAIN,
-                            color="#dc3545",
-                            color_blend_mode=ft.BlendMode.SRC_IN,
-                            error_content=ft.Text("🔴", size=16)
-                        ),
-                        margin=ft.margin.only(right=8),
-                    ),
-                    ft.Text("Luna Wallet", size=24, color="#f8d7da"),
-                ]),
-                width=sidebar_width - 30
-            ),
-            ft.Divider(height=1, color="#5c2e2e"),
-            wallet_status,
-            ft.Divider(height=1, color="#5c2e2e"),
-            quick_actions,
-            network_status,
-            ft.Container(expand=True),
-            app_icon
-        ], spacing=10, horizontal_alignment=ft.CrossAxisAlignment.CENTER)
-        
-        return ft.Container(
-            content=sidebar_content,
-            width=sidebar_width,
-            padding=15,
-            bgcolor="#1a0f0f"
-        )
-
-    def create_main_content(self):
-        """Main content area - adapts to current view"""
-        if self.current_layout == "mobile_portrait":
-            return self.create_mobile_main_content()
-        else:
-            return self.create_desktop_main_content()
-
-    def create_desktop_main_content(self):
-        """Desktop main content with tabs"""
-        self.refs['transactions_table'] = ft.Ref[ft.DataTable]()
-        transactions_tab = self.create_transactions_tab()
-        
-        self.refs['wallets_table'] = ft.Ref[ft.DataTable]()
-        wallets_tab = self.create_wallets_tab()
-        
-        self.refs['log_output'] = ft.Ref[ft.Column]()
-        log_tab = self.create_log_tab()
-        
-        tabs = ft.Tabs(
-            selected_index=self.current_tab_index,
-            on_change=self.on_tab_change,
-            tabs=[
-                ft.Tab(text="📊 Transactions", content=transactions_tab),
-                ft.Tab(text="👛 Wallets", content=wallets_tab),
-                ft.Tab(text="📋 Log", content=log_tab),
-            ],
-            expand=True
-        )
-        
-        return ft.Container(content=tabs, expand=True, padding=10, bgcolor="#2c1a1a")
-
-    def create_mobile_main_content(self):
-        """Mobile main content - single view at a time"""
-        if self.current_tab_index == 0:
-            return self.create_transactions_tab(mobile=True)
-        elif self.current_tab_index == 1:
-            return self.create_wallets_tab(mobile=True)
-        else:  # tab 2 is menu in mobile
-            return self.create_mobile_menu_tab()
-
-    def create_mobile_menu_tab(self):
-        """Mobile menu tab with quick actions and info"""
-        menu_items = ft.Column([
-            ft.ListTile(
-                leading=ft.Icon(ft.Icons.RECEIPT, color="#dc3545"),
-                title=ft.Text("Transactions", color="#f8d7da"),
-                subtitle=ft.Text("View transaction history", color="#f8d7da"),
-                on_click=lambda e: self.switch_mobile_tab(0)
-            ),
-            ft.ListTile(
-                leading=ft.Icon(ft.Icons.ACCOUNT_BALANCE_WALLET, color="#dc3545"),
-                title=ft.Text("Wallets", color="#f8d7da"),
-                subtitle=ft.Text("Manage your wallets", color="#f8d7da"),
-                on_click=lambda e: self.switch_mobile_tab(1)
-            ),
-            ft.ListTile(
-                leading=ft.Icon(ft.Icons.SYNC, color="#dc3545"),
-                title=ft.Text("Sync Wallet", color="#f8d7da"),
-                subtitle=ft.Text("Synchronize with blockchain", color="#f8d7da"),
-                on_click=lambda _: self.manual_sync()
-            ),
-            ft.ListTile(
-                leading=ft.Icon(ft.Icons.LOCK, color="#dc3545"),
-                title=ft.Text("Lock Wallet", color="#f8d7da"),
-                subtitle=ft.Text("Lock your wallet for security", color="#f8d7da"),
-                on_click=lambda _: self.lock_wallet()
-            ),
-            ft.ListTile(
-                leading=ft.Icon(ft.Icons.INFO, color="#dc3545"),
-                title=ft.Text("About", color="#f8d7da"),
-                subtitle=ft.Text("About Luna Wallet", color="#f8d7da"),
-                on_click=lambda _: self.show_about_dialog()
-            ),
-        ])
-        
-        return ft.Container(
-            content=ft.Column([
-                ft.Text("Menu", size=20, color="#f8d7da", weight="bold"),
-                ft.Divider(color="#5c2e2e"),
-                menu_items,
-                ft.Container(expand=True),
-            ], scroll=ft.ScrollMode.ADAPTIVE),
-            expand=True,
-            padding=15,
-            bgcolor="#2c1a1a"
-        )
-        
-    def create_transactions_tab(self, mobile=False):
-        data_table = ft.DataTable(
-            ref=self.refs['transactions_table'],
-            columns=[
-                ft.DataColumn(ft.Text("Date", color="#f8d7da")),
-                ft.DataColumn(ft.Text("Type", color="#f8d7da")),
-                ft.DataColumn(ft.Text("From/To", color="#f8d7da")),
-                ft.DataColumn(ft.Text("Amount", color="#f8d7da")),
-                ft.DataColumn(ft.Text("Status", color="#f8d7da")),
-                ft.DataColumn(ft.Text("Memo", color="#f8d7da")),
-            ],
-            rows=[],
-            vertical_lines=ft.BorderSide(1, "#5c2e2e"),
-            horizontal_lines=ft.BorderSide(1, "#5c2e2e"),
-            bgcolor="#1a0f0f",
-        )
-        
-        # For mobile, use a simpler list view
-        if mobile:
-            self.refs['mobile_transactions_list'] = ft.Ref[ft.Column]()
-            transactions_list = ft.Column([], ref=self.refs['mobile_transactions_list'])
-            
-            return ft.Container(
-                content=ft.Column([
-                    ft.Row([
-                        ft.Text("Transactions", size=18, color="#f8d7da", weight="bold"),
-                        ft.IconButton(
-                            icon=ft.Icons.REFRESH,
-                            on_click=lambda _: self.update_transaction_history(),
-                            icon_color="#dc3545"
-                        )
-                    ]),
-                    ft.Container(
-                        content=ft.ListView([transactions_list], expand=True),
-                        expand=True,
-                        border=ft.border.all(1, "#5c2e2e"),
-                        border_radius=3
-                    )
-                ], expand=True),
-                padding=10
-            )
-        
-        return ft.Container(
-            content=ft.Column([
-                ft.Text("Transaction History", size=16, color="#f8d7da"),
-                ft.Container(
-                    content=ft.ListView([data_table], expand=True),
-                    expand=True,
-                    border=ft.border.all(1, "#5c2e2e"),
-                    border_radius=3
-                )
-            ], expand=True),
-            padding=10
-        )
-        
-    def create_wallets_tab(self, mobile=False):
-        data_table = ft.DataTable(
-            ref=self.refs['wallets_table'],
-            columns=[
-                ft.DataColumn(ft.Text("Name", color="#f8d7da")),
-                ft.DataColumn(ft.Text("Address", color="#f8d7da")),
-                ft.DataColumn(ft.Text("Balance", color="#f8d7da")),
-                ft.DataColumn(ft.Text("Tx(s)", color="#f8d7da")),
-                ft.DataColumn(ft.Text("Select", color="#f8d7da")),
-            ],
-            rows=[],
-            vertical_lines=ft.BorderSide(1, "#5c2e2e"),
-            horizontal_lines=ft.BorderSide(1, "#5c2e2e"),
-            bgcolor="#1a0f0f",
-        )
-        
-        action_button_style = ft.ButtonStyle(
-            color="#ffffff",
-            bgcolor="#dc3545",
-            padding=ft.padding.symmetric(horizontal=16, vertical=6),
-            shape=ft.RoundedRectangleBorder(radius=3)
-        )
-        
-        self.refs['btn_new_wallet'] = ft.Ref[ft.ElevatedButton]()
-        self.refs['btn_import'] = ft.Ref[ft.ElevatedButton]()
-        
-        action_buttons = ft.Row([
-            ft.ElevatedButton(
-                "🆕 Create",
-                ref=self.refs['btn_new_wallet'],
-                on_click=lambda _: self.show_create_wallet_dialog(),
-                style=action_button_style,
-                height=32
-            ),
-            ft.ElevatedButton(
-                "📁 Import",
-                ref=self.refs['btn_import'],
-                on_click=lambda _: self.show_import_dialog(),
-                style=action_button_style,
-                height=32
-            ),
-            ft.ElevatedButton(
-                "🔑 Private Key",
-                on_click=lambda _: self.show_export_private_key_dialog(),
-                style=action_button_style,
-                height=32
-            ),
-            ft.ElevatedButton(
-                "🔄 Refresh",
-                on_click=lambda _: self.refresh_wallets(),
-                style=action_button_style,
-                height=32
-            ),
-            ft.ElevatedButton(
-                "🔒 Lock",
-                on_click=lambda _: self.lock_wallet(),
-                style=ft.ButtonStyle(
-                    color="#ffffff",
-                    bgcolor="#6c757d",
-                    padding=ft.padding.symmetric(horizontal=16, vertical=10),
-                    shape=ft.RoundedRectangleBorder(radius=3)
-                ),
-                height=32
-            ),
-        ])
-        
-        # For mobile, use a vertical layout
-        if mobile:
-            action_buttons = ft.Column([
-                ft.ElevatedButton(
-                    "🆕 Create New Wallet",
-                    on_click=lambda _: self.show_create_wallet_dialog(),
-                    style=action_button_style,
-                    height=40
-                ),
-                ft.ElevatedButton(
-                    "📁 Import Wallet",
-                    on_click=lambda _: self.show_import_dialog(),
-                    style=action_button_style,
-                    height=40
-                ),
-                ft.Row([
-                    ft.ElevatedButton(
-                        "🔑 Export Key",
-                        on_click=lambda _: self.show_export_private_key_dialog(),
-                        style=action_button_style,
-                        height=35,
-                        expand=True
-                    ),
-                    ft.ElevatedButton(
-                        "🔄 Refresh",
-                        on_click=lambda _: self.refresh_wallets(),
-                        style=action_button_style,
-                        height=35,
-                        expand=True
-                    ),
-                ])
-            ], spacing=10)
-            
-            self.refs['mobile_wallets_list'] = ft.Ref[ft.Column]()
-            wallets_list = ft.Column([], ref=self.refs['mobile_wallets_list'])
-            
-            return ft.Container(
-                content=ft.Column([
-                    ft.Text("Wallets", size=18, color="#f8d7da", weight="bold"),
-                    action_buttons,
-                    ft.Container(
-                        content=ft.ListView([wallets_list], expand=True),
-                        expand=True,
-                        border=ft.border.all(1, "#5c2e2e"),
-                        border_radius=3,
-                        padding=5
-                    )
-                ], expand=True),
-                padding=10
-            )
-        
-        return ft.Container(
-            content=ft.Column([
-                ft.Text("Wallet Management", size=16, color="#f8d7da"),
-                action_buttons,
-                ft.Container(
-                    content=ft.ListView([data_table], expand=True),
-                    expand=True,
-                    border=ft.border.all(1, "#5c2e2e"),
-                    border_radius=3
-                )
-            ], expand=True),
-            padding=10
-        )
-        
-    def create_log_tab(self):
-        self.refs['log_output'] = ft.Ref[ft.Column]()
-        
-        clear_button = ft.ElevatedButton(
-            "Clear Log",
-            on_click=lambda _: self.clear_log(),
-            style=ft.ButtonStyle(
-                color="#ffffff",
-                bgcolor="#dc3545",
-                padding=ft.padding.symmetric(horizontal=16, vertical=10),
-                shape=ft.RoundedRectangleBorder(radius=3)
-            ),
-            height=38
-        )
-        
-        log_content = ft.Container(
-            content=ft.Column([], ref=self.refs['log_output']),
-            expand=True,
-            border=ft.border.all(1, "#5c2e2e"),
-            border_radius=3,
-            padding=10,
-            bgcolor="#1a0f0f"
-        )
-        
-        return ft.Container(
-            content=ft.Column([
-                ft.Row([
-                    ft.Text("Application Log", size=16, color="#f8d7da"),
-                    clear_button
-                ]),
-                ft.Container(content=ft.ListView([log_content], expand=True), expand=True)
-            ], expand=True),
-            padding=10
-        )
-        
-    def on_tab_change(self, e):
-        self.current_tab_index = e.control.selected_index
-        if self.current_tab_index == 0:
-            self.update_transaction_history()
-        elif self.current_tab_index == 1:
-            self.update_wallets_list()
-        
-    def update_transaction_history(self):
-        if not self.wallet_core.is_unlocked:
-            return
-            
-        transactions = self.wallet_core.get_transaction_history()
-        
-        # Update desktop table
-        table = self.refs['transactions_table'].current
-        if table:
-            table.rows = []
-            
-            for tx in transactions[:50]:
-                date_str = datetime.fromtimestamp(tx.get('timestamp', 0)).strftime("%Y-%m-%d %H:%M")
-                tx_type = tx.get('type', 'transfer')
-                type_icon = "💰" if tx_type == "reward" else "🔄"
-                from_addr = tx.get('from', 'Network')
-                to_addr = tx.get('to', 'Unknown')
                 
-                is_incoming = False
-                if tx_type == "reward":
-                    is_incoming = True
-                    direction = f"← Mining Reward"
-                else:
-                    our_addresses = [w['address'].lower() for w in self.wallet_core.wallets]
-                    if to_addr and to_addr.lower() in our_addresses:
-                        is_incoming = True
-                        direction = f"← From: {from_addr}"
-                    else:
-                        direction = f"→ To: {to_addr}"
-                
-                amount = tx.get('amount', 0)
-                amount_color = "#00ff00" if is_incoming else "#ff0000"
-                status = tx.get('status', 'unknown')
-                status_icon = "✅" if status == "confirmed" else "⏳" if status == "pending" else "❌"
-                memo = tx.get('memo', '')
-                
-                table.rows.append(
-                    ft.DataRow(cells=[
-                        ft.DataCell(ft.Text(date_str, size=11, color="#f8d7da")),
-                        ft.DataCell(ft.Text(f"{type_icon} {tx_type}", size=11, color="#f8d7da")),
-                        ft.DataCell(ft.Text(direction, size=11, color="#f8d7da")),
-                        ft.DataCell(ft.Text(f"{amount:.6f} LUN", size=11, color=amount_color)),
-                        ft.DataCell(ft.Text(f"{status_icon} {status}", size=11, color="#f8d7da")),
-                        ft.DataCell(ft.Text(memo, size=11, color="#f8d7da")),
-                    ])
-                )
-                
-            table.update()
+            except Exception as e:
+                print(f"DEBUG: Unlock error: {e}")
+                import traceback
+                traceback.print_exc()
+                def show_error():
+                    self.show_snackbar(f"Unlock error: {str(e)}", "error")
+                self.page.run_thread(show_error)
         
-        # Update mobile list
-        mobile_list = self.refs.get('mobile_transactions_list')
-        if mobile_list and mobile_list.current:
-            mobile_list.current.controls.clear()
-            
-            for tx in transactions[:20]:  # Show fewer on mobile
-                date_str = datetime.fromtimestamp(tx.get('timestamp', 0)).strftime("%m/%d %H:%M")
-                tx_type = tx.get('type', 'transfer')
-                type_icon = "💰" if tx_type == "reward" else "🔄"
-                
-                is_incoming = tx_type == "reward" or any(
-                    w['address'].lower() == tx.get('to', '').lower() 
-                    for w in self.wallet_core.wallets
-                )
-                
-                amount = tx.get('amount', 0)
-                amount_color = "#00ff00" if is_incoming else "#ff0000"
-                status = tx.get('status', 'unknown')
-                status_icon = "✅" if status == "confirmed" else "⏳" if status == "pending" else "❌"
-                
-                mobile_list.current.controls.append(
-                    ft.ListTile(
-                        leading=ft.Icon(
-                            ft.Icons.ARROW_UPWARD if not is_incoming else ft.Icons.ARROW_DOWNWARD,
-                            color=amount_color
-                        ),
-                        title=ft.Text(f"{amount:.6f} LUN", color=amount_color),
-                        subtitle=ft.Text(f"{date_str} • {status_icon} {status}", color="#f8d7da", size=12),
-                        trailing=ft.Text(type_icon, size=16),
-                    )
-                )
-            
-            mobile_list.current.update()
-        
-    def update_wallets_list(self):
-        if not self.wallet_core.is_unlocked:
-            return
-            
-        # Update desktop table
-        table = self.refs['wallets_table'].current
-        if table:
-            table.rows = []
-            
-            for i, wallet in enumerate(self.wallet_core.wallets):
-                select_button = ft.ElevatedButton(
-                    "Select",
-                    on_click=lambda e, idx=i: self.select_wallet(idx),
-                    style=ft.ButtonStyle(
-                        color="#ffffff",
-                        bgcolor="#28a745" if i == self.selected_wallet_index else "#dc3545",
-                        padding=ft.padding.symmetric(horizontal=8, vertical=4),
-                        shape=ft.RoundedRectangleBorder(radius=3)
-                    ),
-                    height=30
-                )
-                
-                table.rows.append(
-                    ft.DataRow(cells=[
-                        ft.DataCell(ft.Text(wallet['label'], size=11, color="#f8d7da")),
-                        ft.DataCell(ft.Text(wallet['address'], size=11, color="#f8d7da")),
-                        ft.DataCell(ft.Text(f"{wallet['balance']:.6f} LUN", size=11, color="#f8d7da")),
-                        ft.DataCell(ft.Text(str(len(wallet['transactions'])), size=11, color="#f8d7da")),
-                        ft.DataCell(select_button),
-                    ])
-                )
-                
-            table.update()
-        
-        # Update mobile list
-        mobile_list = self.refs.get('mobile_wallets_list')
-        if mobile_list and mobile_list.current:
-            mobile_list.current.controls.clear()
-            
-            for i, wallet in enumerate(self.wallet_core.wallets):
-                is_selected = i == self.selected_wallet_index
-                
-                mobile_list.current.controls.append(
-                    ft.Card(
-                        content=ft.Container(
-                            content=ft.Column([
-                                ft.Row([
-                                    ft.Text(wallet['label'], color="#f8d7da", weight="bold", size=16),
-                                    ft.Container(
-                                        content=ft.Text("SELECTED", color="#28a745", size=10) if is_selected else ft.Text("", size=10),
-                                        bgcolor="#1a3a1a" if is_selected else "transparent",
-                                        padding=ft.padding.symmetric(horizontal=8, vertical=2),
-                                        border_radius=10
-                                    )
-                                ]),
-                                ft.Text(f"Balance: {wallet['balance']:.6f} LUN", color="#f8d7da", size=14),
-                                ft.Text(f"Address: {wallet['address'][:16]}...", color="#f8d7da", size=12),
-                                ft.Text(f"Transactions: {len(wallet['transactions'])}", color="#f8d7da", size=12),
-                                ft.ElevatedButton(
-                                    "Select Wallet" if not is_selected else "Selected",
-                                    on_click=lambda e, idx=i: self.select_wallet(idx),
-                                    style=ft.ButtonStyle(
-                                        color="#ffffff",
-                                        bgcolor="#28a745" if is_selected else "#dc3545",
-                                        padding=ft.padding.symmetric(horizontal=16, vertical=8)
-                                    ),
-                                    width=200
-                                ) if not is_selected else ft.Container(height=0)
-                            ]),
-                            padding=15
-                        ),
-                        color="#2c1a1a",
-                        margin=ft.margin.symmetric(vertical=5)
-                    )
-                )
-            
-            mobile_list.current.update()
-
-    def select_wallet(self, wallet_index):
-        if wallet_index < len(self.wallet_core.wallets):
-            self.selected_wallet_index = wallet_index
-            self.update_balance_display()
-            self.update_wallets_list()
-            self.show_snack_bar(f"Selected wallet: {self.wallet_core.wallets[wallet_index]['label']}")
-            self.auto_save_wallet()
-        
-    def add_log_message(self, message, msg_type="info"):
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        color = {
-            "error": "#dc3545",
-            "success": "#28a745",
-            "warning": "#ffc107",
-            "info": "#17a2b8"
-        }.get(msg_type, "#f8d7da")
-        
-        log_entry = ft.Text(f"[{timestamp}] {message}", color=color, size=11)
-        
-        log_column = self.refs['log_output'].current
-        if log_column:
-            log_column.controls.append(log_entry)
-            if len(log_column.controls) > 100:
-                log_column.controls.pop(0)
-            log_column.update()
-            
-    def clear_log(self):
-        log_column = self.refs['log_output'].current
-        if log_column:
-            log_column.controls.clear()
-            log_column.update()
-
-    def show_receive_dialog(self):
-        if self.is_locked or not self.wallet_core.is_unlocked or not self.wallet_core.wallets:
-            self.show_snack_bar("Please unlock your wallet first")
-            return
-        
-        # Adjust dialog for mobile
-        if self.is_mobile:
-            dialog_width = self.page.width - 40
-            dialog_height = self.page.height - 100
-            left = 20
-            top = 50
-        else:
-            dialog_width = self.page.width - 280
-            dialog_height = self.page.height
-            left = 280
-            top = 0
-
-        overlay_container = ft.Container(
-            width=dialog_width,
-            height=dialog_height,
-            left=left,
-            top=top,
-            bgcolor="#1a0f0f",
-            border=ft.border.only(left=ft.BorderSide(4, "#8B4513")) if not self.is_mobile else ft.border.all(2, "#8B4513"),
-            animate_position=ft.Animation(300, "easeOut"),
-            padding=20,
-        )
-        
-        header = ft.Row([
-            ft.Container(
-                content=ft.Image(
-                    src="./wallet_icon.png",
-                    width=32,
-                    height=32,
-                    fit=ft.ImageFit.CONTAIN,
-                    color="#dc3545",
-                    color_blend_mode=ft.BlendMode.SRC_IN,
-                    error_content=ft.Text("🔴", size=20)
-                ),
-                margin=ft.margin.only(right=12),
-            ),
-            ft.Text("📥 Receive Luna", size=24, color="#dc3545", weight="bold"),
-        ], alignment=ft.MainAxisAlignment.START)
-        
-        wallet_options = []
-        for i, wallet in enumerate(self.wallet_core.wallets):
-            wallet_options.append(ft.dropdown.Option(key=str(i), text=f"{wallet['label']} ({wallet['address'][:16]}...)"))
-        
-        wallet_dropdown = ft.Dropdown(
-            label="Select Wallet to Receive",
-            options=wallet_options,
-            value=str(self.selected_wallet_index),
-            width=min(400, dialog_width - 40),
-            color="#f8d7da",
-            border_color="#5c2e2e"
-        )
-        
-        address_display = ft.Text("", size=12, color="#f8d7da", selectable=True)
-        qr_content = ft.Container()
-        
-        def update_qr_code(e):
-            selected_index = int(wallet_dropdown.value)
-            if selected_index < len(self.wallet_core.wallets):
-                address = self.wallet_core.wallets[selected_index]['address']
-                address_display.value = address
-                
-                try:
-                    import qrcode
-                    qr = qrcode.QRCode(version=1, box_size=8, border=4)
-                    qr.add_data(address)
-                    qr.make(fit=True)
-                    qr_img = qr.make_image(fill_color="red", back_color="white")
-                    buffer = io.BytesIO()
-                    qr_img.save(buffer, format="PNG")
-                    buffer.seek(0)
-                    qr_content.content = ft.Image(
-                        src_base64=base64.b64encode(buffer.read()).decode(),
-                        width=200,
-                        height=200
-                    )
-                except ImportError:
-                    qr_content.content = ft.Container(
-                        content=ft.Column([
-                            ft.Text("QR Code requires:", size=12, color="#f8d7da"),
-                            ft.Text("pip install qrcode", size=10, color="#f8d7da"),
-                            ft.Text("pip install pillow", size=10, color="#f8d7da"),
-                        ]),
-                        padding=20,
-                        alignment=ft.alignment.center
-                    )
-                self.page.update()
-        
-        wallet_dropdown.on_change = update_qr_code
-        
-        def close_dialog(e):
-            overlay_container.left = self.page.width
-            self.page.update()
-            time.sleep(0.3)
-            self.page.overlay.remove(overlay_container)
-            self.page.update()
-        
-        dialog_content = ft.Column([
-            header,
-            ft.Container(height=20),
-            wallet_dropdown,
-            ft.Container(height=15),
-            ft.Text("Wallet Address:", size=16, color="#f8d7da"),
-            ft.Container(content=address_display, padding=15, bgcolor="#2c1a1a", border_radius=8, width=min(500, dialog_width - 40)),
-            ft.Container(height=20),
-            ft.Container(content=qr_content, padding=20, alignment=ft.alignment.center),
-            ft.Container(height=20),
-            ft.Row([
-                ft.ElevatedButton(
-                    "📋 Copy Address",
-                    on_click=lambda _: self.copy_to_clipboard(address_display.value),
-                    style=ft.ButtonStyle(
-                        color="#ffffff",
-                        bgcolor="#dc3545",
-                        padding=ft.padding.symmetric(horizontal=20, vertical=12),
-                        shape=ft.RoundedRectangleBorder(radius=4)
-                    )
-                ),
-                ft.ElevatedButton(
-                    "Close",
-                    on_click=close_dialog,
-                    style=ft.ButtonStyle(
-                        color="#ffffff",
-                        bgcolor="#6c757d",
-                        padding=ft.padding.symmetric(horizontal=20, vertical=12),
-                        shape=ft.RoundedRectangleBorder(radius=4)
-                    )
-                )
-            ], alignment=ft.MainAxisAlignment.END)
-        ], scroll=ft.ScrollMode.ADAPTIVE)
-        
-        overlay_container.content = dialog_content
-        self.page.overlay.append(overlay_container)
-        self.page.update()
-        update_qr_code(None)
-        
-    def show_send_dialog(self):
-        if self.is_locked or not self.wallet_core.is_unlocked or not self.wallet_core.wallets:
-            self.show_snack_bar("Please unlock your wallet first")
-            return
-            
-        # Adjust dialog for mobile
-        if self.is_mobile:
-            dialog_width = self.page.width - 40
-            dialog_height = self.page.height - 100
-            left = 20
-            top = 50
-        else:
-            dialog_width = self.page.width - 280
-            dialog_height = self.page.height
-            left = 280
-            top = 0
-
-        overlay_container = ft.Container(
-            width=dialog_width,
-            height=dialog_height,
-            left=left,
-            top=top,
-            bgcolor="#1a0f0f",
-            border=ft.border.only(left=ft.BorderSide(4, "#8B4513")) if not self.is_mobile else ft.border.all(2, "#8B4513"),
-            animate_position=ft.Animation(300, "easeOut"),
-            padding=20,
-        )
-        
-        header = ft.Row([
-            ft.Container(
-                content=ft.Image(
-                    src="./wallet_icon.png",
-                    width=32,
-                    height=32,
-                    fit=ft.ImageFit.CONTAIN,
-                    color="#dc3545",
-                    color_blend_mode=ft.BlendMode.SRC_IN,
-                    error_content=ft.Text("🔴", size=20)
-                ),
-                margin=ft.margin.only(right=12),
-            ),
-            ft.Text("📤 Send Luna", size=24, color="#dc3545", weight="bold"),
-        ], alignment=ft.MainAxisAlignment.START)
-        
-        wallet_options = []
-        for i, wallet in enumerate(self.wallet_core.wallets):
-            balance = wallet['balance'] - wallet['pending_send']
-            wallet_options.append(ft.dropdown.Option(key=str(i), text=f"{wallet['label']} ({balance:.6f} LUN)"))
-        
-        wallet_dropdown = ft.Dropdown(
-            label="Select Wallet to Send From",
-            options=wallet_options,
-            value=str(self.selected_wallet_index),
-            width=min(500, dialog_width - 40),
-            color="#f8d7da",
-            border_color="#5c2e2e"
-        )
-        
-        to_address_field = ft.TextField(
-            label="To Address",
-            hint_text="LUN_... or Luna address",
-            width=min(500, dialog_width - 40),
-            color="#f8d7da",
-            border_color="#5c2e2e"
-        )
-        
-        amount_field = ft.TextField(
-            label="Amount (LUN)",
-            hint_text="0.000000",
-            width=min(500, dialog_width - 40),
-            color="#f8d7da",
-            border_color="#5c2e2e"
-        )
-        
-        memo_field = ft.TextField(
-            label="Memo (Optional)",
-            hint_text="Message for recipient",
-            width=min(500, dialog_width - 40),
-            color="#f8d7da",
-            border_color="#5c2e2e"
-        )
-        
-        password_field = ft.TextField(
-            label="Wallet Password (Optional)",
-            hint_text="For transaction signing",
-            password=True,
-            can_reveal_password=True,
-            width=min(500, dialog_width - 40),
-            color="#f8d7da",
-            border_color="#5c2e2e"
-        )
-        
-        def send_transaction(e):
-            to_address = to_address_field.value
-            amount_text = amount_field.value
-            memo = memo_field.value
-            password = password_field.value
-            
-            if not to_address:
-                self.show_snack_bar("Please enter a recipient address")
-                return
-                
-            try:
-                amount = float(amount_text)
-                if amount <= 0:
-                    raise ValueError("Amount must be positive")
-            except ValueError:
-                self.show_snack_bar("Please enter a valid amount")
-                return
-            
-            close_dialog(None)
-            selected_index = int(wallet_dropdown.value)
-            
-            def confirm_send():
-                def send_thread():
-                    original_index = self.selected_wallet_index
-                    self.selected_wallet_index = selected_index
-                    success = self.wallet_core.send_transaction(to_address, amount, memo, password)
-                    self.selected_wallet_index = original_index
-                    
-                    if success:
-                        self.add_log_message(f"Sent {amount} LUN to {to_address}", "success")
-                        self.update_balance_display()
-                        self.update_transaction_history()
-                        self.update_wallets_list()
-                        self.auto_save_wallet()
-                    else:
-                        self.add_log_message("Failed to send transaction", "error")
-                        
-                threading.Thread(target=send_thread, daemon=True).start()
-                
-            selected_wallet = self.wallet_core.wallets[selected_index]
-            self.show_confirmation_dialog(
-                f"Send {amount:.6f} LUN from {selected_wallet['label']} to:\n{to_address}\n\nMemo: {memo}",
-                confirm_send
-            )
-        
-        def close_dialog(e):
-            overlay_container.left = self.page.width
-            self.page.update()
-            time.sleep(0.3)
-            self.page.overlay.remove(overlay_container)
-            self.page.update()
-        
-        dialog_content = ft.Column([
-            header,
-            ft.Container(height=20),
-            wallet_dropdown,
-            ft.Container(height=15),
-            to_address_field,
-            ft.Container(height=10),
-            amount_field,
-            ft.Container(height=10),
-            memo_field,
-            ft.Container(height=10),
-            password_field,
-            ft.Container(height=30),
-            ft.Row([
-                ft.ElevatedButton(
-                    "Send",
-                    on_click=send_transaction,
-                    style=ft.ButtonStyle(
-                        color="#ffffff",
-                        bgcolor="#dc3545",
-                        padding=ft.padding.symmetric(horizontal=20, vertical=12),
-                        shape=ft.RoundedRectangleBorder(radius=4)
-                    )
-                ),
-                ft.ElevatedButton(
-                    "Close",
-                    on_click=close_dialog,
-                    style=ft.ButtonStyle(
-                        color="#ffffff",
-                        bgcolor="#6c757d",
-                        padding=ft.padding.symmetric(horizontal=20, vertical=12),
-                        shape=ft.RoundedRectangleBorder(radius=4)
-                    )
-                )
-            ], alignment=ft.MainAxisAlignment.END)
-        ], scroll=ft.ScrollMode.ADAPTIVE)
-        
-        overlay_container.content = dialog_content
-        self.page.overlay.append(overlay_container)
-        self.page.update()
-        
-    def show_confirmation_dialog(self, message, confirm_callback):
-        # Adjust dialog for mobile
-        if self.is_mobile:
-            dialog_width = self.page.width - 40
-            dialog_height = self.page.height - 100
-            left = 20
-            top = 50
-        else:
-            dialog_width = self.page.width - 280
-            dialog_height = self.page.height
-            left = 280
-            top = 0
-
-        overlay_container = ft.Container(
-            width=dialog_width,
-            height=dialog_height,
-            left=left,
-            top=top,
-            bgcolor="#1a0f0f",
-            border=ft.border.only(left=ft.BorderSide(4, "#8B4513")) if not self.is_mobile else ft.border.all(2, "#8B4513"),
-            animate_position=ft.Animation(300, "easeOut"),
-            padding=20,
-        )
-        
-        def confirm(e):
-            close_dialog(None)
-            confirm_callback()
-        
-        def close_dialog(e):
-            overlay_container.left = self.page.width
-            self.page.update()
-            time.sleep(0.3)
-            self.page.overlay.remove(overlay_container)
-            self.page.update()
-        
-        dialog_content = ft.Column([
-            ft.Row([
-                ft.Container(
-                    content=ft.Image(
-                        src="./wallet_icon.png",
-                        width=32,
-                        height=32,
-                        fit=ft.ImageFit.CONTAIN,
-                        color="#dc3545",
-                        color_blend_mode=ft.BlendMode.SRC_IN,
-                        error_content=ft.Text("🔴", size=20)
-                    ),
-                    margin=ft.margin.only(right=12),
-                ),
-                ft.Text("Confirm Send", size=24, color="#dc3545", weight="bold"),
-            ], alignment=ft.MainAxisAlignment.START),
-            ft.Container(height=30),
-            ft.Text(message, size=14, color="#f8d7da"),
-            ft.Container(height=40),
-            ft.Row([
-                ft.ElevatedButton(
-                    "Yes",
-                    on_click=confirm,
-                    style=ft.ButtonStyle(
-                        color="#ffffff",
-                        bgcolor="#dc3545",
-                        padding=ft.padding.symmetric(horizontal=20, vertical=12),
-                        shape=ft.RoundedRectangleBorder(radius=4)
-                    )
-                ),
-                ft.ElevatedButton(
-                    "No",
-                    on_click=close_dialog,
-                    style=ft.ButtonStyle(
-                        color="#ffffff",
-                        bgcolor="#6c757d",
-                        padding=ft.padding.symmetric(horizontal=20, vertical=12),
-                        shape=ft.RoundedRectangleBorder(radius=4)
-                    )
-                )
-            ], alignment=ft.MainAxisAlignment.END)
-        ], scroll=ft.ScrollMode.ADAPTIVE)
-        
-        overlay_container.content = dialog_content
-        self.page.overlay.append(overlay_container)
-        self.page.update()
-            
-    def show_create_wallet_dialog(self):
-        # Adjust dialog for mobile
-        if self.is_mobile:
-            dialog_width = self.page.width - 40
-            dialog_height = self.page.height - 100
-            left = 20
-            top = 50
-        else:
-            dialog_width = self.page.width - 280
-            dialog_height = self.page.height
-            left = 280
-            top = 0
-
-        overlay_container = ft.Container(
-            width=dialog_width,
-            height=dialog_height,
-            left=left,
-            top=top,
-            bgcolor="#1a0f0f",
-            border=ft.border.only(left=ft.BorderSide(4, "#8B4513")) if not self.is_mobile else ft.border.all(2, "#8B4513"),
-            animate_position=ft.Animation(300, "easeOut"),
-            padding=20,
-        )
-        
-        header = ft.Row([
-            ft.Container(
-                content=ft.Image(
-                    src="./wallet_icon.png",
-                    width=32,
-                    height=32,
-                    fit=ft.ImageFit.CONTAIN,
-                    color="#dc3545",
-                    color_blend_mode=ft.BlendMode.SRC_IN,
-                    error_content=ft.Text("🔴", size=20)
-                ),
-                margin=ft.margin.only(right=12),
-            ),
-            ft.Text("🆕 Create", size=24, color="#dc3545", weight="bold"),
-        ], alignment=ft.MainAxisAlignment.START)
-        
-        label_field = ft.TextField(
-            label="Wallet Name",
-            hint_text="My Wallet", 
-            value="My Wallet",
-            width=min(500, dialog_width - 40),
-            color="#f8d7da",
-            border_color="#5c2e2e"
-        )
-        
-        password_field = ft.TextField(
-            label="Password",
-            hint_text="Encrypt wallet with password",
-            password=True,
-            can_reveal_password=True,
-            width=min(500, dialog_width - 40),
-            color="#f8d7da",
-            border_color="#5c2e2e"
-        )
-        
-        confirm_field = ft.TextField(
-            label="Confirm Password", 
-            hint_text="Repeat password",
-            password=True,
-            can_reveal_password=True,
-            width=min(500, dialog_width - 40),
-            color="#f8d7da",
-            border_color="#5c2e2e"
-        )
-        
-        def create_wallet(e):
-            label = label_field.value
-            password = password_field.value
-            confirm_password = confirm_field.value
-            
-            if password != confirm_password:
-                self.show_snack_bar("Passwords do not match")
-                return
-                
-            if not label or not label.strip():
-                label = "My Wallet"
-            
-            close_dialog(None)
-            
-            def create_thread():
-                try:
-                    if not self.wallet_core.is_unlocked and not self.wallet_core.wallets:
-                        address = self.wallet_core.create_wallet(label)
-                        if address:
-                            self.wallet_core.is_unlocked = True
-                            self.wallet_core.wallet_password = password
-                            save_success = self.wallet_core.save_wallet(password)
-                            
-                            if save_success:
-                                unlock_success = self.wallet_core.unlock_wallet(password)
-                                if unlock_success:
-                                    success = True
-                                else:
-                                    success = bool(self.wallet_core.wallets)
-                            else:
-                                success = False
-                        else:
-                            success = False
-                    else:
-                        address = self.wallet_core.create_wallet(label)
-                        success = address is not None
-                        if success:
-                            self.wallet_core.save_wallet()
-                    
-                    def update_ui():
-                        if success and self.wallet_core.wallets:
-                            self.add_log_message(f"Created wallet '{label}'", "success")
-                            self.update_balance_display()
-                            self.update_wallets_list()
-                            self.auto_save_wallet()
-                            self.show_snack_bar("Wallet created successfully!")
-                            
-                            if self.wallet_core.wallets:
-                                wallet_address = self.wallet_core.wallets[-1]['address']
-                                self.add_log_message(f"Wallet address: {wallet_address}", "info")
-                                
-                            self.wallet_core.start_auto_scan()
-                        else:
-                            self.add_log_message("Failed to create wallet", "error")
-                            self.show_snack_bar("Wallet creation failed")
-                            
-                    self.page.run_thread(update_ui)
-                    
-                except Exception as ex:
-                    def show_error():
-                        self.add_log_message(f"Creation error: {str(ex)}", "error")
-                        self.show_snack_bar(f"Error: {str(ex)}")
-                    self.page.run_thread(show_error)
-            
-            threading.Thread(target=create_thread, daemon=True).start()
-        
-        def close_dialog(e):
-            overlay_container.left = self.page.width
-            self.page.update()
-            time.sleep(0.3)
-            self.page.overlay.remove(overlay_container)
-            self.page.update()
-        
-        dialog_content = ft.Column([
-            header,
-            ft.Container(height=20),
-            label_field,
-            ft.Container(height=10),
-            password_field, 
-            ft.Container(height=10),
-            confirm_field,
-            ft.Container(height=30),
-            ft.Row([
-                ft.ElevatedButton(
-                    "Create",
-                    on_click=create_wallet,
-                    style=ft.ButtonStyle(
-                        color="#ffffff",
-                        bgcolor="#dc3545", 
-                        padding=ft.padding.symmetric(horizontal=20, vertical=12),
-                        shape=ft.RoundedRectangleBorder(radius=4)
-                    )
-                ),
-                ft.ElevatedButton(
-                    "Cancel",
-                    on_click=close_dialog,
-                    style=ft.ButtonStyle(
-                        color="#ffffff",
-                        bgcolor="#6c757d",
-                        padding=ft.padding.symmetric(horizontal=20, vertical=12),
-                        shape=ft.RoundedRectangleBorder(radius=4)
-                    )
-                )
-            ], alignment=ft.MainAxisAlignment.END)
-        ], scroll=ft.ScrollMode.ADAPTIVE)
-        
-        overlay_container.content = dialog_content
-        self.page.overlay.append(overlay_container)
-        self.page.update()
-        
-    def show_import_dialog(self):
-        # Adjust dialog for mobile
-        if self.is_mobile:
-            dialog_width = self.page.width - 40
-            dialog_height = self.page.height - 100
-            left = 20
-            top = 50
-        else:
-            dialog_width = self.page.width - 280
-            dialog_height = self.page.height
-            left = 280
-            top = 0
-
-        overlay_container = ft.Container(
-            width=dialog_width,
-            height=dialog_height,
-            left=left,
-            top=top,
-            bgcolor="#1a0f0f",
-            border=ft.border.only(left=ft.BorderSide(4, "#8B4513")) if not self.is_mobile else ft.border.all(2, "#8B4513"),
-            animate_position=ft.Animation(300, "easeOut"),
-            padding=20,
-        )
-        
-        header = ft.Row([
-            ft.Container(
-                content=ft.Image(
-                    src="./wallet_icon.png",
-                    width=32,
-                    height=32,
-                    fit=ft.ImageFit.CONTAIN,
-                    color="#dc3545",
-                    color_blend_mode=ft.BlendMode.SRC_IN,
-                    error_content=ft.Text("🔴", size=20)
-                ),
-                margin=ft.margin.only(right=12),
-            ),
-            ft.Text("📁 Import Wallet", size=24, color="#dc3545", weight="bold"),
-        ], alignment=ft.MainAxisAlignment.START)
-        
-        private_key_field = ft.TextField(
-            label="Private Key (64 hex characters)",
-            hint_text="Enter your 64-character private key",
-            width=min(500, dialog_width - 40),
-            color="#f8d7da",
-            border_color="#5c2e2e",
-            multiline=True,
-            min_lines=2,
-            max_lines=3
-        )
-        
-        label_field = ft.TextField(
-            label="Wallet Name",
-            hint_text="Imported Wallet",
-            value="Imported Wallet",
-            width=min(500, dialog_width - 40),
-            color="#f8d7da",
-            border_color="#5c2e2e"
-        )
-        
-        password_field = ft.TextField(
-            label="Wallet Password (for encryption)",
-            hint_text="Password to encrypt imported wallet",
-            password=True,
-            can_reveal_password=True,
-            width=min(500, dialog_width - 40),
-            color="#f8d7da",
-            border_color="#5c2e2e"
-        )
-        
-        def import_wallet(e):
-            private_key = private_key_field.value.strip()
-            label = label_field.value
-            password = password_field.value
-            
-            if not private_key:
-                self.show_snack_bar("Please enter a private key")
-                return
-                
-            if len(private_key) != 64 or not all(c in '0123456789abcdefABCDEF' for c in private_key):
-                self.show_snack_bar("Invalid private key format. Must be 64 hexadecimal characters.")
-                return
-                
-            if not password:
-                self.show_snack_bar("Please enter a password to encrypt the wallet")
-                return
-            
-            close_dialog(None)
-            
-            def import_thread():
-                try:
-                    if not self.wallet_core.is_unlocked:
-                        self.wallet_core.wallets = []
-                        self.wallet_core.is_unlocked = True
-                    
-                    success = self.wallet_core.import_wallet(private_key, label)
-                    
-                    if success:
-                        save_success = self.wallet_core.save_wallet(password)
-                        
-                        def update_ui():
-                            if save_success:
-                                self.is_locked = False
-                                self.last_activity_time = time.time()
-                                self.add_log_message(f"Imported wallet '{label}'", "success")
-                                self.update_balance_display()
-                                self.update_wallets_list()
-                                self.update_transaction_history()
-                                self.auto_save_wallet()
-                                self.show_snack_bar("Wallet imported successfully!")
-                                self.wallet_core.start_auto_scan()
-                            else:
-                                self.add_log_message("Wallet imported but failed to save", "warning")
-                                self.show_snack_bar("Wallet imported but save failed - use Save Wallet from menu")
-                                
-                        self.page.run_thread(update_ui)
-                    else:
-                        def update_ui_fail():
-                            self.add_log_message("Failed to import wallet - invalid private key or duplicate", "error")
-                            self.show_snack_bar("Failed to import wallet - check private key")
-                            
-                        self.page.run_thread(update_ui_fail)
-                        
-                except Exception as ex:
-                    def update_ui_error():
-                        self.add_log_message(f"Import error: {str(ex)}", "error")
-                        self.show_snack_bar(f"Import error: {str(ex)}")
-                        
-                    self.page.run_thread(update_ui_error)
-            
-            threading.Thread(target=import_thread, daemon=True).start()
-        
-        def close_dialog(e):
-            overlay_container.left = self.page.width
-            self.page.update()
-            time.sleep(0.3)
-            self.page.overlay.remove(overlay_container)
-            self.page.update()
-        
-        dialog_content = ft.Column([
-            header,
-            ft.Container(height=20),
-            ft.Text("Enter your 64-character private key:", size=14, color="#f8d7da"),
-            private_key_field,
-            ft.Container(height=10),
-            label_field,
-            ft.Container(height=10),
-            password_field,
-            ft.Container(height=30),
-            ft.Row([
-                ft.ElevatedButton(
-                    "Import",
-                    on_click=import_wallet,
-                    style=ft.ButtonStyle(
-                        color="#ffffff",
-                        bgcolor="#dc3545",
-                        padding=ft.padding.symmetric(horizontal=20, vertical=12),
-                        shape=ft.RoundedRectangleBorder(radius=4)
-                    )
-                ),
-                ft.ElevatedButton(
-                    "Cancel",
-                    on_click=close_dialog,
-                    style=ft.ButtonStyle(
-                        color="#ffffff",
-                        bgcolor="#6c757d",
-                        padding=ft.padding.symmetric(horizontal=20, vertical=12),
-                        shape=ft.RoundedRectangleBorder(radius=4)
-                    )
-                )
-            ], alignment=ft.MainAxisAlignment.END)
-        ], scroll=ft.ScrollMode.ADAPTIVE)
-        
-        overlay_container.content = dialog_content
-        self.page.overlay.append(overlay_container)
-        self.page.update()
-        
-    def show_export_private_key_dialog(self):
-        if self.is_locked or not self.wallet_core.is_unlocked or not self.wallet_core.wallets:
-            self.show_snack_bar("Please unlock your wallet first")
-            return
-            
-        # Adjust dialog for mobile
-        if self.is_mobile:
-            dialog_width = self.page.width - 40
-            dialog_height = self.page.height - 100
-            left = 20
-            top = 50
-        else:
-            dialog_width = self.page.width - 280
-            dialog_height = self.page.height
-            left = 280
-            top = 0
-
-        overlay_container = ft.Container(
-            width=dialog_width,
-            height=dialog_height,
-            left=left,
-            top=top,
-            bgcolor="#1a0f0f",
-            border=ft.border.only(left=ft.BorderSide(4, "#8B4513")) if not self.is_mobile else ft.border.all(2, "#8B4513"),
-            animate_position=ft.Animation(300, "easeOut"),
-            padding=20,
-        )
-        
-        header = ft.Row([
-            ft.Container(
-                content=ft.Image(
-                    src="./wallet_icon.png",
-                    width=32,
-                    height=32,
-                    fit=ft.ImageFit.CONTAIN,
-                    color="#dc3545",
-                    color_blend_mode=ft.BlendMode.SRC_IN,
-                    error_content=ft.Text("🔴", size=20)
-                ),
-                margin=ft.margin.only(right=12),
-            ),
-            ft.Text("🔑 Export Private Key", size=24, color="#dc3545", weight="bold"),
-        ], alignment=ft.MainAxisAlignment.START)
-        
-        wallet_options = []
-        for i, wallet in enumerate(self.wallet_core.wallets):
-            wallet_options.append(ft.dropdown.Option(key=str(i), text=f"{wallet['label']} ({wallet['address'][:16]}...)"))
-        
-        wallet_dropdown = ft.Dropdown(
-            label="Select Wallet to Export",
-            options=wallet_options,
-            value=str(self.selected_wallet_index),
-            width=min(500, dialog_width - 40),
-            color="#f8d7da",
-            border_color="#5c2e2e"
-        )
-        
-        private_key_display = ft.Text("", size=12, color="#f8d7da", selectable=True)
-        
-        def update_private_key(e):
-            selected_index = int(wallet_dropdown.value)
-            if selected_index < len(self.wallet_core.wallets):
-                wallet_data = self.wallet_core.export_wallet(self.wallet_core.wallets[selected_index]['address'])
-                if wallet_data and 'private_key' in wallet_data:
-                    private_key_display.value = wallet_data['private_key']
-                else:
-                    private_key_display.value = "Error: Could not retrieve private key"
-                private_key_display.update()
-        
-        wallet_dropdown.on_change = update_private_key
-        
-        def close_dialog(e):
-            overlay_container.left = self.page.width
-            self.page.update()
-            time.sleep(0.3)
-            self.page.overlay.remove(overlay_container)
-            self.page.update()
-        
-        dialog_content = ft.Column([
-            header,
-            ft.Container(height=20),
-            ft.Text("⚠️ WARNING: Never share your private key!", color="#ff0000", size=16, weight="bold"),
-            ft.Text("Anyone with this key can access your funds!", color="#ff0000", size=14),
-            ft.Container(height=20),
-            wallet_dropdown,
-            ft.Container(height=15),
-            ft.Container(content=private_key_display, padding=15, bgcolor="#2c1a1a", border_radius=8, width=min(500, dialog_width - 40)),
-            ft.Container(height=30),
-            ft.Row([
-                ft.ElevatedButton(
-                    "📋 Copy to Clipboard",
-                    on_click=lambda _: self.copy_to_clipboard(private_key_display.value),
-                    style=ft.ButtonStyle(
-                        color="#ffffff",
-                        bgcolor="#dc3545",
-                        padding=ft.padding.symmetric(horizontal=20, vertical=12),
-                        shape=ft.RoundedRectangleBorder(radius=4)
-                    )
-                ),
-                ft.ElevatedButton(
-                    "Close",
-                    on_click=close_dialog,
-                    style=ft.ButtonStyle(
-                        color="#ffffff",
-                        bgcolor="#6c757d",
-                        padding=ft.padding.symmetric(horizontal=20, vertical=12),
-                        shape=ft.RoundedRectangleBorder(radius=4)
-                    )
-                )
-            ], alignment=ft.MainAxisAlignment.END)
-        ], scroll=ft.ScrollMode.ADAPTIVE)
-        
-        overlay_container.content = dialog_content
-        self.page.overlay.append(overlay_container)
-        self.page.update()
-        update_private_key(None)
-        
-    def manual_sync(self):
-        if self.is_locked or not self.wallet_core.is_unlocked:
-            self.show_snack_bar("Please unlock your wallet first")
-            return
-            
-        self.add_log_message("Starting manual synchronization...", "info")
-        
-        self.refs['progress_sync'].current.visible = True
-        self.refs['progress_sync'].current.value = 0
-        self.refs['lbl_sync_status'].current.value = "Status: Starting sync..."
-        self.refs['progress_sync'].current.update()
-        self.refs['lbl_sync_status'].current.update()
-
+        threading.Thread(target=unlock_thread, daemon=True).start()
+    def start_blockchain_sync(self):
+        """Start blockchain synchronization using existing BlockchainManager"""
         def sync_thread():
             try:
-                success = self.wallet_core.scan_blockchain(force_full_scan=True)
+                print("DEBUG: Starting blockchain sync...")
                 
-                def update_ui():
-                    if success:
-                        self.add_log_message("Synchronization completed successfully", "success")
-                        self.auto_save_wallet()
+                # Check network connection first
+                if not self.blockchain_manager.check_network_connection():
+                    self.page.run_thread(lambda: self.show_snackbar("Network not connected", "error"))
+                    return
+                
+                if self.wallet_core.current_wallet_address:
+                    # Use the existing scan method that we know works
+                    transactions = self.blockchain_manager.scan_transactions_for_address(
+                        self.wallet_core.current_wallet_address
+                    )
+                    
+                    print(f"DEBUG: Found {len(transactions)} transactions")
+                    
+                    # Update database with new transactions
+                    for tx in transactions:
+                        self.database.save_transaction(tx, self.wallet_core.current_wallet_address)
+                    
+                    # Calculate balance from transactions
+                    total_received = sum(
+                        tx.get('amount', 0) for tx in transactions 
+                        if tx.get('to', '').lower() == self.wallet_core.current_wallet_address.lower()
+                    )
+                    total_sent = sum(
+                        tx.get('amount', 0) for tx in transactions 
+                        if tx.get('from', '').lower() == self.wallet_core.current_wallet_address.lower()
+                    )
+                    current_balance = total_received - total_sent
+                    
+                    self.wallet_core.update_balance(current_balance)
+                    
+                    def update_ui():
                         self.update_balance_display()
                         self.update_transaction_history()
-                        self.update_wallets_list()
-                    else:
-                        self.add_log_message("Synchronization failed", "error")
+                        self.show_snackbar(f"Sync completed: {len(transactions)} transactions", "success")
                         
-                    def hide_progress():
-                        time.sleep(2)
-                        self.refs['progress_sync'].current.visible = False
-                        self.refs['lbl_sync_status'].current.value = f"Last Sync: {datetime.now().strftime('%H:%M:%S')}"
-                        self.refs['progress_sync'].current.update()
-                        self.refs['lbl_sync_status'].current.update()
+                        # Save wallet after sync completion
+                        self.save_wallet_data(force_save=True)
+                        self.create_backup()
                         
-                    threading.Thread(target=hide_progress, daemon=True).start()
+                    self.page.run_thread(update_ui)
+                else:
+                    print("DEBUG: No wallet address available for sync")
+                    self.page.run_thread(lambda: self.show_snackbar("No wallet address available", "warning"))
                     
-                self.page.run_thread(update_ui)
-                
             except Exception as e:
-                def update_error():
-                    self.refs['progress_sync'].current.visible = False
-                    self.refs['lbl_sync_status'].current.value = f"Sync error: {str(e)}"
-                    self.refs['progress_sync'].current.update()
-                    self.refs['lbl_sync_status'].current.update()
-                    self.add_log_message(f"Sync error: {str(e)}", "error")
-                    
-                self.page.run_thread(update_error)
-            
+                print(f"DEBUG: Sync error: {e}")
+                import traceback
+                traceback.print_exc()
+                
+                def show_error():
+                    self.show_snackbar(f"Sync error: {str(e)}", "error")
+                
+                self.page.run_thread(show_error)
+        
+        # Start sync in background thread
         threading.Thread(target=sync_thread, daemon=True).start()
 
-    def manual_save_wallet(self):
-        if self.is_locked or not self.wallet_core.is_unlocked:
-            self.show_snack_bar("Wallet not unlocked")
-            return False
-            
+    def _fallback_sync(self):
+        """Fallback sync method using direct blockchain scanning"""
         try:
-            success = self.wallet_core.save_wallet()
-            
-            if success:
-                self.add_log_message("Wallet saved successfully", "success")
-                self.show_snack_bar("Wallet saved to data directory")
-                return True
-            else:
-                self.add_log_message("Failed to save wallet", "error")
-                return False
+            print("DEBUG: Starting fallback sync...")
+            if self.wallet_core.current_wallet_address:
+                # Use the direct scan method as backup
+                transactions = self.blockchain_manager.scan_transactions_for_address(
+                    self.wallet_core.current_wallet_address
+                )
+                
+                # Update wallet with transactions
+                for tx in transactions:
+                    self.database.save_transaction(tx, self.wallet_core.current_wallet_address)
+                
+                # Calculate balance from transactions
+                total_received = sum(
+                    tx.get('amount', 0) for tx in transactions 
+                    if tx.get('to', '').lower() == self.wallet_core.current_wallet_address.lower()
+                )
+                total_sent = sum(
+                    tx.get('amount', 0) for tx in transactions 
+                    if tx.get('from', '').lower() == self.wallet_core.current_wallet_address.lower()
+                )
+                current_balance = total_received - total_sent
+                
+                self.wallet_core.update_balance(current_balance)
+                
+                def update_ui_fallback():
+                    self.update_balance_display()
+                    self.update_transaction_history()
+                    self.show_snackbar(f"Fallback sync: {len(transactions)} transactions", "info")
+                    
+                self.page.run_thread(update_ui_fallback)
                 
         except Exception as e:
-            self.add_log_message(f"Save error: {str(e)}", "error")
-            return False
-
-    def auto_save_wallet(self):
-        if not self.is_locked and self.wallet_core.is_unlocked and self.wallet_core.wallets:
-            try:
-                self.wallet_core.save_wallet()
-            except Exception as e:
-                pass
-        
-    def refresh_wallets(self):
-        self.update_balance_display()
-        self.update_wallets_list()
-        self.add_log_message("Wallets refreshed", "info")
-        self.auto_save_wallet()
-        
-    def copy_to_clipboard(self, text):
-        self.page.set_clipboard(text)
-        self.show_snack_bar("Copied to clipboard")
-        
-    def show_about_dialog(self):
-        # Adjust dialog for mobile
-        if self.is_mobile:
-            dialog_width = self.page.width - 40
-            dialog_height = self.page.height - 100
-            left = 20
-            top = 50
-        else:
-            dialog_width = self.page.width - 280
-            dialog_height = self.page.height
-            left = 280
-            top = 0
-
-        overlay_container = ft.Container(
-            width=dialog_width,
-            height=dialog_height,
-            left=left,
-            top=top,
-            bgcolor="#1a0f0f",
-            border=ft.border.only(left=ft.BorderSide(4, "#8B4513")) if not self.is_mobile else ft.border.all(2, "#8B4513"),
-            animate_position=ft.Animation(300, "easeOut"),
-            padding=20,
-        )
-        
-        def close_dialog(e):
-            overlay_container.left = self.page.width
-            self.page.update()
-            time.sleep(0.3)
-            self.page.overlay.remove(overlay_container)
-            self.page.update()
-        
-        dialog_content = ft.Column([
-            ft.Row([
-                ft.Container(
-                    content=ft.Image(
-                        src="./wallet_icon.png",
-                        width=32,
-                        height=32,
-                        fit=ft.ImageFit.CONTAIN,
-                        color="#dc3545",
-                        color_blend_mode=ft.BlendMode.SRC_IN,
-                        error_content=ft.Text("🔴", size=20)
-                    ),
-                    margin=ft.margin.only(right=12),
-                ),
-                ft.Text("About Luna Wallet", size=24, color="#dc3545", weight="bold"),
-            ], alignment=ft.MainAxisAlignment.START),
-            ft.Container(height=30),
-            ft.Text("Luna Wallet", size=18, color="#f8d7da"),
-            ft.Text("Version 1.0", size=14, color="#f8d7da"),
-            ft.Text("A secure wallet for Luna Network", size=14, color="#f8d7da"),
-            ft.Text("Built with Flet", size=12, color="#f8d7da"),
-            ft.Container(height=40),
-            ft.ElevatedButton(
-                "Close",
-                on_click=close_dialog,
-                style=ft.ButtonStyle(
-                    color="#ffffff",
-                    bgcolor="#dc3545",
-                    padding=ft.padding.symmetric(horizontal=20, vertical=12),
-                    shape=ft.RoundedRectangleBorder(radius=4)
-                )
-            )
-        ], scroll=ft.ScrollMode.ADAPTIVE, horizontal_alignment=ft.CrossAxisAlignment.CENTER)
-        
-        overlay_container.content = dialog_content
-        self.page.overlay.append(overlay_container)
-        self.page.update()
+            print(f"DEBUG: Fallback sync error: {e}")
+            self.page.run_thread(lambda: self.show_snackbar("Fallback sync failed", "error"))
 
     def update_balance_display(self):
-        if not self.wallet_core.is_unlocked or not self.wallet_core.wallets:
-            self.refs['lbl_wallet_name'].current.value = "Name: No wallet loaded"
-            self.refs['lbl_address'].current.value = "Address: --"
-            self.refs['lbl_balance'].current.value = "Balance: 0.000000 LUN"
-            self.refs['lbl_available'].current.value = "Available: 0.000000 LUN"
-            self.refs['lbl_pending'].current.value = "Pending: 0.000000 LUN"
-            self.refs['lbl_transactions'].current.value = "Transactions: 0"
+        """Update balance display in UI"""
+        try:
+            balance = self.wallet_core.get_balance()
+            formatted_balance = format_balance(balance)
+            
+            # Update your balance display components
+            if hasattr(self, 'balance_text'):
+                self.balance_text.value = f"{formatted_balance} LUNAR"
+                self.balance_text.update()
+                
+            if hasattr(self, 'balance_amount'):
+                self.balance_amount.value = formatted_balance
+                self.balance_amount.update()
+                
+        except Exception as e:
+            print(f"DEBUG: Balance display update error: {e}")
+
+    def update_transaction_history(self):
+        """Update transaction history using lunalib transactions"""
+        try:
+            # Clear existing transactions
+            if hasattr(self, 'transactions_list'):
+                self.transactions_list.controls.clear()
+            else:
+                # Initialize transactions list if it doesn't exist
+                self.transactions_list = ft.ListView(spacing=8, height=200, expand=True)
+            
+            if hasattr(self, 'wallet_core') and self.wallet_core:
+                # Check if wallet is unlocked
+                is_unlocked = (
+                    getattr(self.wallet_core, 'is_unlocked', False) or
+                    getattr(self.wallet_core, 'is_locked', True) == False or
+                    getattr(self, 'is_locked', True) == False
+                )
+                
+                if is_unlocked:
+                    # Use lunalib transactions to get transaction history
+                    from lunalib.transactions.transactions import TransactionManager
+                    tx_manager = TransactionManager()
+                    
+                    # Get current wallet address
+                    current_address = getattr(self.wallet_core, 'current_wallet_address', '')
+                    if not current_address:
+                        self._show_no_wallet_message()
+                        return
+                    
+                    # Get transactions using lunalib
+                    transactions = []
+                    
+                    # Method 1: Try database first
+                    if hasattr(self, 'database'):
+                        # Try common database methods
+                        db_methods = ['get_transactions', 'get_wallet_transactions', 'load_transactions', 'get_all_transactions']
+                        for method in db_methods:
+                            if hasattr(self.database, method):
+                                try:
+                                    if method == 'get_all_transactions':
+                                        all_txs = getattr(self.database, method)()
+                                        # Filter for current wallet
+                                        transactions = [tx for tx in all_txs if 
+                                                    tx.get('from') == current_address or 
+                                                    tx.get('to') == current_address]
+                                    else:
+                                        transactions = getattr(self.database, method)(current_address)
+                                    break
+                                except:
+                                    continue
+                    
+                    # Method 2: If no transactions from database, create sample or use blockchain
+                    if not transactions:
+                        transactions = self._get_transactions_from_blockchain(current_address)
+                    
+                    if not transactions:
+                        self._show_no_transactions_message()
+                        return
+                    
+                    # Sort by timestamp (newest first) and limit to 10
+                    transactions.sort(key=lambda x: x.get('timestamp', 0), reverse=True)
+                    transactions = transactions[:10]
+                    
+                    # Create transaction cards
+                    for tx in transactions:
+                        tx_card = self._create_transaction_card(tx, current_address)
+                        self.transactions_list.controls.append(tx_card)
+                        
+                else:
+                    self._show_wallet_locked_message()
+            else:
+                self._show_wallet_not_available_message()
+                
+        except Exception as e:
+            print(f"DEBUG: Transaction history error: {e}")
+            self._show_error_message(str(e))
+
+    def _get_transactions_from_blockchain(self, address: str):
+        """Get transactions from blockchain manager"""
+        transactions = []
+        try:
+            if hasattr(self, 'blockchain_manager'):
+                transactions = self.blockchain_manager.scan_transactions_for_address(address)
+        except Exception as e:
+            print(f"DEBUG: Blockchain scan error: {e}")
+        
+        return transactions
+
+    def _create_transaction_card(self, tx: dict, current_address: str):
+        """Create a transaction card UI element"""
+        from lunalib.transactions.transactions import TransactionSecurity
+        
+        security = TransactionSecurity()
+        
+        # Get transaction details
+        tx_type = tx.get('type', 'transfer')
+        amount = tx.get('amount', 0)
+        from_addr = tx.get('from', '')
+        to_addr = tx.get('to', '')
+        status = tx.get('status', 'confirmed')
+        timestamp = tx.get('timestamp', 0)
+        tx_hash = tx.get('hash', '')
+        memo = tx.get('memo', '')
+        
+        # Determine direction and styling
+        is_incoming = tx_type == 'reward' or (to_addr and to_addr.lower() == current_address.lower())
+        
+        # Use lunalib to get color and risk assessment
+        risk_level, risk_reason = security.assess_risk(tx)
+        color = "#00ff00" if is_incoming else "#ff4444"
+        icon = "📥" if is_incoming else "📤"
+        direction = "Received" if is_incoming else "Sent"
+        
+        # Format address for display
+        display_address = to_addr if is_incoming else from_addr
+        if display_address:
+            truncated_addr = f"{display_address[:8]}...{display_address[-6:]}" if len(display_address) > 14 else display_address
         else:
-            if self.selected_wallet_index < len(self.wallet_core.wallets):
-                wallet = self.wallet_core.wallets[self.selected_wallet_index]
-                self.refs['lbl_wallet_name'].current.value = f"Name: {wallet['label']}"
-                self.refs['lbl_address'].current.value = f"Address: {wallet['address'][:20]}..."
-                self.refs['lbl_balance'].current.value = f"Balance: {wallet['balance']:.6f} LUN"
-                self.refs['lbl_available'].current.value = f"Available: {wallet['balance'] - wallet['pending_send']:.6f} LUN"
-                self.refs['lbl_pending'].current.value = f"Pending: {wallet['pending_send']:.6f} LUN"
-                self.refs['lbl_transactions'].current.value = f"Transactions: {len(wallet['transactions'])}"
-                self.page.title = f"🔴 Luna Wallet - {wallet['balance']:.2f} LUN"
+            truncated_addr = "Unknown"
         
-        for ref in [self.refs['lbl_wallet_name'], self.refs['lbl_address'], self.refs['lbl_balance'],
-                   self.refs['lbl_available'], self.refs['lbl_pending'], self.refs['lbl_transactions']]:
-            if ref.current:
-                ref.current.update()
-                
+        # Format date
+        from datetime import datetime
+        date_str = datetime.fromtimestamp(timestamp).strftime("%m/%d %H:%M") if timestamp else "Unknown"
+        
+        # Create transaction card
+        return ft.Container(
+            content=ft.Column([
+                ft.Row([
+                    ft.Text(
+                        f"{amount:.6f} LUN",
+                        size=16,
+                        color=color,
+                        weight="bold",
+                        expand=True
+                    ),
+                    ft.Container(
+                        content=ft.Text(
+                            status.upper(),
+                            size=10,
+                            color=color,
+                            weight="bold"
+                        ),
+                        padding=ft.padding.symmetric(horizontal=6, vertical=2),
+                        bgcolor=f"{color}20",
+                        border_radius=6
+                    )
+                ]),
+                ft.Row([
+                    ft.Icon(icon, size=14, color=color),
+                    ft.Text(
+                        f"{direction}: {truncated_addr}",
+                        size=12,
+                        color="#f8d7da",
+                        expand=True
+                    ),
+                    ft.Text(
+                        date_str,
+                        size=10,
+                        color="#a8a8a8"
+                    )
+                ]),
+                ft.Row([
+                    ft.Text(
+                        memo if memo else f"TX: {tx_hash[:8]}...",
+                        size=10,
+                        color="#a8a8a8",
+                        expand=True,
+                        max_lines=1,
+                        overflow="ellipsis"
+                    ),
+                    ft.TextButton(
+                        "View",
+                        on_click=lambda e, tx_data=tx: self._show_transaction_details(tx_data),
+                        style=ft.ButtonStyle(
+                            color="#dc3545",
+                            padding=ft.padding.symmetric(horizontal=8, vertical=2),
+                            overlay_color="#dc354520"
+                        )
+                    )
+                ])
+            ], spacing=6),
+            padding=12,
+            bgcolor="#2c1a1a",
+            border_radius=10,
+            border=ft.border.all(1, "#5c2e2e")
+        )
+
+    def _show_no_transactions_message(self):
+        """Show no transactions message"""
+        if hasattr(self, 'transactions_list'):
+            self.transactions_list.controls.append(
+                ft.Container(
+                    content=ft.Column([
+                        ft.Icon(ft.Icons.RECEIPT_LONG, size=32, color="#5c2e2e"),
+                        ft.Text("No transactions yet", color="#f8d7da", size=14),
+                        ft.Text("Your transactions will appear here", color="#a8a8a8", size=12),
+                    ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=5),
+                    padding=20,
+                    alignment=ft.alignment.center
+                )
+            )
+
+    def _show_wallet_locked_message(self):
+        """Show wallet locked message"""
+        if hasattr(self, 'transactions_list'):
+            self.transactions_list.controls.append(
+                ft.Container(
+                    content=ft.Column([
+                        ft.Icon(ft.Icons.LOCK, size=32, color="#5c2e2e"),
+                        ft.Text("Wallet Locked", color="#f8d7da", size=14),
+                        ft.Text("Unlock wallet to view transactions", color="#a8a8a8", size=12),
+                    ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=5),
+                    padding=20,
+                    alignment=ft.alignment.center
+                )
+            )
+
+    def _show_wallet_not_available_message(self):
+        """Show wallet not available message"""
+        if hasattr(self, 'transactions_list'):
+            self.transactions_list.controls.append(
+                ft.Container(
+                    content=ft.Column([
+                        ft.Icon(ft.Icons.ERROR, size=32, color="#5c2e2e"),
+                        ft.Text("Wallet Not Available", color="#f8d7da", size=14),
+                        ft.Text("Wallet core not initialized", color="#a8a8a8", size=12),
+                    ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=5),
+                    padding=20,
+                    alignment=ft.alignment.center
+                )
+            )
+
+    def _show_no_wallet_message(self):
+        """Show no wallet selected message"""
+        if hasattr(self, 'transactions_list'):
+            self.transactions_list.controls.append(
+                ft.Container(
+                    content=ft.Column([
+                        ft.Icon(ft.Icons.WALLET, size=32, color="#5c2e2e"),
+                        ft.Text("No Wallet Selected", color="#f8d7da", size=14),
+                        ft.Text("Select a wallet to view transactions", color="#a8a8a8", size=12),
+                    ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=5),
+                    padding=20,
+                    alignment=ft.alignment.center
+                )
+            )
+
+    def _show_error_message(self, error: str):
+        """Show error message"""
+        if hasattr(self, 'transactions_list'):
+            self.transactions_list.controls.append(
+                ft.Container(
+                    content=ft.Column([
+                        ft.Icon(ft.Icons.ERROR, size=32, color="#5c2e2e"),
+                        ft.Text("Error Loading", color="#f8d7da", size=14),
+                        ft.Text(f"Failed to load transactions", color="#a8a8a8", size=12),
+                    ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=5),
+                    padding=20,
+                    alignment=ft.alignment.center
+                )
+            )
+
+    def _create_transaction_item(self, transaction: Dict):
+        """Create a UI item for a transaction"""
+        # Use your existing transaction formatting functions
+        color = get_transaction_color(transaction, [self.wallet_core.current_wallet_address])
+        icon = get_transaction_icon(transaction, [self.wallet_core.current_wallet_address])
+        
+        # Return your transaction UI component
+        # This depends on your UI framework (Flet, etc.)
+        pass
+    def show_wallet_page(self):
+        """Show main wallet page after successful unlock"""
+        print("DEBUG: Showing wallet page")
+        try:
+            wallet_page = WalletPage(
+                self,
+                on_send=self.show_send_page,
+                on_receive=self.show_receive_page,
+                on_export_key=self.show_export_key_page,
+                on_create_wallet=self.show_create_wallet,
+                on_import_wallet=self.show_import_wallet
+            )
+            self.current_page = wallet_page.create()
+            
+            # Clear and add the wallet page
+            self.page.controls.clear()
+            self.page.add(self.current_page)
+            self.page.update()
+            
+            self.update_wallet_data()
+            
+        except Exception as e:
+            print(f"DEBUG: Error showing wallet page: {e}")
+            self.show_snackbar("Error loading wallet interface", "error")
+            # Fallback to lock screen
+            self.show_lock_page()
+
+    def show_create_wallet(self):
+        create_page = CreateWalletPage(
+            self,
+            on_back=self.show_previous_page,
+            on_wallet_created=self.on_wallet_created
+        )
+        self.current_page = create_page.create()
+        
+        # Clear the page and add the new content properly centered
+        self.page.controls.clear()
+        
+        # Create a container that ensures proper centering
+        centered_content = ft.Container(
+            content=self.current_page,
+            expand=True,
+            alignment=ft.alignment.center,
+            padding=20
+        )
+        
+        self.page.add(centered_content)
         self.page.update()
 
-    def lock_wallet(self):
+    def show_import_wallet(self):
+        import_page = ImportWalletPage(
+            self,
+            on_back=self.show_previous_page,
+            on_wallet_imported=self.on_wallet_imported
+        )
+        self.current_page = import_page.create()
+        self.show_current_page()
+
+    def show_send_page(self):
+        """Show send page for current wallet"""
+        current_address = None
+        if hasattr(self.wallet_core, 'current_wallet_address'):
+            current_address = self.wallet_core.current_wallet_address
+        
+        send_page = SendPage(
+            self,
+            on_back=self.show_previous_page,
+            on_send_complete=self.on_send_complete,
+            from_address=current_address  # Pass the current wallet address
+        )
+        self.current_page = send_page.create()
+        self.show_current_page()
+
+    def show_receive_page(self):
+        """Show receive page for current wallet"""
+        current_address = None
+        if hasattr(self.wallet_core, 'current_wallet_address'):
+            current_address = self.wallet_core.current_wallet_address
+        
+        receive_page = ReceivePage(
+            self, 
+            on_back=self.show_previous_page,
+            wallet_address=current_address  # Pass the current wallet address
+        )
+        self.current_page = receive_page.create()
+        self.show_current_page()
+
+    def show_export_key_page(self):
+        """Show export key page for current wallet"""
+        current_address = None
+        if hasattr(self.wallet_core, 'current_wallet_address'):
+            current_address = self.wallet_core.current_wallet_address
+        
+        export_page = ExportKeyPage(
+            self, 
+            on_back=self.show_previous_page,
+            wallet_address=current_address  # Pass the current wallet address
+        )
+        self.current_page = export_page.create()
+        self.show_current_page()
+
+    def show_previous_page(self):
+        if self.is_locked:
+            self.show_lock_page()
+        else:
+            self.show_wallet_page()
+
+    def on_wallet_created(self):
+        """Handle wallet creation success"""
+        try:
+            print("DEBUG: on_wallet_created called - transitioning to wallet page")
+            self.is_locked = False
+            self.last_activity_time = time.time()
+            
+            # CRITICAL: Save wallet immediately after creation
+            print("DEBUG: Saving wallet data after creation...")
+            save_success = self.save_wallet_data(force_save=True)
+            if save_success:
+                print("DEBUG: Wallet data saved successfully after creation")
+                # Create backup for important operation
+                backup_success = self.create_backup()
+                print(f"DEBUG: Backup creation: {backup_success}")
+            else:
+                print("DEBUG: WARNING: Failed to save wallet after creation")
+            
+            # Update wallet metadata for future sessions
+            self._load_wallet_metadata()
+            
+            # Show success message
+            self.show_snackbar("Wallet created successfully!", "success")
+            
+            # Force immediate transition
+            print("DEBUG: Immediately showing wallet page")
+            self.show_wallet_page()
+            
+        except Exception as e:
+            print(f"DEBUG: Error in on_wallet_created: {e}")
+            import traceback
+            traceback.print_exc()
+            self.show_snackbar("Wallet created but transition failed", "error")
+            # Force transition anyway
+            self.show_wallet_page()
+
+    def on_wallet_imported(self):
+        """Handle wallet import success"""
+        self.is_locked = False
+        self.last_activity_time = time.time()
+        
+        # Save wallet immediately after import
+        print("DEBUG: Saving wallet data after import...")
+        save_success = self.save_wallet_data(force_save=True)
+        if save_success:
+            print("DEBUG: Wallet data saved after import")
+            # Create backup for important operation
+            self.create_backup()
+        
+        # Update wallet metadata for future sessions
+        self._load_wallet_metadata()
+        
+        self.show_snackbar("Wallet imported successfully!", "success")
+        self.show_wallet_page()
+
+    def on_send_complete(self):
+        """Handle send transaction completion"""
+        # Save wallet after sending transaction
+        save_success = self.save_wallet_data(force_save=True)
+        if save_success:
+            print("DEBUG: Wallet data saved after send transaction")
+            # Create backup for important operation
+            self.create_backup()
+        
+        self.show_snackbar("Transaction sent successfully!", "success")
+        self.show_wallet_page()
+
+    def lock_wallet(self, wtfisthis):
+        """Lock wallet and save state"""
+        print(wtfisthis)
+        # Save wallet before locking
+        self.save_wallet_data(force_save=True)
+        
         self.is_locked = True
-        self.wallet_core.lock_wallet()
+        if hasattr(self.wallet_core, 'lock_wallet'):
+            self.wallet_core.lock_wallet()
+        self.show_lock_page(
+            title="Wallet Locked", 
+            subtitle="Please unlock your wallet to continue",
+            wallet_exists=True
+        )
+        self.show_snackbar("Wallet locked", "info")
+
+    def update_wallet_data(self):
+        if hasattr(self, 'current_page') and hasattr(self.current_page, 'update_wallet_data'):
+            self.current_page.update_wallet_data()
+
+    def show_snackbar(self, message, message_type="info"):
+        color = {
+            "error": "#dc3545",
+            "success": "#28a745", 
+            "warning": "#ffc107",
+            "info": "#17a2b8"
+        }.get(message_type, "#f8d7da")
         
-        # Clear any existing overlays first
-        self.page.overlay.clear()
-        self.page.update()
-        
-        # Then show the lock screen
-        self.show_lock_screen("Wallet Locked", "Please unlock to continue")
-        self.add_log_message("Wallet locked", "info")
-        
-    def activity_monitor(self):
-        while True:
-            try:
-                current_time = time.time()
-                inactive_time = current_time - self.last_activity_time
-                
-                if (not self.is_locked and 
-                    inactive_time > self.auto_lock_minutes * 60 and 
-                    self.wallet_core.is_unlocked):
-                    self.add_log_message(f"Auto-locking wallet after {self.auto_lock_minutes} minutes of inactivity", "info")
-                    self.lock_wallet()
-                
-                time.sleep(10)
-            except Exception as e:
-                print(f"Activity monitor error: {e}")
-                time.sleep(10)
-    
-    def on_keyboard_activity(self, e):
-        if not self.is_locked:
-            self.last_activity_time = time.time()
-
-    def on_mouse_activity(self, e):
-        if not self.is_locked:
-            self.last_activity_time = time.time()
-
-    def on_window_resize(self, e):
-        self.add_log_message(f"Window resized to {e.width}x{e.height}", "info")
-
-    def on_window_event(self, e):
-        if e.data == "close":
-            return True
-        elif e.data == "resize":
-            self.on_window_resize(e)
-        return True
-
-    def show_snack_bar(self, message: str):
-        snack_bar = ft.SnackBar(content=ft.Text(message), shape=ft.RoundedRectangleBorder(radius=3))
+        snack_bar = ft.SnackBar(
+            content=ft.Text(message, color="#ffffff"),
+            bgcolor=color
+        )
         self.page.overlay.append(snack_bar)
         snack_bar.open = True
         self.page.update()
+        
         def remove_snack():
             time.sleep(3)
-            self.page.overlay.remove(snack_bar)
-            self.page.update()
+            if snack_bar in self.page.overlay:
+                self.page.overlay.remove(snack_bar)
+                self.page.update()
+                
         threading.Thread(target=remove_snack, daemon=True).start()
+
+    def update_refs(self):
+        if hasattr(self, 'page'):
+            self.page.update()
+
+
+    def get_current_time(self):
+        """Helper method to get current time"""
+        import time
+        return time.time()
 
 def main(page: ft.Page):
     app = LunaWalletApp()

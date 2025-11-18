@@ -4,3 +4,4 @@ requests
 qrcode
 pillow
 pystray
+git+https://github.com/taellinglin/LunaLib.git
