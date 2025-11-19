@@ -7,19 +7,18 @@ class ExportKeyPage:
         self.wallet_address = wallet_address
         
         # Form fields
+        field_width = 400 if not app.is_mobile else 300
         self.password = ft.TextField(
-            label="🔒 Enter Password",
-            password=True,
-            can_reveal_password=True,
-            hint_text="Enter your wallet password",
-            width=400 if not app.is_mobile else 300
+            label="🔒 Enter Password", password=True, can_reveal_password=True,
+            hint_text="Enter your wallet password", width=field_width
         )
         self.private_key_display = ft.TextField(
-            label="🔑 Your Private Key",
-            multiline=True,
-            read_only=True,
-            width=400 if not app.is_mobile else 300,
-            height=100,
+            label="🔑 Your Private Key", multiline=True, read_only=True,
+            width=field_width, height=100, visible=False
+        )
+        self.copy_button = ft.ElevatedButton(
+            "📋 Copy to Clipboard", icon=ft.Icons.COPY, on_click=self.copy_private_key,
+            style=ft.ButtonStyle(color="#ffffff", bgcolor="#dc3545", padding=15),
             visible=False
         )
         
@@ -28,15 +27,10 @@ class ExportKeyPage:
             content=ft.Column([
                 # Header
                 ft.Row([
-                    ft.IconButton(
-                        icon=ft.Icons.ARROW_BACK,
-                        icon_color="#f8d7da",
-                        on_click=lambda e: self.on_back()
-                    ),
+                    ft.IconButton(ft.Icons.ARROW_BACK, icon_color="#f8d7da", on_click=lambda e: self.on_back()),
                     ft.Text("🔑 Export Private Key", size=24, weight="bold", color="#f8d7da"),
                     ft.Container(expand=True)
                 ]),
-                
                 ft.Divider(color="#5c2e2e"),
                 
                 # Warning
@@ -47,57 +41,32 @@ class ExportKeyPage:
                         ft.Text(
                             "🚫 Never share your private key with anyone! "
                             "Anyone with this key can access your funds.",
-                            color="#FF6B6B",
-                            text_align="center"
+                            color="#FF6B6B", text_align="center"
                         )
                     ], horizontal_alignment=ft.CrossAxisAlignment.CENTER),
-                    padding=20,
-                    margin=10,
-                    bgcolor="#2a1e1e",
-                    border_radius=10
+                    padding=20, margin=10, bgcolor="#2a1e1e", border_radius=10,
+                    width=500 if not self.app.is_mobile else 350
                 ),
                 
-                # Form
+                # Centered form container
                 ft.Container(
                     content=ft.Column([
                         self.password,
                         self.private_key_display,
-                        
                         ft.Container(height=20),
-                        
                         ft.Row([
                             ft.ElevatedButton(
-                                "👁️ Show Private Key",
-                                on_click=self.show_private_key,
-                                style=ft.ButtonStyle(
-                                    color="#ffffff",
-                                    bgcolor="#dc3545",
-                                    padding=15
-                                )
+                                "👁️ Show Private Key", on_click=self.show_private_key,
+                                style=ft.ButtonStyle(color="#ffffff", bgcolor="#dc3545", padding=15)
                             ),
-                            ft.ElevatedButton(
-                                "📋 Copy to Clipboard",
-                                icon=ft.Icons.COPY,
-                                on_click=self.copy_private_key,
-                                style=ft.ButtonStyle(
-                                    color="#ffffff", 
-                                    bgcolor="#dc3545",
-                                    padding=15
-                                ),
-                                visible=False
-                            )
+                            self.copy_button
                         ], alignment=ft.MainAxisAlignment.CENTER)
                     ], horizontal_alignment=ft.CrossAxisAlignment.CENTER),
-                    padding=20,
-                    margin=10,
-                    bgcolor="#1a0f0f",
-                    border_radius=15,
-                    width=500 if not self.app.is_mobile else 350
+                    padding=20, margin=15, bgcolor="#1a0f0f", border_radius=15,
+                    alignment=ft.alignment.center, expand=True
                 )
             ]),
-            expand=True,
-            padding=20,
-            bgcolor="#2c1a1a"
+            expand=True, padding=10, bgcolor="#2c1a1a", alignment=ft.alignment.center
         )
     
     def show_private_key(self, e):
@@ -108,7 +77,6 @@ class ExportKeyPage:
             return
         
         try:
-            # Get the current wallet address to export
             target_address = self.wallet_address
             if not target_address and hasattr(self.app.wallet_core, 'current_wallet_address'):
                 target_address = self.app.wallet_core.current_wallet_address
@@ -117,20 +85,12 @@ class ExportKeyPage:
                 self.app.show_snackbar("No wallet selected", "error")
                 return
             
-            # Export private key for the specific wallet
             if hasattr(self.app.wallet_core, 'export_private_key'):
                 private_key = self.app.wallet_core.export_private_key(target_address, password)
                 if private_key:
                     self.private_key_display.value = private_key
                     self.private_key_display.visible = True
-                    
-                    # Show copy button
-                    for control in self.app.page.controls[0].content.controls:
-                        if isinstance(control, ft.Container) and hasattr(control.content, 'controls'):
-                            for btn in control.content.controls[-1].controls:
-                                if "Copy to Clipboard" in getattr(btn, 'text', ''):
-                                    btn.visible = True
-                    
+                    self.copy_button.visible = True
                     self.app.page.update()
                     self.app.show_snackbar("✅ Private key retrieved", "success")
                 else:
