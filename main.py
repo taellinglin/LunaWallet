@@ -21,17 +21,14 @@ from gui.tab_wallets import WalletsTab
 
 # Import lunalib components
 from lunalib.core.wallet import LunaWallet
+#from lunalib.core.mempool import MempoolManager
 from lunalib.core.blockchain import BlockchainManager
 from lunalib.transactions.transactions import TransactionManager
 from lunalib.storage.encryption import EncryptionManager
 from lunalib.storage.database import WalletDatabase
+
 # Add these imports at the top with other imports
-try:
-    import pygame
-    pygame.mixer.init()
-    SOUND_ENABLED = True
-except:
-    SOUND_ENABLED = False
+
 # Import utils
 from utils import format_address, format_balance, format_timestamp, get_transaction_color, get_transaction_icon
 
@@ -73,25 +70,35 @@ class LunaWalletApp:
         self.backup_count = 0
         self.max_backups = 5
         
-        self.sound_enabled = SOUND_ENABLED
+        self.sound_enabled = True
         
         # NEW: Initialize data directory and load any existing wallet metadata
         self._ensure_data_directory()
         self._load_wallet_metadata()
     def _play_sound(self, sound_type):
-        """Play sound for transaction events"""
+        """Play sound using Flet's audio capabilities (mobile compatible)"""
         if not self.sound_enabled:
             return
             
         try:
+            # Use Flet audio for mobile compatibility
             if sound_type == "transaction":
-                # Play transaction received sound
-                pygame.mixer.Sound("./sounds/transaction.wav").play()
+                # You can use Flet's Audio control for mobile
+                audio = ft.Audio(
+                    src="/assets/sounds/transaction.mp3",
+                    autoplay=True,
+                )
+                self.page.overlay.append(audio)
+                self.page.update()
             elif sound_type == "send":
-                # Play send transaction sound
-                pygame.mixer.Sound("./sounds/send.wav").play()
+                audio = ft.Audio(
+                    src="/assets/sounds/send.mp3", 
+                    autoplay=True,
+                )
+                self.page.overlay.append(audio)
+                self.page.update()
         except Exception as e:
-            print(f"DEBUG: Sound error: {e}")
+            print(f"Sound error: {e}")
     def _load_wallet_metadata(self):
         """Load basic wallet metadata without requiring password"""
         try:
@@ -1413,7 +1420,7 @@ class LunaWalletApp:
         """Calculate available balance (total balance minus pending outgoing transactions)"""
         try:
             from lunalib.core.mempool import MempoolManager
-            from lunalib.blockchain import BlockchainManager
+            from lunalib.core.blockchain import BlockchainManager
             
             # Get total balance from blockchain
             total_balance = self._get_total_balance_from_blockchain()
@@ -1445,7 +1452,7 @@ class LunaWalletApp:
     def _get_total_balance_from_blockchain(self) -> float:
         """Get total balance by scanning blockchain for confirmed transactions"""
         try:
-            from lunalib.blockchain import BlockchainManager
+            from lunalib.core.blockchain import BlockchainManager
             
             blockchain = BlockchainManager()
             transactions = blockchain.scan_transactions_for_address(self.address)
@@ -1500,7 +1507,7 @@ class LunaWalletApp:
     def get_transaction_history(self) -> dict:
         """Get complete transaction history (both pending and confirmed)"""
         try:
-            from lunalib.blockchain import BlockchainManager
+            from lunalib.core.blockchain import BlockchainManager
             from lunalib.core.mempool import MempoolManager
             
             blockchain = BlockchainManager()
