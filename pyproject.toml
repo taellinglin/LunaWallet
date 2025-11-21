@@ -1,0 +1,60 @@
+[build-system]
+requires = ["pyinstaller", "flet", "qrcode", "pillow"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "LunaWallet"
+version = "1.0.0"
+description = "Luna Wallet - Secure cryptocurrency wallet"
+authors = [
+    {name = "Ling Lin", email = "taellinglin@gmail.com"},
+]
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "flet>=0.10.0",
+    "qrcode[pil]>=7.4.0",
+    "lunalib>=1.0.0",
+    "certifi"
+]
+
+[project.urls]
+Homepage = "https://linglin.art"
+Documentation = "https://bank.linglin.art"
+
+[tool.pyinstaller]
+main-file = "main.py"
+console = false
+name = "LunaWallet"
+upx = true
+icon = "./wallet_icon.ico"
+
+# Include only the essential files
+binaries = []
+datas = []
+hiddenimports = [
+    "lunalib",
+    "lunalib.core.blockchain",
+    "lunalib.transactions",
+    "lunalib.transactions.transactions",
+    "lunalib.mining",
+    "lunalib.mining.miner",
+    "lunalib.core",
+    "lunalib.core.wallet",
+]
+
+# Exclude unnecessary packages to reduce size
+excludes = [
+    "tkinter",
+    "test",
+    "unittest",
+    "pydoc",
+    "distutils",
+]
+
+# Windows specific
+version-file = "version_info.txt"
+
+# Additional PyInstaller options
+[tool.pyinstaller.windows]
+target_arch = "x64"
