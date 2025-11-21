@@ -25,7 +25,13 @@ from lunalib.core.blockchain import BlockchainManager
 from lunalib.transactions.transactions import TransactionManager
 from lunalib.storage.encryption import EncryptionManager
 from lunalib.storage.database import WalletDatabase
-
+# Add these imports at the top with other imports
+try:
+    import pygame
+    pygame.mixer.init()
+    SOUND_ENABLED = True
+except:
+    SOUND_ENABLED = False
 # Import utils
 from utils import format_address, format_balance, format_timestamp, get_transaction_color, get_transaction_icon
 
@@ -67,10 +73,25 @@ class LunaWalletApp:
         self.backup_count = 0
         self.max_backups = 5
         
+        self.sound_enabled = SOUND_ENABLED
+        
         # NEW: Initialize data directory and load any existing wallet metadata
         self._ensure_data_directory()
         self._load_wallet_metadata()
-
+    def _play_sound(self, sound_type):
+        """Play sound for transaction events"""
+        if not self.sound_enabled:
+            return
+            
+        try:
+            if sound_type == "transaction":
+                # Play transaction received sound
+                pygame.mixer.Sound("./sounds/transaction.wav").play()
+            elif sound_type == "send":
+                # Play send transaction sound
+                pygame.mixer.Sound("./sounds/send.wav").play()
+        except Exception as e:
+            print(f"DEBUG: Sound error: {e}")
     def _load_wallet_metadata(self):
         """Load basic wallet metadata without requiring password"""
         try:
@@ -493,8 +514,12 @@ class LunaWalletApp:
         """Handle incoming transactions with auto-save"""
         self.update_transaction_history()
         self.show_snackbar("New transaction received", "success")
-        self.save_wallet_data(force_save=True)  # Force save on new transactions
-        self.create_backup()  # Create backup for important changes
+        
+        # Play transaction sound
+        self._play_sound("transaction")
+        
+        self.save_wallet_data(force_save=True)
+        self.create_backup()
         
     def on_sync_complete(self):
         """Handle sync completion with auto-save"""
@@ -1228,19 +1253,48 @@ class LunaWalletApp:
         self.show_current_page()
 
     def show_send_page(self):
-        """Show send page for current wallet"""
-        current_address = None
-        if hasattr(self.wallet_core, 'current_wallet_address'):
-            current_address = self.wallet_core.current_wallet_address
-        
-        send_page = SendPage(
-            self,
-            on_back=self.show_previous_page,
-            on_send_complete=self.on_send_complete,
-            from_address=current_address  # Pass the current wallet address
-        )
-        self.current_page = send_page.create()
-        self.show_current_page()
+        """Show send page for current wallet with enhanced error handling"""
+        try:
+            print("DEBUG: Entering show_send_page")
+            
+            # Check if wallet is properly unlocked
+            if self.is_locked:
+                print("DEBUG: Wallet is locked, cannot send")
+                self.show_snackbar("Wallet is locked. Please unlock first.", "error")
+                return
+                
+            current_address = None
+            if hasattr(self.wallet_core, 'current_wallet_address'):
+                current_address = self.wallet_core.current_wallet_address
+                print(f"DEBUG: Current wallet address: {current_address}")
+            else:
+                print("DEBUG: No current wallet address found")
+                self.show_snackbar("No wallet selected", "error")
+                return
+                
+            # Check if we have the private key for signing
+            if not hasattr(self.wallet_core, 'private_key') or not self.wallet_core.private_key:
+                print("DEBUG: No private key available - wallet may be locked")
+                self.show_snackbar("Wallet is locked or private key not available", "error")
+                return
+                
+            print("DEBUG: Creating SendPage instance")
+            send_page = SendPage(
+                self,
+                on_back=self.show_previous_page,
+                on_send_complete=self.on_send_complete,
+                from_address=current_address
+            )
+            
+            self.current_page = send_page.create()
+            self.show_current_page()
+            print("DEBUG: Send page displayed successfully")
+            
+        except Exception as e:
+            print(f"DEBUG: Error in show_send_page: {e}")
+            import traceback
+            traceback.print_exc()
+            self.show_snackbar(f"Error opening send page: {str(e)}", "error")
 
     def show_receive_page(self):
         """Show receive page for current wallet"""
@@ -1330,18 +1384,233 @@ class LunaWalletApp:
         
         self.show_snackbar("Wallet imported successfully!", "success")
         self.show_wallet_page()
-
-    def on_send_complete(self):
-        """Handle send transaction completion"""
-        # Save wallet after sending transaction
-        save_success = self.save_wallet_data(force_save=True)
-        if save_success:
-            print("DEBUG: Wallet data saved after send transaction")
-            # Create backup for important operation
-            self.create_backup()
+    def debug_transaction_parameters(self, to_address, amount, fee=None, memo=None):
+        """Debug transaction parameters before sending"""
+        print("=" * 50)
+        print("DEBUG: Transaction Parameters")
+        print("=" * 50)
+        print(f"From Address: {getattr(self.wallet_core, 'current_wallet_address', 'None')}")
+        print(f"To Address: {to_address}")
+        print(f"Amount: {amount}")
+        print(f"Fee: {fee}")
+        print(f"Memo: {memo}")
         
-        self.show_snackbar("Transaction sent successfully!", "success")
-        self.show_wallet_page()
+        # Check wallet state
+        print(f"Wallet Locked: {self.is_locked}")
+        print(f"Wallet Core Locked: {getattr(self.wallet_core, 'is_locked', 'Unknown')}")
+        print(f"Private Key Available: {bool(getattr(self.wallet_core, 'private_key', None))}")
+        print(f"Balance: {getattr(self.wallet_core, 'balance', 'Unknown')}")
+        
+        # Check blockchain manager
+        if hasattr(self, 'blockchain_manager'):
+            print(f"Blockchain Endpoint: {getattr(self.blockchain_manager, 'endpoint_url', 'Unknown')}")
+            print(f"Network Connected: {self.blockchain_manager.check_network_connection()}")
+        else:
+            print("Blockchain Manager: Not available")
+        
+        print("=" * 50)
+    def calculate_available_balance(self) -> float:
+        """Calculate available balance (total balance minus pending outgoing transactions)"""
+        try:
+            from lunalib.core.mempool import MempoolManager
+            from lunalib.blockchain import BlockchainManager
+            
+            # Get total balance from blockchain
+            total_balance = self._get_total_balance_from_blockchain()
+            
+            # Get pending outgoing transactions from mempool
+            mempool = MempoolManager()
+            pending_txs = mempool.get_pending_transactions(self.address)
+            
+            # Sum pending outgoing amounts
+            pending_outgoing = 0.0
+            for tx in pending_txs:
+                if tx.get('from') == self.address:
+                    pending_outgoing += float(tx.get('amount', 0)) + float(tx.get('fee', 0))
+            
+            available_balance = max(0.0, total_balance - pending_outgoing)
+            
+            # Update both current wallet and wallets collection
+            self.available_balance = available_balance
+            if self.current_wallet_address in self.wallets:
+                self.wallets[self.current_wallet_address]['available_balance'] = available_balance
+            
+            print(f"DEBUG: Available balance calculated - Total: {total_balance}, Pending Out: {pending_outgoing}, Available: {available_balance}")
+            return available_balance
+            
+        except Exception as e:
+            print(f"DEBUG: Error calculating available balance: {e}")
+            return self.balance  # Fallback to total balance
+
+    def _get_total_balance_from_blockchain(self) -> float:
+        """Get total balance by scanning blockchain for confirmed transactions"""
+        try:
+            from lunalib.blockchain import BlockchainManager
+            
+            blockchain = BlockchainManager()
+            transactions = blockchain.scan_transactions_for_address(self.address)
+            
+            total_balance = 0.0
+            for tx in transactions:
+                tx_type = tx.get('type', '')
+                
+                # Handle incoming transactions
+                if tx.get('to') == self.address:
+                    if tx_type in ['transfer', 'reward', 'fee_distribution', 'gtx_genesis']:
+                        total_balance += float(tx.get('amount', 0))
+                
+                # Handle outgoing transactions  
+                elif tx.get('from') == self.address:
+                    if tx_type in ['transfer', 'stake', 'delegate']:
+                        total_balance -= float(tx.get('amount', 0))
+                        total_balance -= float(tx.get('fee', 0))
+            
+            return max(0.0, total_balance)
+            
+        except Exception as e:
+            print(f"DEBUG: Error getting blockchain balance: {e}")
+            return self.balance
+
+    def refresh_balance(self) -> bool:
+        """Refresh both total and available balance from blockchain and mempool"""
+        try:
+            total_balance = self._get_total_balance_from_blockchain()
+            available_balance = self.calculate_available_balance()
+            
+            # Update wallet state
+            self.balance = total_balance
+            self.available_balance = available_balance
+            
+            # Update in wallets collection
+            if self.current_wallet_address in self.wallets:
+                self.wallets[self.current_wallet_address]['balance'] = total_balance
+                self.wallets[self.current_wallet_address]['available_balance'] = available_balance
+            
+            print(f"DEBUG: Balance refreshed - Total: {total_balance}, Available: {available_balance}")
+            return True
+            
+        except Exception as e:
+            print(f"DEBUG: Error refreshing balance: {e}")
+            return False
+
+    def get_available_balance(self) -> float:
+        """Get current wallet available balance"""
+        return self.available_balance
+
+    def get_transaction_history(self) -> dict:
+        """Get complete transaction history (both pending and confirmed)"""
+        try:
+            from lunalib.blockchain import BlockchainManager
+            from lunalib.core.mempool import MempoolManager
+            
+            blockchain = BlockchainManager()
+            mempool = MempoolManager()
+            
+            # Get confirmed transactions from blockchain
+            confirmed_txs = blockchain.scan_transactions_for_address(self.address)
+            
+            # Get pending transactions from mempool
+            pending_txs = mempool.get_pending_transactions(self.address)
+            
+            return {
+                'confirmed': confirmed_txs,
+                'pending': pending_txs,
+                'total_confirmed': len(confirmed_txs),
+                'total_pending': len(pending_txs)
+            }
+        except Exception as e:
+            print(f"DEBUG: Error getting transaction history: {e}")
+            return {'confirmed': [], 'pending': [], 'total_confirmed': 0, 'total_pending': 0}
+    def send_transaction(self, to_address: str, amount: float, memo: str = "", password: str = None) -> bool:
+        """Send transaction using lunalib transactions with proper mempool submission"""
+        try:
+            print(f"DEBUG: send_transaction called - to: {to_address}, amount: {amount}, memo: {memo}")
+            
+            # Refresh balances first to get latest state
+            self.refresh_balance()
+            
+            # Check available balance before proceeding
+            if amount > self.available_balance:
+                print(f"DEBUG: Insufficient available balance: {self.available_balance} < {amount}")
+                return False
+            
+            # Check if wallet is unlocked
+            if self.is_locked or not self.private_key:
+                print("DEBUG: Wallet is locked or no private key available")
+                return False
+            
+            # Import transaction manager
+            from lunalib.transactions.transactions import TransactionManager
+            
+            # Create transaction manager
+            tx_manager = TransactionManager()
+            
+            # Create and sign transaction
+            transaction = tx_manager.create_transaction(
+                from_address=self.address,
+                to_address=to_address,
+                amount=amount,
+                private_key=self.private_key,
+                memo=memo,
+                transaction_type="transfer"
+            )
+            
+            print(f"DEBUG: Transaction created: {transaction.get('hash')}")
+            
+            # Validate transaction
+            is_valid, message = tx_manager.validate_transaction(transaction)
+            if not is_valid:
+                print(f"DEBUG: Transaction validation failed: {message}")
+                return False
+            
+            # Send to mempool for broadcasting
+            success, message = tx_manager.send_transaction(transaction)
+            if success:
+                print(f"DEBUG: Transaction sent to mempool: {message}")
+                
+                # Update available balance immediately (deduct pending transaction)
+                fee = transaction.get('fee', 0)
+                self.available_balance -= (amount + fee)
+                if self.current_wallet_address in self.wallets:
+                    self.wallets[self.current_wallet_address]['available_balance'] = self.available_balance
+                
+                print(f"DEBUG: Available balance updated - new available: {self.available_balance}")
+                return True
+            else:
+                print(f"DEBUG: Failed to send transaction to mempool: {message}")
+                return False
+                
+        except Exception as e:
+            print(f"DEBUG: Error in send_transaction: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+    def on_send_complete(self, success=True, error_message=None, tx_hash=None):
+        """Handle send transaction completion"""
+        try:
+            if success:
+                # Play send sound
+                self._play_sound("send")
+                
+                # Refresh data
+                self.update_balance_display()
+                self.update_transaction_history()
+                
+                # Show success message
+                if tx_hash:
+                    self.show_snackbar(f"Transaction sent! TX: {tx_hash[:16]}...", "success")
+                else:
+                    self.show_snackbar("Transaction sent successfully!", "success")
+            else:
+                # Show error
+                if error_message:
+                    self.show_snackbar(f"Send failed: {error_message}", "error")
+                else:
+                    self.show_snackbar("Transaction failed", "error")
+                    
+        except Exception as e:
+            print(f"DEBUG: Error in on_send_complete: {e}")
+            self.show_snackbar("Error processing send completion", "error")
 
     def lock_wallet(self, wtfisthis):
         """Lock wallet and save state"""

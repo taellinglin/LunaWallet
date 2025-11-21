@@ -2,6 +2,7 @@ import flet as ft
 import threading
 from datetime import datetime
 import time
+
 class WalletPage:
     def __init__(self, app, on_send, on_receive, on_export_key, on_create_wallet, on_import_wallet):
         self.app = app
@@ -15,8 +16,13 @@ class WalletPage:
         self.sidebar_collapsed = False
         self.sidebar_width = 280
         self.sidebar_collapsed_width = 60
+        
         # Refs for UI elements
-        self.refs = {}  # Add this line
+        self.refs = {}
+        
+        # Transaction history state
+        self.transaction_history = []
+        
         # UI elements
         self.balance_text = ft.Text("0.00", size=28, weight="bold", color="#ffffff")
         self.address_text = ft.Text("", size=12, color="#f8d7da")
@@ -447,19 +453,26 @@ class WalletPage:
         )
     
     def create_transaction_history(self):
-        self.transactions_list = ft.ListView(spacing=8, height=200, expand=True)
-        self.app.update_transaction_history()
+        self.transactions_list = ft.ListView(
+            spacing=5, 
+            height=250, 
+            expand=True,
+            auto_scroll=False
+        )
+        
+        # Load initial transactions
+        self.refresh_transaction_history()
         
         return ft.Container(
             content=ft.Column([
                 ft.Row([
-                    ft.Text("📊 Transactions", size=16, weight="bold", color="#f8d7da", expand=True),
+                    ft.Text("📊 Recent Transactions", size=16, weight="bold", color="#f8d7da", expand=True),
                     ft.IconButton(
                         icon=ft.Icons.REFRESH,
                         icon_color="#f8d7da",
                         icon_size=16,
-                        on_click=lambda e: self.app.update_transaction_history(),
-                        tooltip="Refresh",
+                        on_click=lambda e: self.refresh_transaction_history(),
+                        tooltip="Refresh Transactions",
                         style=ft.ButtonStyle(padding=3)
                     )
                 ]),
@@ -473,6 +486,239 @@ class WalletPage:
                 )
             ], spacing=8),
             expand=True
+        )
+    
+    def refresh_transaction_history(self):
+        """Load and display transaction history"""
+        try:
+            # Clear current list
+            self.transactions_list.controls.clear()
+            
+            # Get current wallet address
+            current_address = None
+            if hasattr(self.app.wallet_core, 'current_wallet_address'):
+                current_address = self.app.wallet_core.current_wallet_address
+            elif hasattr(self.app.wallet_core, 'address'):
+                current_address = self.app.wallet_core.address
+            
+            if not current_address:
+                self._show_no_wallet_message()
+                return
+            
+            # Try to get transactions from various sources
+            transactions = []
+            
+            # Method 1: Try blockchain manager
+            if hasattr(self.app, 'blockchain_manager'):
+                try:
+                    transactions = self.app.blockchain_manager.scan_transactions_for_address(current_address)
+                    print(f"Loaded {len(transactions)} transactions from blockchain")
+                except Exception as e:
+                    print(f"Error loading from blockchain: {e}")
+            
+            # Method 2: Try database
+            if not transactions and hasattr(self.app, 'database'):
+                try:
+                    # Try common database methods
+                    db_methods = ['get_transactions', 'get_wallet_transactions', 'get_all_transactions']
+                    for method in db_methods:
+                        if hasattr(self.app.database, method):
+                            try:
+                                if method == 'get_all_transactions':
+                                    all_txs = getattr(self.app.database, method)()
+                                    transactions = [tx for tx in all_txs if 
+                                                  tx.get('from') == current_address or 
+                                                  tx.get('to') == current_address]
+                                else:
+                                    transactions = getattr(self.app.database, method)(current_address)
+                                if transactions:
+                                    print(f"Loaded {len(transactions)} transactions from database")
+                                    break
+                            except:
+                                continue
+                except Exception as e:
+                    print(f"Error loading from database: {e}")
+            
+            # Method 3: Try wallet core
+            if not transactions and hasattr(self.app.wallet_core, 'get_transaction_history'):
+                try:
+                    history = self.app.wallet_core.get_transaction_history()
+                    if isinstance(history, dict):
+                        transactions = history.get('confirmed', []) + history.get('pending', [])
+                    elif isinstance(history, list):
+                        transactions = history
+                    if transactions:
+                        print(f"Loaded {len(transactions)} transactions from wallet core")
+                except Exception as e:
+                    print(f"Error loading from wallet core: {e}")
+            
+            # Sort by timestamp (newest first) and limit
+            transactions.sort(key=lambda x: x.get('timestamp', 0), reverse=True)
+            transactions = transactions[:20]  # Show last 20 transactions
+            
+            # Display transactions
+            if transactions:
+                for tx in transactions:
+                    tx_item = self._create_transaction_item(tx, current_address)
+                    self.transactions_list.controls.append(tx_item)
+            else:
+                self._show_no_transactions_message()
+                
+            if hasattr(self.app, 'page'):
+                self.app.page.update()
+                
+        except Exception as e:
+            print(f"Error refreshing transaction history: {e}")
+            self._show_error_message(str(e))
+    
+    def _create_transaction_item(self, tx_data, current_address):
+        """Create a minimalistic transaction list item"""
+        tx_type = tx_data.get('type', 'transfer')
+        amount = tx_data.get('amount', 0)
+        from_addr = tx_data.get('from', 'Unknown')
+        to_addr = tx_data.get('to', 'Unknown')
+        status = tx_data.get('status', 'confirmed')
+        timestamp = tx_data.get('timestamp', time.time())
+        memo = tx_data.get('memo', '')
+        
+        # Determine if incoming or outgoing
+        is_incoming = self._is_incoming_transaction(tx_data, current_address)
+        
+        # Format amount with color and prefix
+        amount_color = "#00ff00" if is_incoming else "#ff4444"
+        amount_prefix = "+" if is_incoming else "-"
+        
+        # Format date
+        try:
+            date_str = datetime.fromtimestamp(timestamp).strftime("%m/%d %H:%M")
+        except:
+            date_str = "Unknown"
+        
+        # Status indicator
+        status_color = "#00ff00" if status == 'confirmed' else "#ffd700"
+        status_text = "✓" if status == 'confirmed' else "⏳"
+        
+        # Create minimal transaction item
+        return ft.Container(
+            content=ft.ListTile(
+                leading=ft.Icon(
+                    ft.Icons.ARROW_UPWARD if not is_incoming else ft.Icons.ARROW_DOWNWARD,
+                    color=amount_color,
+                    size=20
+                ),
+                title=ft.Row([
+                    ft.Text(f"{amount_prefix}{amount:.6f} LUN", 
+                           color=amount_color, 
+                           size=14,
+                           weight="bold",
+                           expand=True),
+                    ft.Text(status_text, color=status_color, size=12),
+                ]),
+                subtitle=ft.Row([
+                    ft.Text(date_str, size=11, color="#a8a8a8", expand=True),
+                    ft.Text(memo if memo else tx_type, size=11, color="#a8a8a8"),
+                ]),
+                on_click=lambda e, tx=tx_data: self._show_transaction_details(tx),
+            ),
+            bgcolor="#2c1a1a",
+            border_radius=8,
+            padding=5,
+            margin=ft.margin.symmetric(vertical=1),
+        )
+    
+    def _is_incoming_transaction(self, tx_data, current_address):
+        """Determine if transaction is incoming to current wallet"""
+        try:
+            tx_type = tx_data.get('type', '')
+            to_addr = tx_data.get('to', '')
+            
+            # Rewards and fee distributions are always incoming
+            if tx_type in ['reward', 'fee_distribution']:
+                return True
+            
+            # For transfers, check if we're the recipient
+            return to_addr.lower() == current_address.lower()
+            
+        except:
+            return False
+    
+    def _show_no_transactions_message(self):
+        """Show no transactions message"""
+        self.transactions_list.controls.append(
+            ft.Container(
+                content=ft.Column([
+                    ft.Icon(ft.Icons.RECEIPT_LONG, size=32, color="#5c2e2e"),
+                    ft.Text("No transactions yet", color="#f8d7da", size=14),
+                    ft.Text("Your transactions will appear here", color="#a8a8a8", size=12),
+                ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=5),
+                padding=20,
+                alignment=ft.alignment.center
+            )
+        )
+    
+    def _show_no_wallet_message(self):
+        """Show no wallet selected message"""
+        self.transactions_list.controls.append(
+            ft.Container(
+                content=ft.Column([
+                    ft.Icon(ft.Icons.WALLET, size=32, color="#5c2e2e"),
+                    ft.Text("No Wallet Selected", color="#f8d7da", size=14),
+                    ft.Text("Select a wallet to view transactions", color="#a8a8a8", size=12),
+                ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=5),
+                padding=20,
+                alignment=ft.alignment.center
+            )
+        )
+    
+    def _show_error_message(self, error: str):
+        """Show error message"""
+        self.transactions_list.controls.append(
+            ft.Container(
+                content=ft.Column([
+                    ft.Icon(ft.Icons.ERROR, size=32, color="#5c2e2e"),
+                    ft.Text("Error Loading", color="#f8d7da", size=14),
+                    ft.Text(f"Failed to load transactions", color="#a8a8a8", size=12),
+                ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=5),
+                padding=20,
+                alignment=ft.alignment.center
+            )
+        )
+    
+    def _show_transaction_details(self, tx_data):
+        """Show transaction details in a dialog"""
+        # Import and show the transaction details page
+        from gui.page_details import TransactionDetailsPage
+        
+        details_page = TransactionDetailsPage(
+            self.app,
+            tx_data,
+            on_back=self._return_to_wallet
+        )
+        
+        # Replace current page with details page
+        self.app.current_page = details_page.create()
+        self.app.show_current_page()
+
+    def _return_to_wallet(self):
+        """Return to wallet page from details"""
+        # Recreate the wallet page to ensure fresh data
+        wallet_page = WalletPage(
+            self.app,
+            on_send=self.on_send,
+            on_receive=self.on_receive,
+            on_export_key=self.on_export_key,
+            on_create_wallet=self.on_create_wallet,
+            on_import_wallet=self.on_import_wallet
+        )
+        self.app.current_page = wallet_page.create()
+        self.app.show_current_page()
+    def _create_detail_row(self, label, value, color):
+        return ft.Container(
+            content=ft.Row([
+                ft.Text(label, size=12, color="#f8d7da", weight="bold", width=120),
+                ft.Text(value, size=12, color=color, expand=True, selectable=True),
+            ]),
+            padding=ft.padding.symmetric(vertical=2)
         )
     
     def update_quick_stats(self):
@@ -530,6 +776,7 @@ class WalletPage:
             stats.append(self.create_stat_item("❌", "Error", "Stats"))
         
         self.stats_row.controls = stats
+
     def refresh_network_status(self):
         """Manually refresh network status"""
         try:
@@ -552,6 +799,7 @@ class WalletPage:
                 
         except Exception as e:
             print(f"Error refreshing network status: {e}")
+
     def _check_network_status(self):
         """Check network connection to blockchain endpoint"""
         try:
@@ -586,6 +834,7 @@ class WalletPage:
         except Exception as e:
             print(f"Network check error: {e}")
             return {'connected': False, 'endpoint': 'error'}
+
     def create_stat_item(self, icon, value, label):
         return ft.Container(
             content=ft.Column([
@@ -599,80 +848,6 @@ class WalletPage:
             bgcolor="#2c1a1a",
             border_radius=8,
             margin=ft.margin.symmetric(horizontal=2)
-        )
-    
-    
-    
-    def _show_transaction_details(self, tx_data):
-        """Show transaction details in a dialog"""
-        tx_type = tx_data.get('type', 'transfer')
-        amount = tx_data.get('amount', 0)
-        from_addr = tx_data.get('from', 'Unknown')
-        to_addr = tx_data.get('to', 'Unknown')
-        status = tx_data.get('status', 'unknown')
-        timestamp = tx_data.get('timestamp', 0)
-        tx_hash = tx_data.get('hash', 'Unknown')
-        memo = tx_data.get('memo', '')
-        fee = tx_data.get('fee', 0)
-        
-        # Determine if incoming or outgoing
-        our_addresses = [w['address'].lower() for w in self.app.wallet_core.wallets]
-        is_incoming = tx_type == 'reward' or (to_addr and to_addr.lower() in our_addresses)
-        
-        color = "#00ff00" if is_incoming else "#ff4444"
-        direction = "Received" if is_incoming else "Sent"
-        
-        date_str = datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S") if timestamp else "Unknown"
-        
-        # Create details content
-        details_content = ft.Column([
-            self._create_detail_row("Type:", f"{tx_type.title()} ({direction})", "#f8d7da"),
-            self._create_detail_row("Amount:", f"{amount:.6f} LUN", color),
-            self._create_detail_row("From:", from_addr, "#f8d7da"),
-            self._create_detail_row("To:", to_addr, "#f8d7da"),
-            self._create_detail_row("Status:", status.title(), color),
-            self._create_detail_row("Date:", date_str, "#f8d7da"),
-            self._create_detail_row("TX Hash:", tx_hash, "#a8a8a8"),
-            self._create_detail_row("Fee:", f"{fee:.6f} LUN", "#f8d7da"),
-            self._create_detail_row("Memo:", memo if memo else "None", "#a8a8a8"),
-        ], spacing=8)
-        
-        def close_dialog(e):
-            self.app.page.dialog.open = False
-            self.app.page.update()
-        
-        def copy_tx_hash(e):
-            self.app.page.set_clipboard(tx_hash)
-            if hasattr(self.app, 'show_snackbar'):
-                self.app.show_snackbar("Transaction hash copied!", "success")
-        
-        dialog = ft.AlertDialog(
-            modal=True,
-            title=ft.Text("Transaction Details", color="#f8d7da"),
-            content=ft.Container(
-                content=details_content,
-                width=400,
-                padding=10
-            ),
-            actions=[
-                ft.TextButton("Copy TX Hash", on_click=copy_tx_hash, style=ft.ButtonStyle(color="#dc3545")),
-                ft.TextButton("Close", on_click=close_dialog, style=ft.ButtonStyle(color="#f8d7da")),
-            ],
-            actions_alignment=ft.MainAxisAlignment.END,
-            bgcolor="#2c1a1a"
-        )
-        
-        self.app.page.dialog = dialog
-        dialog.open = True
-        self.app.page.update()
-    
-    def _create_detail_row(self, label, value, color):
-        return ft.Container(
-            content=ft.Row([
-                ft.Text(label, size=12, color="#f8d7da", weight="bold", width=80),
-                ft.Text(value, size=12, color=color, expand=True, selectable=True),
-            ]),
-            padding=ft.padding.symmetric(vertical=2)
         )
     
     def manual_sync(self, e=None):
@@ -722,7 +897,7 @@ class WalletPage:
                 
                 # Update UI
                 self.update_quick_stats()
-                self.app.update_transaction_history()
+                self.refresh_transaction_history()
                 
                 if self.app.page:
                     self.app.page.update()
@@ -735,6 +910,7 @@ class WalletPage:
                     self.app.page.update()
         
         threading.Thread(target=sync_thread, daemon=True).start()
+
     def show_loading(self):
         self.is_loading = True
         self.preloader.visible = True
@@ -807,7 +983,7 @@ class WalletPage:
                     self.sync_status.value = "🔒 Locked"
                 
                 self.update_quick_stats()
-                self.app.update_transaction_history()
+                self.refresh_transaction_history()
                 self._refresh_sidebar_wallets()  # Refresh sidebar when wallet data updates
             
         except Exception as e:
