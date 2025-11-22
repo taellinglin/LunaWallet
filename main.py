@@ -7,7 +7,61 @@ import shutil
 from datetime import datetime
 import base64
 from typing import Dict
-# Import GUI components
+import sqlite3
+from pathlib import Path
+
+# FIX: Ensure cache directory exists with proper permissions
+def setup_cache_directory():
+    """Create cache directory for lunalib with proper permissions"""
+    try:
+        # Try multiple possible cache locations
+        cache_locations = [
+            Path.home() / "AppData" / "Local" / "lunalib" / "cache",
+            Path.home() / ".lunalib" / "cache", 
+            Path("./.lunalib_cache"),
+            Path("/tmp/lunalib_cache")  # For Unix-like systems
+        ]
+        
+        for cache_dir in cache_locations:
+            try:
+                cache_dir.mkdir(parents=True, exist_ok=True)
+                
+                # Test if we can create a file in this directory
+                test_file = cache_dir / "test_write.tmp"
+                with open(test_file, 'w') as f:
+                    f.write("test")
+                os.remove(test_file)
+                
+                print(f"DEBUG: Using cache directory: {cache_dir}")
+                
+                # Set environment variable for lunalib
+                os.environ['LUNALIB_CACHE_DIR'] = str(cache_dir)
+                return str(cache_dir)
+                
+            except (PermissionError, OSError) as e:
+                print(f"DEBUG: Cache directory {cache_dir} not accessible: {e}")
+                continue
+        
+        # If all else fails, use current directory
+        fallback_dir = Path("./lunalib_cache")
+        fallback_dir.mkdir(exist_ok=True)
+        os.environ['LUNALIB_CACHE_DIR'] = str(fallback_dir)
+        print(f"DEBUG: Using fallback cache directory: {fallback_dir}")
+        return str(fallback_dir)
+        
+    except Exception as e:
+        print(f"DEBUG: Critical error setting up cache: {e}")
+        # Last resort - use temp directory
+        import tempfile
+        temp_dir = tempfile.mkdtemp(prefix="lunalib_cache_")
+        os.environ['LUNALIB_CACHE_DIR'] = temp_dir
+        print(f"DEBUG: Using temp cache directory: {temp_dir}")
+        return temp_dir
+
+# Initialize cache directory before any lunalib imports
+CACHE_DIR = setup_cache_directory()
+
+# Now import lunalib components after cache is set up
 from gui.page_create_wallet import CreateWalletPage
 from gui.page_export_key import ExportKeyPage
 from gui.page_import_wallet import ImportWalletPage
@@ -21,21 +75,26 @@ from gui.tab_wallets import WalletsTab
 
 # Import lunalib components
 from lunalib.core.wallet import LunaWallet
-#from lunalib.core.mempool import MempoolManager
 from lunalib.core.blockchain import BlockchainManager
 from lunalib.transactions.transactions import TransactionManager
 from lunalib.storage.encryption import EncryptionManager
 from lunalib.storage.database import WalletDatabase
 
-# Add these imports at the top with other imports
-
 # Import utils
 from utils import format_address, format_balance, format_timestamp, get_transaction_color, get_transaction_icon
+import os
+import sqlite3
+from pathlib import Path
+
+# Ensure cache directory exists
+cache_dir = Path.home() / "AppData" / "Local" / "lunalib" / "cache"
+cache_dir.mkdir(parents=True, exist_ok=True)
 
 class LunaWalletApp:
     """Luna Wallet Application with Red Theme - Responsive Mobile Support"""
     
     def __init__(self):
+        self._patch_lunalib_cache()
         self.wallet_core = LunaWallet()
         self.blockchain_manager = BlockchainManager(endpoint_url="https://bank.linglin.art")
         self.transaction_manager = TransactionManager()
@@ -75,6 +134,33 @@ class LunaWalletApp:
         # NEW: Initialize data directory and load any existing wallet metadata
         self._ensure_data_directory()
         self._load_wallet_metadata()
+
+
+    def _patch_lunalib_cache(self):
+            """Patch lunalib cache to use our designated directory"""
+            try:
+                from lunalib.storage import cache as luna_cache
+                
+                # Override the cache file path
+                original_init = luna_cache.BlockchainCache.__init__
+                
+                def patched_init(self, *args, **kwargs):
+                    # Use our cache directory
+                    cache_file = Path(CACHE_DIR) / "blockchain_cache.db"
+                    self.cache_file = str(cache_file)
+                    
+                    # Ensure directory exists
+                    cache_file.parent.mkdir(parents=True, exist_ok=True)
+                    
+                    # Initialize the cache
+                    self._init_cache()
+                
+                # Apply the patch
+                luna_cache.BlockchainCache.__init__ = patched_init
+                print(f"DEBUG: Patched lunalib cache to use: {CACHE_DIR}")
+                
+            except Exception as e:
+                print(f"DEBUG: Error patching lunalib cache: {e}")
     def _play_sound(self, sound_type):
         """Play sound using Flet's audio capabilities (mobile compatible)"""
         if not self.sound_enabled:
