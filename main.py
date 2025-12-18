@@ -938,6 +938,8 @@ class LunaWalletApp:
                     self.wallet_core.update_balance(current_balance)
                     
                     def update_ui():
+                        # This is the key fix: Update wallet data which triggers sidebar update
+                        self.update_wallet_data()
                         self.update_balance_display()
                         self.update_transaction_history()
                         self.show_snackbar(f"Sync completed: {len(transactions)} transactions", "success")
@@ -963,7 +965,6 @@ class LunaWalletApp:
         
         # Start sync in background thread
         threading.Thread(target=sync_thread, daemon=True).start()
-
     def _fallback_sync(self):
         """Fallback sync method using direct blockchain scanning"""
         try:
@@ -1123,18 +1124,49 @@ class LunaWalletApp:
         timestamp = tx.get('timestamp', 0)
         tx_hash = tx.get('hash', '')
         memo = tx.get('memo', '')
+        fee = tx.get('fee', 0)
         
-        # Determine direction and styling
-        is_incoming = tx_type == 'reward' or (to_addr and to_addr.lower() == current_address.lower())
+        # Determine direction and styling - FIXED LOGIC
+        is_incoming = to_addr and to_addr.lower() == current_address.lower()
+        is_outgoing = from_addr and from_addr.lower() == current_address.lower()
+        
+        # Special handling for different transaction types
+        if tx_type == 'reward':
+            is_incoming = True
+            is_outgoing = False
+        elif tx_type in ['stake', 'delegate']:
+            is_outgoing = True
+            is_incoming = False
         
         # Use lunalib to get color and risk assessment
         risk_level, risk_reason = security.assess_risk(tx)
-        color = "#00ff00" if is_incoming else "#ff4444"
-        icon = "📥" if is_incoming else "📤"
-        direction = "Received" if is_incoming else "Sent"
+        
+        # Set colors and icons based on transaction type and direction
+        if is_incoming:
+            color = "#00ff00"  # Green for incoming
+            icon = "📥"
+            direction = "Received"
+            amount_display = f"+{amount:.6f} LUN"
+            # For incoming transactions, show who sent it
+            display_address = from_addr if from_addr else "Unknown Sender"
+        elif is_outgoing:
+            color = "#ff4444"  # Red for outgoing
+            icon = "📤"
+            direction = "Sent"
+            # Include fee in outgoing amount display
+            total_amount = amount + fee
+            amount_display = f"-{total_amount:.6f} LUN"
+            # For outgoing transactions, show who received it
+            display_address = to_addr if to_addr else "Unknown Recipient"
+        else:
+            # For other cases (like failed transactions)
+            color = "#ffa500"  # Orange
+            icon = "❓"
+            direction = "Unknown"
+            amount_display = f"{amount:.6f} LUN"
+            display_address = "Unknown"
         
         # Format address for display
-        display_address = to_addr if is_incoming else from_addr
         if display_address:
             truncated_addr = f"{display_address[:8]}...{display_address[-6:]}" if len(display_address) > 14 else display_address
         else:
@@ -1144,12 +1176,17 @@ class LunaWalletApp:
         from datetime import datetime
         date_str = datetime.fromtimestamp(timestamp).strftime("%m/%d %H:%M") if timestamp else "Unknown"
         
+        # Add fee display for outgoing transactions
+        fee_display = ""
+        if is_outgoing and fee > 0:
+            fee_display = f" (Fee: {fee:.6f} LUN)"
+        
         # Create transaction card
         return ft.Container(
             content=ft.Column([
                 ft.Row([
                     ft.Text(
-                        f"{amount:.6f} LUN",
+                        amount_display,
                         size=16,
                         color=color,
                         weight="bold",
@@ -1170,7 +1207,7 @@ class LunaWalletApp:
                 ft.Row([
                     ft.Icon(icon, size=14, color=color),
                     ft.Text(
-                        f"{direction}: {truncated_addr}",
+                        f"{direction}: {truncated_addr}{fee_display}",
                         size=12,
                         color="#f8d7da",
                         expand=True
@@ -1194,9 +1231,9 @@ class LunaWalletApp:
                         "View",
                         on_click=lambda e, tx_data=tx: self._show_transaction_details(tx_data),
                         style=ft.ButtonStyle(
-                            color="#dc3545",
+                            color=color,
                             padding=ft.padding.symmetric(horizontal=8, vertical=2),
-                            overlay_color="#dc354520"
+                            overlay_color=f"{color}20"
                         )
                     )
                 ])
@@ -1206,7 +1243,6 @@ class LunaWalletApp:
             border_radius=10,
             border=ft.border.all(1, "#5c2e2e")
         )
-
     def _show_no_transactions_message(self):
         """Show no transactions message"""
         if hasattr(self, 'transactions_list'):
