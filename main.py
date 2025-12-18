@@ -171,17 +171,19 @@ class LunaWalletApp:
             if sound_type == "transaction":
                 # You can use Flet's Audio control for mobile
                 audio = ft.Audio(
-                    src="/assets/sounds/transaction.mp3",
+                    src="transaction.wav",
                     autoplay=True,
                 )
                 self.page.overlay.append(audio)
+                print("play transaction sound")
                 self.page.update()
             elif sound_type == "send":
                 audio = ft.Audio(
-                    src="/assets/sounds/send.mp3", 
+                    src="send.wav", 
                     autoplay=True,
                 )
                 self.page.overlay.append(audio)
+                print("play send sound")
                 self.page.update()
         except Exception as e:
             print(f"Sound error: {e}")
@@ -592,6 +594,7 @@ class LunaWalletApp:
         """Handle balance changes with auto-save"""
         self.update_balance_display()
         self.save_wallet_data(force_save=True)  # Force save on balance changes
+        self._play_sound("transaction")
         self.create_backup()  # Create backup for important changes
 
     def on_sync_progress(self, progress, message):
@@ -610,6 +613,7 @@ class LunaWalletApp:
         
         # Play transaction sound
         self._play_sound("transaction")
+        print("Played Transaction Sound")
         
         self.save_wallet_data(force_save=True)
         self.create_backup()

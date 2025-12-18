@@ -1,4 +1,6 @@
 flet
+flet-desktop
+flet-cli
 cryptography
 requests
 qrcode
