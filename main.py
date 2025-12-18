@@ -6,7 +6,7 @@ import json
 import shutil
 from datetime import datetime
 import base64
-from typing import Dict
+from typing import Dict, List
 import sqlite3
 from pathlib import Path
 
@@ -100,7 +100,7 @@ class LunaWalletApp:
         self.transaction_manager = TransactionManager()
         self.encryption_manager = EncryptionManager()
         self.database = WalletDatabase()
-        
+        self._patch_blockchain_scanner()
         self.minimized_to_tray = False
         self.current_tab_index = 0
         self.snack_bar = None
@@ -134,8 +134,198 @@ class LunaWalletApp:
         # NEW: Initialize data directory and load any existing wallet metadata
         self._ensure_data_directory()
         self._load_wallet_metadata()
-
-
+    def debug_transaction_detection(self):
+        """Debug method to see what transactions are being detected"""
+        if not self.wallet_core.current_wallet_address:
+            print("❌ No wallet address")
+            return
+        
+        address = self.wallet_core.current_wallet_address
+        print(f"\n🔍 DEBUG TRANSACTION DETECTION for {address}")
+        print("=" * 60)
+        
+        # Get latest block
+        latest_block = self.blockchain_manager.get_latest_block()
+        if latest_block:
+            print(f"Latest block: #{latest_block.get('index')}")
+            print(f"Transactions in block: {len(latest_block.get('transactions', []))}")
+            
+            # Show all transactions in latest block
+            for i, tx in enumerate(latest_block.get('transactions', [])):
+                print(f"\nTX {i}:")
+                for key, value in tx.items():
+                    if isinstance(value, str) and len(value) > 20:  # Likely an address
+                        print(f"  {key}: {value[:20]}...")
+                    else:
+                        print(f"  {key}: {value}")
+        
+        # Try to scan
+        try:
+            print(f"\n📡 Scanning for transactions...")
+            transactions = self.blockchain_manager.scan_transactions_for_address(address)
+            print(f"Found {len(transactions)} transactions")
+            
+            for tx in transactions:
+                direction = tx.get('direction', 'unknown')
+                print(f"\n{direction.upper()}: {tx.get('hash', '')[:16]}...")
+                print(f"  From: {tx.get('from', 'unknown')}")
+                print(f"  To: {tx.get('to', 'unknown')}")
+                print(f"  Amount: {tx.get('amount', 0)}")
+                print(f"  Fee: {tx.get('fee', 0)}")
+        except Exception as e:
+            print(f"❌ Scan error: {e}")
+    def _create_enhanced_blockchain_manager(self):
+        """Create an enhanced BlockchainManager with proper outgoing transaction detection"""
+        # Create the blockchain manager
+        from lunalib.core.blockchain import BlockchainManager as BaseBlockchainManager
+        
+        class EnhancedBlockchainManager(BaseBlockchainManager):
+            """Enhanced blockchain manager that properly detects outgoing transactions"""
+            
+            def _find_address_transactions(self, block: Dict, address: str) -> List[Dict]:
+                """Find transactions in block that involve the address - FIXED FOR OUTGOING"""
+                transactions = []
+                address_lower = address.lower()
+                
+                # Debug: Show what we're looking for
+                print(f"🔍 Scanning block #{block.get('index')} for address: {address}")
+                
+                # Check block reward (miner rewards)
+                miner = block.get('miner', '').lower()
+                if miner == address_lower:
+                    reward_tx = {
+                        'type': 'reward',
+                        'from': 'network',
+                        'to': address,
+                        'amount': block.get('reward', 0),
+                        'block_height': block.get('index'),
+                        'timestamp': block.get('timestamp'),
+                        'hash': f"reward_{block.get('index')}_{address}",
+                        'status': 'confirmed',
+                        'description': f'Mining reward for block #{block.get("index")}',
+                        'direction': 'incoming'
+                    }
+                    transactions.append(reward_tx)
+                    print(f"🎁 Found mining reward: {block.get('reward', 0)} LUN")
+                
+                # Check all transactions in the block
+                block_transactions = block.get('transactions', [])
+                print(f"  Block has {len(block_transactions)} transactions")
+                
+                for tx_index, tx in enumerate(block_transactions):
+                    # Get addresses from transaction
+                    from_addr = (tx.get('from') or '').lower()
+                    to_addr = (tx.get('to') or '').lower()
+                    amount = tx.get('amount', 0)
+                    fee = tx.get('fee', 0)
+                    tx_hash = tx.get('hash', '')
+                    tx_type = tx.get('type', 'transfer')
+                    
+                    # Check if this transaction involves our address
+                    is_outgoing = from_addr == address_lower
+                    is_incoming = to_addr == address_lower
+                    
+                    if is_outgoing or is_incoming:
+                        enhanced_tx = tx.copy()
+                        enhanced_tx['block_height'] = block.get('index')
+                        enhanced_tx['status'] = 'confirmed'
+                        enhanced_tx['tx_index'] = tx_index
+                        
+                        if is_outgoing:
+                            # This is an OUTGOING transaction - WE sent it
+                            enhanced_tx['direction'] = 'outgoing'
+                            enhanced_tx['effective_amount'] = -(float(amount) + float(fee))
+                            print(f"    ⬇️ FOUND OUTGOING TRANSACTION!")
+                            print(f"      From: {from_addr} (OUR ADDRESS)")
+                            print(f"      To: {to_addr}")
+                            print(f"      Amount: {amount}")
+                            print(f"      Fee: {fee}")
+                            print(f"      Total: {float(amount) + float(fee)}")
+                            print(f"      Hash: {tx_hash[:16]}...")
+                            print(f"      Memo: {tx.get('memo', 'None')}")
+                        else:
+                            # This is an INCOMING transaction - WE received it
+                            enhanced_tx['direction'] = 'incoming'
+                            enhanced_tx['effective_amount'] = float(amount)
+                            print(f"    ⬆️ Found incoming: {amount} from {from_addr}")
+                        
+                        transactions.append(enhanced_tx)
+                
+                print(f"  Total transactions found for address: {len(transactions)}")
+                return transactions
+            
+            def _handle_regular_transfers(self, tx: Dict, address_lower: str) -> Dict:
+                """Handle regular transfer transactions - FIXED VERSION"""
+                enhanced_tx = tx.copy()
+                
+                # Try to extract addresses from various possible field names
+                possible_from_fields = ['from', 'sender', 'from_address', 'source', 'payer']
+                possible_to_fields = ['to', 'receiver', 'to_address', 'destination', 'payee']
+                possible_amount_fields = ['amount', 'value', 'quantity', 'transfer_amount', 'total_amount']
+                possible_fee_fields = ['fee', 'gas', 'transaction_fee', 'gas_fee', 'network_fee']
+                
+                # Find from address
+                from_addr = ''
+                for field in possible_from_fields:
+                    if field in tx:
+                        field_value = tx.get(field, '')
+                        if field_value:
+                            from_addr = str(field_value).lower()
+                            enhanced_tx['from'] = field_value  # Keep original case
+                            break
+                
+                # Find to address
+                to_addr = ''
+                for field in possible_to_fields:
+                    if field in tx:
+                        field_value = tx.get(field, '')
+                        if field_value:
+                            to_addr = str(field_value).lower()
+                            enhanced_tx['to'] = field_value  # Keep original case
+                            break
+                
+                # Find amount
+                amount = 0.0
+                for field in possible_amount_fields:
+                    if field in tx:
+                        try:
+                            amount = float(tx.get(field, 0))
+                        except (ValueError, TypeError):
+                            amount = 0.0
+                        enhanced_tx['amount'] = amount
+                        break
+                
+                # Find fee
+                fee = 0.0
+                for field in possible_fee_fields:
+                    if field in tx:
+                        try:
+                            fee = float(tx.get(field, 0))
+                        except (ValueError, TypeError):
+                            fee = 0.0
+                        enhanced_tx['fee'] = fee
+                        break
+                
+                # Set direction
+                if from_addr == address_lower:
+                    enhanced_tx['direction'] = 'outgoing'
+                    enhanced_tx['effective_amount'] = -(amount + fee)
+                elif to_addr == address_lower:
+                    enhanced_tx['direction'] = 'incoming'
+                    enhanced_tx['effective_amount'] = amount
+                else:
+                    # If we can't determine direction from addresses, check other fields
+                    enhanced_tx['direction'] = 'unknown'
+                    enhanced_tx['effective_amount'] = amount
+                
+                # Set type if not present
+                if not enhanced_tx.get('type'):
+                    if 'bill_type' in tx:
+                        enhanced_tx['type'] = tx.get('bill_type').lower()
+                    else:
+                        enhanced_tx['type'] = 'transfer'
+                
+                return enhanced_tx
     def _patch_lunalib_cache(self):
             """Patch lunalib cache to use our designated directory"""
             try:
@@ -901,69 +1091,470 @@ class LunaWalletApp:
                 self.page.run_thread(show_error)
         
         threading.Thread(target=unlock_thread, daemon=True).start()
+
+    # Add this method to LunaWalletApp class
+    def create_enhanced_blockchain_scanner(self):
+        """Create an enhanced blockchain scanner that properly detects outgoing transactions"""
+        
+        # Monkey patch the blockchain manager's scan method
+        original_scan = self.blockchain_manager.scan_transactions_for_address
+        
+        def enhanced_scan(address: str, start_height: int = 0, end_height: int = None) -> List[Dict]:
+            """Enhanced scan that properly finds both incoming and outgoing transactions"""
+            try:
+                print(f"\n🚀 ENHANCED SCAN for {address}")
+                print("=" * 60)
+                
+                # First get the original scan results
+                original_txs = original_scan(address, start_height, end_height)
+                print(f"Original scan found: {len(original_txs)} transactions")
+                
+                # Now do a direct query to get all transactions
+                all_txs = []
+                
+                # Method 1: Try direct API endpoint for transactions
+                try:
+                    response = requests.get(
+                        f"https://bank.linglin.art/transactions/address/{address}",
+                        timeout=30
+                    )
+                    if response.status_code == 200:
+                        api_txs = response.json()
+                        if isinstance(api_txs, list):
+                            all_txs.extend(api_txs)
+                            print(f"Direct API found: {len(api_txs)} transactions")
+                except:
+                    pass
+                
+                # Method 2: Get blocks and scan manually
+                if len(all_txs) == 0:
+                    print("No direct API results, scanning blocks manually...")
+                    
+                    # Get blockchain height
+                    latest_block = self.blockchain_manager.get_latest_block()
+                    if latest_block:
+                        latest_height = latest_block.get('index', 0)
+                        print(f"Latest block: #{latest_height}")
+                        
+                        # Scan recent blocks (last 1000)
+                        start = max(0, latest_height - 1000)
+                        for height in range(start, latest_height + 1):
+                            block = self.blockchain_manager.get_block(height)
+                            if block:
+                                txs = self.enhanced_find_txs_in_block(block, address)
+                                all_txs.extend(txs)
+                
+                # Process all transactions to add direction info
+                processed_txs = []
+                for tx in all_txs:
+                    processed_tx = self.process_transaction_direction(tx, address)
+                    if processed_tx:
+                        processed_txs.append(processed_tx)
+                
+                # Merge with original results
+                seen_hashes = set()
+                final_txs = []
+                
+                # Add enhanced results first
+                for tx in processed_txs:
+                    tx_hash = tx.get('hash')
+                    if tx_hash and tx_hash not in seen_hashes:
+                        seen_hashes.add(tx_hash)
+                        final_txs.append(tx)
+                
+                # Add any unique original results
+                for tx in original_txs:
+                    tx_hash = tx.get('hash')
+                    if tx_hash and tx_hash not in seen_hashes:
+                        seen_hashes.add(tx_hash)
+                        final_txs.append(tx)
+                
+                # Count statistics
+                incoming = len([t for t in final_txs if t.get('direction') == 'incoming'])
+                outgoing = len([t for t in final_txs if t.get('direction') == 'outgoing'])
+                
+                print(f"\n📊 FINAL RESULTS:")
+                print(f"   Total: {len(final_txs)} transactions")
+                print(f"   Incoming: {incoming}")
+                print(f"   Outgoing: {outgoing}")
+                
+                # Debug: Show outgoing transactions
+                if outgoing > 0:
+                    print(f"\n🔍 OUTGOING TRANSACTIONS:")
+                    for tx in final_txs:
+                        if tx.get('direction') == 'outgoing':
+                            print(f"  - From: {tx.get('from')} → To: {tx.get('to')}")
+                            print(f"    Amount: {tx.get('amount')} + Fee: {tx.get('fee', 0)}")
+                            print(f"    Hash: {tx.get('hash', '')[:16]}...")
+                
+                return final_txs
+                
+            except Exception as e:
+                print(f"Enhanced scan error: {e}")
+                import traceback
+                traceback.print_exc()
+                return original_scan(address, start_height, end_height)
+        
+        # Apply the patch
+        self.blockchain_manager.scan_transactions_for_address = enhanced_scan
+        print("✅ Enhanced blockchain scanner activated")
+        
+        return enhanced_scan
+
+    def enhanced_find_txs_in_block(self, block: Dict, address: str) -> List[Dict]:
+        """Enhanced block scanning for transactions - FIXED FOR OUTGOING"""
+        transactions = []
+        address_lower = address.lower()
+        
+        block_transactions = block.get('transactions', [])
+        
+        for tx in block_transactions:
+            # Get sender and receiver addresses
+            from_addr = (tx.get('from', '') or '').lower()
+            to_addr = (tx.get('to', '') or '').lower()
+            
+            # Skip if neither address matches
+            if address_lower not in [from_addr, to_addr]:
+                continue
+            
+            enhanced_tx = tx.copy()
+            enhanced_tx['block_height'] = block.get('index')
+            enhanced_tx['status'] = 'confirmed'
+            
+            # Determine direction
+            if from_addr == address_lower:
+                # THIS IS OUR OUTGOING TRANSACTION
+                enhanced_tx['direction'] = 'outgoing'
+                enhanced_tx['from'] = from_addr
+                enhanced_tx['to'] = to_addr
+                
+                # Get amount and fee
+                amount = float(tx.get('amount', 0))
+                fee = float(tx.get('fee', 0))
+                enhanced_tx['amount'] = amount
+                enhanced_tx['fee'] = fee
+                enhanced_tx['effective_amount'] = -(amount + fee)  # Negative for outgoing
+                
+                print(f"✅ FOUND OUTGOING in block #{block.get('index')}:")
+                print(f"   From: {from_addr} (OURS)")
+                print(f"   To: {to_addr}")
+                print(f"   Amount: {amount}")
+                print(f"   Fee: {fee}")
+                print(f"   Total Deducted: {amount + fee}")
+                
+            elif to_addr == address_lower:
+                # This is incoming
+                enhanced_tx['direction'] = 'incoming'
+                enhanced_tx['from'] = from_addr
+                enhanced_tx['to'] = to_addr
+                enhanced_tx['amount'] = float(tx.get('amount', 0))
+                enhanced_tx['effective_amount'] = float(tx.get('amount', 0))
+                print(f"⬆️ Found INCOMING in block #{block.get('index')}: {tx.get('amount')} LUN")
+            
+            transactions.append(enhanced_tx)
+        
+        return transactions
+
+    def process_transaction_direction(self, tx: Dict, address: str) -> Dict:
+        """Process transaction to add direction information"""
+        address_lower = address.lower()
+        
+        enhanced_tx = tx.copy()
+        
+        # Check if we're the sender
+        possible_from_fields = ['from', 'sender', 'from_address', 'source', 'payer']
+        for field in possible_from_fields:
+            if field in tx:
+                field_value = tx.get(field, '')
+                if isinstance(field_value, str) and field_value.lower() == address_lower:
+                    enhanced_tx['direction'] = 'outgoing'
+                    enhanced_tx['from'] = field_value
+                    # Get amount and fee
+                    amount = float(tx.get('amount', 0))
+                    fee = float(tx.get('fee', 0))
+                    enhanced_tx['effective_amount'] = -(amount + fee)
+                    return enhanced_tx
+        
+        # Check if we're the receiver
+        possible_to_fields = ['to', 'receiver', 'to_address', 'destination', 'payee']
+        for field in possible_to_fields:
+            if field in tx:
+                field_value = tx.get(field, '')
+                if isinstance(field_value, str) and field_value.lower() == address_lower:
+                    enhanced_tx['direction'] = 'incoming'
+                    enhanced_tx['to'] = field_value
+                    enhanced_tx['effective_amount'] = float(tx.get('amount', 0))
+                    return enhanced_tx
+        
+        # If we can't determine direction, add unknown
+        enhanced_tx['direction'] = 'unknown'
+        return enhanced_tx
+    # Add this method to your LunaWalletApp class
+    def debug_blockchain_data(self):
+        """Debug method to understand blockchain transaction formats"""
+        try:
+            import requests
+            
+            if not self.wallet_core.current_wallet_address:
+                print("❌ No wallet address available for debug")
+                return
+                
+            address = self.wallet_core.current_wallet_address
+            print(f"\n🔍 DEBUG: Checking blockchain data for {address}")
+            
+            # Try different endpoints
+            endpoints = [
+                f"https://bank.linglin.art/transactions/address/{address}",
+                f"https://bank.linglin.art/blockchain/transactions/{address}",
+                "https://bank.linglin.art/blockchain/blocks",
+            ]
+            
+            for endpoint in endpoints:
+                print(f"\n--- Testing: {endpoint} ---")
+                try:
+                    response = requests.get(endpoint, timeout=10)
+                    print(f"Status: {response.status_code}")
+                    if response.status_code == 200:
+                        data = response.json()
+                        print(f"Response type: {type(data)}")
+                        
+                        if isinstance(data, list):
+                            print(f"Found {len(data)} items")
+                            if len(data) > 0:
+                                print("First item structure:")
+                                for key, value in list(data[0].items())[:10]:  # Show first 10 keys
+                                    print(f"  {key}: {value}")
+                        elif isinstance(data, dict):
+                            print("Dict keys:", list(data.keys()))
+                            if 'transactions' in data:
+                                txs = data['transactions']
+                                print(f"Found {len(txs)} transactions")
+                                if txs and len(txs) > 0:
+                                    print("Sample transaction:")
+                                    for key, value in list(txs[0].items())[:10]:
+                                        print(f"  {key}: {value}")
+                    else:
+                        print(f"Response: {response.text[:200]}")
+                except Exception as e:
+                    print(f"Error: {e}")
+                    
+        except Exception as e:
+            print(f"Debug error: {e}")
+    def _patch_blockchain_scanner(self):
+        """Patch the blockchain manager's scanner to properly detect outgoing transactions"""
+        # Store original method
+        original_scan = self.blockchain_manager.scan_transactions_for_address
+        
+        def enhanced_scan(address: str, start_height: int = 0, end_height: int = None) -> List[Dict]:
+            """Enhanced scanner that properly finds BOTH incoming AND outgoing transactions"""
+            try:
+                print(f"\n🎯 ENHANCED SCAN for address: {address}")
+                print("=" * 60)
+                
+                # Get original results first
+                original_txs = original_scan(address, start_height, end_height)
+                print(f"Original scan found: {len(original_txs)} transactions")
+                
+                # Get all blocks and scan manually
+                if end_height is None:
+                    end_height = self.blockchain_manager.get_blockchain_height()
+                
+                print(f"Scanning from block {start_height} to {end_height}")
+                
+                all_transactions = []
+                address_lower = address.lower()
+                
+                # Scan blocks
+                for height in range(start_height, end_height + 1):
+                    block = self.blockchain_manager.get_block(height)
+                    if block:
+                        block_txs = block.get('transactions', [])
+                        
+                        # Check each transaction in the block
+                        for tx in block_txs:
+                            # Get addresses from transaction
+                            from_addr = tx.get('from', '').lower()
+                            to_addr = tx.get('to', '').lower()
+                            
+                            # Check if this transaction involves our address
+                            is_our_tx = False
+                            direction = None
+                            
+                            # OUTGOING: Our address is the sender
+                            if from_addr == address_lower:
+                                is_our_tx = True
+                                direction = 'outgoing'
+                                print(f"✅ FOUND OUTGOING TX in block {height}:")
+                                print(f"   From: {from_addr} (OURS)")
+                                print(f"   To: {to_addr}")
+                                print(f"   Amount: {tx.get('amount')}")
+                                print(f"   Hash: {tx.get('hash', '')[:16]}...")
+                            
+                            # INCOMING: Our address is the receiver
+                            elif to_addr == address_lower:
+                                is_our_tx = True
+                                direction = 'incoming'
+                                print(f"✅ FOUND INCOMING TX in block {height}:")
+                                print(f"   From: {from_addr}")
+                                print(f"   To: {to_addr} (OURS)")
+                                print(f"   Amount: {tx.get('amount')}")
+                                print(f"   Hash: {tx.get('hash', '')[:16]}...")
+                            
+                            if is_our_tx:
+                                # Create enhanced transaction with direction info
+                                enhanced_tx = tx.copy()
+                                enhanced_tx['block_height'] = height
+                                enhanced_tx['status'] = 'confirmed'
+                                enhanced_tx['direction'] = direction
+                                
+                                # Calculate effective amount
+                                amount = float(tx.get('amount', 0))
+                                fee = float(tx.get('fee', 0))
+                                
+                                if direction == 'outgoing':
+                                    # Outgoing: negative amount (amount + fee)
+                                    enhanced_tx['effective_amount'] = -(amount + fee)
+                                    print(f"   Effective amount: -{amount + fee} ({amount} + {fee} fee)")
+                                else:
+                                    # Incoming: positive amount
+                                    enhanced_tx['effective_amount'] = amount
+                                    print(f"   Effective amount: +{amount}")
+                                
+                                all_transactions.append(enhanced_tx)
+                
+                print(f"\n📊 ENHANCED SCAN RESULTS:")
+                print(f"   Total transactions found: {len(all_transactions)}")
+                
+                incoming_count = len([t for t in all_transactions if t.get('direction') == 'incoming'])
+                outgoing_count = len([t for t in all_transactions if t.get('direction') == 'outgoing'])
+                
+                print(f"   Incoming: {incoming_count}")
+                print(f"   Outgoing: {outgoing_count}")
+                
+                # Show outgoing transaction details
+                if outgoing_count > 0:
+                    print(f"\n🔍 OUTGOING TRANSACTIONS DETAILS:")
+                    for tx in all_transactions:
+                        if tx.get('direction') == 'outgoing':
+                            print(f"  - Block: {tx.get('block_height')}")
+                            print(f"    From: {tx.get('from')}")
+                            print(f"    To: {tx.get('to')}")
+                            print(f"    Amount: {tx.get('amount')}")
+                            print(f"    Fee: {tx.get('fee', 0)}")
+                            print(f"    Total: {float(tx.get('amount', 0)) + float(tx.get('fee', 0))}")
+                            print(f"    Hash: {tx.get('hash', '')[:16]}...")
+                
+                return all_transactions
+                
+            except Exception as e:
+                print(f"❌ Enhanced scan error: {e}")
+                import traceback
+                traceback.print_exc()
+                return original_scan(address, start_height, end_height)
+        
+        # Apply the patch
+        self.blockchain_manager.scan_transactions_for_address = enhanced_scan
+        print("✅ Blockchain scanner patched with proper outgoing detection")
     def start_blockchain_sync(self):
-        """Start blockchain synchronization using existing BlockchainManager"""
+        """Start blockchain synchronization - FIXED BALANCE CALCULATION"""
         def sync_thread():
             try:
-                print("DEBUG: Starting blockchain sync...")
+                print("\n" + "="*60)
+                print("🚀 STARTING BLOCKCHAIN SYNC")
+                print("="*60)
                 
-                # Check network connection first
-                if not self.blockchain_manager.check_network_connection():
-                    self.page.run_thread(lambda: self.show_snackbar("Network not connected", "error"))
+                if not self.wallet_core.current_wallet_address:
+                    self.page.run_thread(lambda: self.show_snackbar("No wallet selected", "error"))
                     return
                 
-                if self.wallet_core.current_wallet_address:
-                    # Use the existing scan method that we know works
-                    transactions = self.blockchain_manager.scan_transactions_for_address(
-                        self.wallet_core.current_wallet_address
-                    )
+                address = self.wallet_core.current_wallet_address
+                print(f"🔍 Syncing address: {address}")
+                
+                # Use the patched scanner
+                transactions = self.blockchain_manager.scan_transactions_for_address(address)
+                
+                print(f"\n📊 TRANSACTION SUMMARY:")
+                print(f"   Found: {len(transactions)} total transactions")
+                
+                if not transactions:
+                    print("⚠️ No transactions found")
+                    self.page.run_thread(lambda: self.show_snackbar("No transactions found", "warning"))
+                    return
+                
+                # Initialize counters
+                total_incoming = 0.0
+                total_outgoing = 0.0
+                incoming_txs = []
+                outgoing_txs = []
+                
+                # Process each transaction
+                for tx in transactions:
+                    direction = tx.get('direction', 'unknown')
+                    amount = float(tx.get('amount', 0))
+                    fee = float(tx.get('fee', 0))
                     
-                    print(f"DEBUG: Found {len(transactions)} transactions")
+                    if direction == 'incoming':
+                        total_incoming += amount
+                        incoming_txs.append(tx)
+                        print(f"   + Incoming: {amount} LUN (from {tx.get('from', 'unknown')})")
+                    elif direction == 'outgoing':
+                        # For outgoing, include both amount AND fee
+                        total_outgoing += (amount + fee)
+                        outgoing_txs.append(tx)
+                        print(f"   - Outgoing: {amount} LUN + {fee} fee = {amount + fee} LUN (to {tx.get('to', 'unknown')})")
+                
+                # Calculate CORRECT balance
+                balance = total_incoming - total_outgoing
+                
+                print(f"\n💰 BALANCE CALCULATION:")
+                print(f"   Total Incoming: {total_incoming:.6f} LUN")
+                print(f"   Total Outgoing: {total_outgoing:.6f} LUN")
+                print(f"   Current Balance: {balance:.6f} LUN")
+                
+                print(f"\n📋 TRANSACTION COUNT:")
+                print(f"   Incoming: {len(incoming_txs)} transactions")
+                print(f"   Outgoing: {len(outgoing_txs)} transactions")
+                
+                # Show all outgoing transactions for debugging
+                if outgoing_txs:
+                    print(f"\n🔍 ALL OUTGOING TRANSACTIONS:")
+                    for i, tx in enumerate(outgoing_txs, 1):
+                        print(f"   {i}. Block: {tx.get('block_height')}")
+                        print(f"      Hash: {tx.get('hash', 'unknown')}")
+                        print(f"      To: {tx.get('to', 'unknown')}")
+                        print(f"      Amount: {tx.get('amount')} + Fee: {tx.get('fee', 0)} = Total: {float(tx.get('amount', 0)) + float(tx.get('fee', 0))}")
+                
+                # Update wallet core with correct balance
+                self.wallet_core.update_balance(balance)
+                
+                # Update database
+                for tx in transactions:
+                    self.database.save_transaction(tx, address)
+                
+                def update_ui():
+                    self.update_wallet_data()
+                    self.update_balance_display()
+                    self.update_transaction_history()
                     
-                    # Update database with new transactions
-                    for tx in transactions:
-                        self.database.save_transaction(tx, self.wallet_core.current_wallet_address)
+                    message = f"Sync: {len(incoming_txs)} in, {len(outgoing_txs)} out, Balance: {balance:.6f} LUN"
+                    self.show_snackbar(message, "success")
                     
-                    # Calculate balance from transactions
-                    total_received = sum(
-                        tx.get('amount', 0) for tx in transactions 
-                        if tx.get('to', '').lower() == self.wallet_core.current_wallet_address.lower()
-                    )
-                    total_sent = sum(
-                        tx.get('amount', 0) for tx in transactions 
-                        if tx.get('from', '').lower() == self.wallet_core.current_wallet_address.lower()
-                    )
-                    current_balance = total_received - total_sent
+                    # Save wallet after sync
+                    self.save_wallet_data(force_save=True)
+                    self.create_backup()
                     
-                    self.wallet_core.update_balance(current_balance)
-                    
-                    def update_ui():
-                        # This is the key fix: Update wallet data which triggers sidebar update
-                        self.update_wallet_data()
-                        self.update_balance_display()
-                        self.update_transaction_history()
-                        self.show_snackbar(f"Sync completed: {len(transactions)} transactions", "success")
-                        
-                        # Save wallet after sync completion
-                        self.save_wallet_data(force_save=True)
-                        self.create_backup()
-                        
-                    self.page.run_thread(update_ui)
-                else:
-                    print("DEBUG: No wallet address available for sync")
-                    self.page.run_thread(lambda: self.show_snackbar("No wallet address available", "warning"))
-                    
+                self.page.run_thread(update_ui)
+                
             except Exception as e:
-                print(f"DEBUG: Sync error: {e}")
+                print(f"❌ Sync error: {e}")
                 import traceback
                 traceback.print_exc()
                 
                 def show_error():
-                    self.show_snackbar(f"Sync error: {str(e)}", "error")
+                    self.show_snackbar(f"Sync error: {str(e)[:50]}...", "error")
                 
                 self.page.run_thread(show_error)
         
-        # Start sync in background thread
         threading.Thread(target=sync_thread, daemon=True).start()
     def _fallback_sync(self):
         """Fallback sync method using direct blockchain scanning"""
