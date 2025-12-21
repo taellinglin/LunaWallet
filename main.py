@@ -634,6 +634,12 @@ class LunaWalletApp:
                     # Convert back to proper format for LunaWallet
                     restored_wallet = wallet_info.copy()
                     
+                    # Initialize balances to 0 for immediate display
+                    restored_wallet['balance'] = 0.0
+                    restored_wallet['confirmed_balance'] = 0.0
+                    restored_wallet['pending_balance'] = 0.0
+                    restored_wallet['available_balance'] = 0.0
+                    
                     # Handle encrypted_private_key - convert back to bytes
                     encrypted_key = restored_wallet.get('encrypted_private_key')
                     if encrypted_key and isinstance(encrypted_key, str):
@@ -1195,6 +1201,21 @@ class LunaWalletApp:
             
             self.save_wallet_data(force_save=True)
             print("DEBUG: All wallets synced and saved")
+            
+            # Refresh UI with updated balances
+            def refresh_ui():
+                try:
+                    if hasattr(self, 'current_page') and self.current_page:
+                        if hasattr(self.current_page, '_refresh_sidebar_wallets'):
+                            self.current_page._refresh_sidebar_wallets()
+                        if hasattr(self.current_page, '_update_wallet_data_ui_only'):
+                            self.current_page._update_wallet_data_ui_only()
+                    self.page.update()
+                except Exception as e:
+                    print(f"DEBUG: Error refreshing UI after sync: {e}")
+            
+            if hasattr(self, 'page'):
+                self.page.run_thread(refresh_ui)
             
         except Exception as e:
             print(f"DEBUG: Error in sync_all_wallets: {e}")
@@ -2383,6 +2404,9 @@ class LunaWalletApp:
             # Get total balance from blockchain
             total_balance = self._get_total_balance_from_blockchain()
             
+            # Get pending incoming balance
+            pending_incoming = self._get_pending_incoming_balance()
+            
             # Get pending outgoing transactions from mempool
             mempool = MempoolManager()
             pending_txs = mempool.get_pending_transactions(self.address)
@@ -2393,14 +2417,14 @@ class LunaWalletApp:
                 if tx.get('from') == self.address:
                     pending_outgoing += float(tx.get('amount', 0)) + float(tx.get('fee', 0))
             
-            available_balance = max(0.0, total_balance - pending_outgoing)
+            available_balance = max(0.0, total_balance + pending_incoming - pending_outgoing)
             
             # Update both current wallet and wallets collection
             self.available_balance = available_balance
             if self.current_wallet_address in self.wallets:
                 self.wallets[self.current_wallet_address]['available_balance'] = available_balance
             
-            print(f"DEBUG: Available balance calculated - Total: {total_balance}, Pending Out: {pending_outgoing}, Available: {available_balance}")
+            print(f"DEBUG: Available balance calculated - Total: {total_balance}, Pending In: {pending_incoming}, Pending Out: {pending_outgoing}, Available: {available_balance}")
             return available_balance
             
         except Exception as e:
@@ -2435,6 +2459,26 @@ class LunaWalletApp:
         except Exception as e:
             print(f"DEBUG: Error getting blockchain balance: {e}")
             return self.balance
+
+    def _get_pending_incoming_balance(self) -> float:
+        """Get pending incoming balance from mempool transactions"""
+        try:
+            from lunalib.core.mempool import MempoolManager
+            
+            mempool = MempoolManager()
+            pending_txs = mempool.get_pending_transactions(self.address)
+            
+            # Sum pending incoming amounts
+            pending_incoming = 0.0
+            for tx in pending_txs:
+                if tx.get('to') == self.address:
+                    pending_incoming += float(tx.get('amount', 0))
+            
+            return pending_incoming
+            
+        except Exception as e:
+            print(f"DEBUG: Error getting pending incoming balance: {e}")
+            return 0.0
 
     def refresh_balance(self) -> bool:
         """Refresh both total and available balance from blockchain and mempool"""
