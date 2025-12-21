@@ -9,6 +9,7 @@ class LockPage:
         self.title = title
         self.subtitle = subtitle
         self.show_create_option = show_create_option
+        self.is_unlocking = False
             
         self.password_field = ft.TextField(
             label="Password",
@@ -24,6 +25,10 @@ class LockPage:
             on_submit=self.unlock
         )
         
+        self.loading_container = None
+        self.unlock_button = None
+        self.content_column = None
+        
     def create(self):
         # Show unlock UI if wallets exist, otherwise show setup UI
         if self.wallet_exists:
@@ -33,52 +38,70 @@ class LockPage:
     
     def _create_unlock_ui(self):
         """Create UI for unlocking existing wallet - ONLY unlock options"""
-        return ft.Container(
+        self.unlock_button = ft.ElevatedButton(
+            content=ft.Row(
+                [
+                    ft.Icon(ft.Icons.LOCK_OPEN, color="#ffffff"),
+                    ft.Text("Unlock", color="#ffffff"),
+                ],
+                alignment=ft.MainAxisAlignment.CENTER,
+                tight=True,
+            ),
+            on_click=self.unlock,
+            style=ft.ButtonStyle(
+                color="#ffffff",
+                bgcolor="#dc3545",
+                padding=ft.padding.symmetric(horizontal=20, vertical=15),
+            ),
+            width=200
+        )
+        
+        self.loading_container = ft.Container(
+            visible=False,
             content=ft.Column([
-                ft.Container(expand=True),
-                
-                # Wallet Icon
-                ft.Container(
-                    content=ft.Image(
-                        src="../wallet_icon.svg",
-                        width=80,
-                        height=80,
-                        fit=ft.ImageFit.CONTAIN,
-                        error_content=ft.Icon(ft.Icons.ACCOUNT_BALANCE_WALLET, size=80, color="#dc3545")
-                    ),
-                    margin=ft.margin.only(bottom=20)
+                ft.ProgressRing(
+                    value=None,
+                    stroke_width=4,
+                    color="#dc3545",
+                    width=50,
+                    height=50
                 ),
-                    
-                ft.Text(self.title, size=32, weight="bold", color="#f8d7da"),
-                ft.Container(height=10),
-                ft.Text(self.subtitle, size=16, color="#f8d7da"),
-                ft.Container(height=30),
-                
-                # Password field
-                self.password_field,
-                ft.Container(height=20),
-                
-                # Unlock button
-                ft.ElevatedButton(
-                    content=ft.Row(
-                        [
-                            ft.Icon(ft.Icons.LOCK_OPEN, color="#ffffff"),
-                            ft.Text("Unlock", color="#ffffff"),
-                        ],
-                        alignment=ft.MainAxisAlignment.CENTER,
-                        tight=True,
-                    ),
-                    on_click=self.unlock,
-                    style=ft.ButtonStyle(
-                        color="#ffffff",
-                        bgcolor="#dc3545",
-                        padding=ft.padding.symmetric(horizontal=20, vertical=15),
-                    ),
-                    width=200
+                ft.Container(height=15),
+                ft.Text("Unlocking wallet...", size=16, color="#f8d7da", weight="bold"),
+                ft.Text("This may take a moment", size=12, color="#a89a9a"),
+            ], horizontal_alignment=ft.CrossAxisAlignment.CENTER)
+        )
+        
+        self.content_column = ft.Column([
+            ft.Container(expand=True),
+            
+            ft.Container(
+                content=ft.Image(
+                    src="../wallet_icon.svg",
+                    width=80,
+                    height=80,
+                    fit=ft.ImageFit.CONTAIN,
+                    error_content=ft.Icon(ft.Icons.ACCOUNT_BALANCE_WALLET, size=80, color="#dc3545")
                 ),
+                margin=ft.margin.only(bottom=20)
+            ),
                 
-                ft.Container(expand=True),
-            ], horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+            ft.Text(self.title, size=32, weight="bold", color="#f8d7da"),
+            ft.Container(height=10),
+            ft.Text(self.subtitle, size=16, color="#f8d7da"),
+            ft.Container(height=30),
+            
+            self.password_field,
+            ft.Container(height=20),
+            
+            self.unlock_button,
+            self.loading_container,
+            
+            ft.Container(expand=True),
+        ], horizontal_alignment=ft.CrossAxisAlignment.CENTER)
+        
+        return ft.Container(
+            content=self.content_column,
             expand=True,
             padding=20,
             bgcolor="#2c1a1a",
@@ -161,5 +184,31 @@ class LockPage:
         if not password:
             self.app.show_snackbar("Please enter password", "error")
             return
-            
+        
+        if self.is_unlocking:
+            return
+        
+        self.is_unlocking = True
+        self.show_loading()
         self.on_unlock(password)
+    
+    def show_loading(self):
+        if self.unlock_button:
+            self.unlock_button.visible = False
+        if self.loading_container:
+            self.loading_container.visible = True
+        if self.password_field:
+            self.password_field.disabled = True
+        if self.app and hasattr(self.app, 'page'):
+            self.app.page.update()
+    
+    def hide_loading(self):
+        self.is_unlocking = False
+        if self.unlock_button:
+            self.unlock_button.visible = True
+        if self.loading_container:
+            self.loading_container.visible = False
+        if self.password_field:
+            self.password_field.disabled = False
+        if self.app and hasattr(self.app, 'page'):
+            self.app.page.update()

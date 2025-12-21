@@ -4,13 +4,15 @@ from datetime import datetime
 import time
 
 class WalletPage:
-    def __init__(self, app, on_send, on_receive, on_export_key, on_create_wallet, on_import_wallet):
+    def __init__(self, app, on_send, on_receive, on_export_key, on_lock, on_create_wallet, on_import_wallet, on_settings):
         self.app = app
         self.on_send = on_send
         self.on_receive = on_receive
         self.on_export_key = on_export_key
+        self.on_lock = on_lock
         self.on_create_wallet = on_create_wallet
         self.on_import_wallet = on_import_wallet
+        self.on_settings = on_settings
         
         # Sidebar state
         self.sidebar_collapsed = False
@@ -302,7 +304,89 @@ class WalletPage:
                 on_click=lambda e, idx=index: self._on_wallet_select(idx),
                 data=index
             )
-    
+    def _sync_selected_wallet(self, wallet_address):
+        """Sync blockchain data for the selected wallet only"""
+        try:
+            print(f"DEBUG: Starting sync for selected wallet: {wallet_address}")
+            
+            # Update sync status
+            self.sync_status.value = "🔄 Syncing wallet..."
+            if hasattr(self.app, 'page'):
+                self.app.page.update()
+            
+            # Store the current address before sync
+            original_address = getattr(self.app.wallet_core, 'current_wallet_address', None)
+            
+            # Ensure we're syncing the correct wallet
+            if wallet_address != original_address:
+                print(f"DEBUG: Address mismatch during sync: {wallet_address} vs {original_address}")
+                return
+            
+            # Use the blockchain manager to scan for this specific wallet
+            if hasattr(self.app, 'blockchain_manager'):
+                try:
+                    # Scan transactions for the selected wallet
+                    transactions = self.app.blockchain_manager.scan_transactions_for_address(wallet_address)
+                    print(f"DEBUG: Found {len(transactions)} transactions for {wallet_address}")
+                    
+                    # Update the database with transactions for this wallet
+                    if hasattr(self.app, 'database'):
+                        for tx in transactions:
+                            self.app.database.save_transaction(tx, wallet_address)
+                    
+                    # Calculate balance for this wallet
+                    balance = 0.0
+                    for tx in transactions:
+                        direction = tx.get('direction', 'unknown')
+                        amount = float(tx.get('amount', 0))
+                        fee = float(tx.get('fee', 0))
+                        
+                        if direction == 'incoming':
+                            balance += amount
+                        elif direction == 'outgoing':
+                            balance -= (amount + fee)
+                    
+                    # Update the wallet balance in the core
+                    if hasattr(self.app.wallet_core, 'update_balance'):
+                        self.app.wallet_core.update_balance(balance)
+                    
+                    # Update the specific wallet's balance in the wallets dict
+                    if wallet_address in self.app.wallet_core.wallets:
+                        self.app.wallet_core.wallets[wallet_address]['balance'] = balance
+                    
+                    # Save the updated wallet data
+                    self.app.save_wallet_data(force_save=True)
+                    
+                    # Update UI
+                    def update_ui():
+                        self.sync_status.value = "✅ Synced"
+                        self.update_wallet_data()
+                        self.refresh_transaction_history()
+                        
+                        if hasattr(self.app, 'show_snackbar'):
+                            self.app.show_snackbar(f"Synced wallet: {wallet_address[:8]}...", "success")
+                        
+                        if hasattr(self.app, 'page'):
+                            self.app.page.update()
+                    
+                    if hasattr(self.app, 'page'):
+                        self.app.page.run_thread(update_ui)
+                    
+                except Exception as e:
+                    print(f"DEBUG: Sync error for {wallet_address}: {e}")
+                    
+                    def show_error():
+                        self.sync_status.value = "❌ Sync failed"
+                        if hasattr(self.app, 'show_snackbar'):
+                            self.app.show_snackbar(f"Sync failed: {str(e)[:50]}", "error")
+                        if hasattr(self.app, 'page'):
+                            self.app.page.update()
+                    
+                    if hasattr(self.app, 'page'):
+                        self.app.page.run_thread(show_error)
+            
+        except Exception as e:
+            print(f"DEBUG: Error in _sync_selected_wallet: {e}")
     def _on_wallet_select(self, index):
         """Handle wallet selection from sidebar"""
         try:
@@ -327,6 +411,9 @@ class WalletPage:
                         
                         # Update current wallet address in app
                         self.app.wallet_core.current_wallet_address = selected_address
+                        
+                        # Save the wallet selection
+                        self.app.save_wallet_data(force_save=True)
                         
                         print(f"DEBUG: Switched to wallet: {selected_address}")
                 
@@ -851,63 +938,46 @@ class WalletPage:
         )
     
     def manual_sync(self, e=None):
-        self.sync_status.value = "🔄 Checking network..."
+        self.sync_status.value = "🔄 Syncing all wallets..."
         if self.app.page:
             self.app.page.update()
         
         def sync_thread():
             try:
-                # First check network connection
-                network_status = self._check_network_status()
-                if not network_status['connected']:
-                    self.sync_status.value = "❌ Offline"
-                    if hasattr(self.app, 'show_snackbar'):
-                        self.app.show_snackbar("Cannot connect to blockchain network", "error")
+                if hasattr(self.app, 'sync_all_wallets'):
+                    self.app.sync_all_wallets()
+                    
+                    def update_ui():
+                        self.sync_status.value = "✅ Synced"
+                        self.update_wallet_data()
+                        self._refresh_sidebar_wallets()
+                        self.refresh_transaction_history()
+                        
+                        if hasattr(self.app, 'show_snackbar'):
+                            self.app.show_snackbar("All wallets synced!", "success")
+                        
+                        if self.app.page:
+                            self.app.page.update()
+                    
+                    if hasattr(self.app, 'page'):
+                        self.app.page.run_thread(update_ui)
+                else:
+                    self.sync_status.value = "❌ Sync unavailable"
                     if self.app.page:
                         self.app.page.update()
-                    return
-                
-                # Network is connected, proceed with sync
-                self.sync_status.value = "🔄 Syncing..."
-                if self.app.page:
-                    self.app.page.update()
-                
-                # Use the blockchain sync method
-                if hasattr(self.app, 'start_blockchain_sync'):
-                    self.app.start_blockchain_sync()
-                    
-                    # Wait a bit for sync to start
-                    time.sleep(2)
-                    
-                    self.sync_status.value = "✅ Syncing..."
-                    if hasattr(self.app, 'show_snackbar'):
-                        self.app.show_snackbar("Sync started with blockchain", "info")
-                else:
-                    # Fallback to wallet core sync
-                    if hasattr(self.app, 'wallet_core') and self.app.wallet_core:
-                        success = self.app.wallet_core.scan_blockchain(force_full_scan=True)
-                        if success:
-                            self.sync_status.value = "✅ Synced"
-                            if hasattr(self.app, 'show_snackbar'):
-                                self.app.show_snackbar("Sync completed", "success")
-                        else:
-                            self.sync_status.value = "❌ Failed"
-                            if hasattr(self.app, 'show_snackbar'):
-                                self.app.show_snackbar("Sync failed", "error")
-                
-                # Update UI
-                self.update_quick_stats()
-                self.refresh_transaction_history()
-                
-                if self.app.page:
-                    self.app.page.update()
-                
+                        
             except Exception as e:
-                self.sync_status.value = "❌ Error"
-                if hasattr(self.app, 'show_snackbar'):
-                    self.app.show_snackbar(f"Sync error: {str(e)}", "error")
-                if self.app.page:
-                    self.app.page.update()
+                print(f"DEBUG: Manual sync error: {e}")
+                
+                def show_error():
+                    self.sync_status.value = "❌ Sync failed"
+                    if hasattr(self.app, 'show_snackbar'):
+                        self.app.show_snackbar(f"Sync error: {str(e)[:50]}", "error")
+                    if self.app.page:
+                        self.app.page.update()
+                
+                if hasattr(self.app, 'page'):
+                    self.app.page.run_thread(show_error)
         
         threading.Thread(target=sync_thread, daemon=True).start()
 

@@ -69,6 +69,7 @@ from gui.page_lock import LockPage
 from gui.page_receive import ReceivePage
 from gui.page_send import SendPage
 from gui.page_wallet import WalletPage
+from gui.page_settings import SettingsPage
 from gui.tab_menu import MenuTab
 from gui.tab_transactions import TransactionsTab
 from gui.tab_wallets import WalletsTab
@@ -97,7 +98,7 @@ class LunaWalletApp:
         self._patch_lunalib_cache()
         self.wallet_core = LunaWallet()
         self.blockchain_manager = BlockchainManager(endpoint_url="https://bank.linglin.art")
-        self.transaction_manager = TransactionManager()
+        self.transaction_manager = TransactionManager(network_endpoints=["https://bank.linglin.art"])
         self.encryption_manager = EncryptionManager()
         self.database = WalletDatabase()
         self._patch_blockchain_scanner()
@@ -120,6 +121,7 @@ class LunaWalletApp:
 
         # Initialize page references
         self.current_page = None
+        self.current_lock_page = None
         self.pages = {}
 
         # Wallet persistence state - ENHANCED
@@ -134,6 +136,11 @@ class LunaWalletApp:
         # NEW: Initialize data directory and load any existing wallet metadata
         self._ensure_data_directory()
         self._load_wallet_metadata()
+        
+        # Background sync state
+        self.background_sync_active = False
+        self.last_background_sync_time = 0
+        self.background_sync_interval = 15 * 60  # 15 minutes in seconds
     def debug_transaction_detection(self):
         """Debug method to see what transactions are being detected"""
         if not self.wallet_core.current_wallet_address:
@@ -944,6 +951,7 @@ class LunaWalletApp:
             subtitle=subtitle,
             show_create_option=show_create
         )
+        self.current_lock_page = lock_page
         self.current_page = lock_page.create()
         
         # Clear and add with proper centering
@@ -979,7 +987,7 @@ class LunaWalletApp:
             return False
 
     def unlock_wallet(self, password):
-        """Unlock existing wallet with password using only LunaWallet methods"""
+        """Unlock existing wallet with password using LunaWallet core methods"""
         def unlock_thread():
             try:
                 print("DEBUG: Starting unlock process...")
@@ -987,7 +995,7 @@ class LunaWalletApp:
                 
                 success = False
                 
-                # FIRST: Load the wallet data from persistence
+                # Load wallet data from persistence first
                 print("DEBUG: Loading wallet data from file...")
                 load_success = self.load_wallet_data()
                 print(f"DEBUG: Wallet data load result: {load_success}")
@@ -996,59 +1004,49 @@ class LunaWalletApp:
                     print("DEBUG: Failed to load wallet data")
                     def show_load_error():
                         self.show_snackbar("Failed to load wallet data", "error")
+                        if hasattr(self, 'current_lock_page') and self.current_lock_page:
+                            self.current_lock_page.hide_loading()
                     self.page.run_thread(show_load_error)
                     return
-
-                # Method 1: Use LunaWallet's unlock_wallet method
-                print("DEBUG: Using LunaWallet.unlock_wallet method")
                 
+                # Check if we have wallets in the core
                 if hasattr(self.wallet_core, 'wallets') and self.wallet_core.wallets:
-                    print(f"DEBUG: Found {len(self.wallet_core.wallets)} wallets")
+                    print(f"DEBUG: Found {len(self.wallet_core.wallets)} wallets in core")
                     
-                    # Try to unlock each wallet in the collection
+                    # Try to unlock each wallet using the core's unlock_wallet method
                     for wallet_address in self.wallet_core.wallets.keys():
                         try:
                             print(f"DEBUG: Attempting to unlock wallet: {wallet_address}")
                             
-                            # Use LunaWallet's unlock_wallet method with correct signature
-                            success = self.wallet_core.unlock_wallet(wallet_address, password)
+                            # Use LunaWallet's unlock_wallet method
+                            unlock_success = self.wallet_core.unlock_wallet(wallet_address, password)
                             
-                            if success:
+                            if unlock_success:
                                 print(f"DEBUG: SUCCESS! Unlocked wallet: {wallet_address}")
                                 
-                                # Set this as the current wallet
-                                self.wallet_core.current_wallet_address = wallet_address
-                                current_wallet = self.wallet_core.wallets[wallet_address]
-                                self.wallet_core._set_current_wallet(current_wallet)
+                                # Switch to this wallet to make it current
+                                switch_success = self.wallet_core.switch_wallet(wallet_address)
+                                if switch_success:
+                                    print(f"DEBUG: Successfully switched to wallet: {wallet_address}")
+                                else:
+                                    print(f"DEBUG: Failed to switch to wallet: {wallet_address}")
                                 
+                                success = True
                                 break
                             else:
                                 print(f"DEBUG: Failed to unlock wallet: {wallet_address}")
                                 
                         except Exception as wallet_error:
-                            print(f"DEBUG: Unlock error for {wallet_address}: {wallet_error}")
+                            print(f"DEBUG: Error unlocking wallet {wallet_address}: {wallet_error}")
                             continue
                 
-                # Method 2: If we have wallets but unlock_wallet didn't work, try switch_wallet with password
-                if not success and hasattr(self.wallet_core, 'switch_wallet'):
-                    print("DEBUG: Trying switch_wallet with password...")
-                    
-                    if self.wallet_core.wallets:
-                        first_wallet_address = list(self.wallet_core.wallets.keys())[0]
-                        try:
-                            print(f"DEBUG: Switching to wallet: {first_wallet_address}")
-                            success = self.wallet_core.switch_wallet(first_wallet_address, password)
-                            print(f"DEBUG: switch_wallet result: {success}")
-                        except Exception as switch_error:
-                            print(f"DEBUG: switch_wallet failed: {switch_error}")
-                
-                # Method 3: Try load_from_file if we have a file path
-                if not success and hasattr(self.wallet_core, 'load_from_file'):
-                    print("DEBUG: Trying load_from_file with password...")
+                # Fallback: Try to load from file directly if core methods didn't work
+                if not success:
+                    print("DEBUG: Core unlock failed, trying load_from_file...")
                     try:
-                        # Try to load from the main wallet file
-                        success = self.wallet_core.load_from_file("wallet_data.json", password)
-                        print(f"DEBUG: load_from_file result: {success}")
+                        if hasattr(self.wallet_core, 'load_from_file'):
+                            success = self.wallet_core.load_from_file("wallet_data.json", password)
+                            print(f"DEBUG: load_from_file result: {success}")
                     except Exception as load_error:
                         print(f"DEBUG: load_from_file failed: {load_error}")
 
@@ -1061,11 +1059,13 @@ class LunaWalletApp:
                         self.last_activity_time = time.time()
                         self.show_snackbar("Wallet unlocked successfully", "success")
                         
-                        # Verify the wallet is actually unlocked
-                        if hasattr(self.wallet_core, 'is_unlocked'):
-                            print(f"DEBUG: Wallet unlocked status: {self.wallet_core.is_unlocked}")
+                        # Verify the wallet state
+                        if hasattr(self.wallet_core, 'is_locked'):
+                            print(f"DEBUG: Core is_locked: {self.wallet_core.is_locked}")
                         if hasattr(self.wallet_core, 'private_key') and self.wallet_core.private_key:
-                            print("DEBUG: Private key is available")
+                            print("DEBUG: Private key is available in core")
+                        if hasattr(self.wallet_core, 'current_wallet_address'):
+                            print(f"DEBUG: Current wallet address: {self.wallet_core.current_wallet_address}")
                         
                         # Save wallet state after successful unlock
                         save_success = self.save_wallet_data(force_save=True)
@@ -1078,6 +1078,8 @@ class LunaWalletApp:
                     else:
                         print("DEBUG: Unlock failed - showing error")
                         self.show_snackbar("Failed to unlock wallet - wrong password", "error")
+                        if hasattr(self, 'current_lock_page') and self.current_lock_page:
+                            self.current_lock_page.hide_loading()
                         # Keep the lock screen visible for retry
                     
                 self.page.run_thread(update_ui)
@@ -1088,9 +1090,149 @@ class LunaWalletApp:
                 traceback.print_exc()
                 def show_error():
                     self.show_snackbar(f"Unlock error: {str(e)}", "error")
+                    if hasattr(self, 'current_lock_page') and self.current_lock_page:
+                        self.current_lock_page.hide_loading()
                 self.page.run_thread(show_error)
         
         threading.Thread(target=unlock_thread, daemon=True).start()
+
+
+
+
+
+    def start_blockchain_sync(self):
+        """Start blockchain synchronization for all wallets"""
+        try:
+            print("DEBUG: Starting blockchain sync for all wallets...")
+            
+            def sync_thread():
+                try:
+                    self.sync_all_wallets()
+                    print("DEBUG: Blockchain sync completed for all wallets")
+                except Exception as e:
+                    print(f"DEBUG: Blockchain sync error: {e}")
+            
+            threading.Thread(target=sync_thread, daemon=True).start()
+            
+        except Exception as e:
+            print(f"DEBUG: Error starting blockchain sync: {e}")
+
+    def sync_all_wallets(self):
+        """Sync blockchain data for all wallets to get their balances and transaction history"""
+        try:
+            print("DEBUG: Syncing all wallets...")
+            
+            if not hasattr(self, 'wallet_core') or not self.wallet_core:
+                print("DEBUG: No wallet core available")
+                return
+            
+            if not hasattr(self.wallet_core, 'wallets') or not self.wallet_core.wallets:
+                print("DEBUG: No wallets to sync")
+                return
+            
+            wallet_addresses = list(self.wallet_core.wallets.keys())
+            print(f"DEBUG: Syncing {len(wallet_addresses)} wallets")
+            
+            for address in wallet_addresses:
+                try:
+                    print(f"DEBUG: Syncing wallet {address[:8]}...")
+                    
+                    transactions = self.blockchain_manager.scan_transactions_for_address(address)
+                    print(f"DEBUG: Found {len(transactions)} transactions for {address[:8]}...")
+                    
+                    balance = 0.0
+                    for tx in transactions:
+                        direction = tx.get('direction', 'unknown')
+                        amount = float(tx.get('amount', 0))
+                        fee = float(tx.get('fee', 0))
+                        
+                        if direction == 'incoming':
+                            balance += amount
+                        elif direction == 'outgoing':
+                            balance -= (amount + fee)
+                    
+                    if address in self.wallet_core.wallets:
+                        self.wallet_core.wallets[address]['balance'] = balance
+                        print(f"DEBUG: Updated balance for {address[:8]}... to {balance:.6f} LUN")
+                    
+                    if hasattr(self, 'database'):
+                        for tx in transactions:
+                            self.database.save_transaction(tx, address)
+                    
+                except Exception as e:
+                    print(f"DEBUG: Error syncing wallet {address}: {e}")
+                    continue
+            
+            self.save_wallet_data(force_save=True)
+            print("DEBUG: All wallets synced and saved")
+            
+        except Exception as e:
+            print(f"DEBUG: Error in sync_all_wallets: {e}")
+
+    def start_background_sync(self):
+        """Start background sync that runs every 15 minutes"""
+        if self.background_sync_active:
+            print("DEBUG: Background sync already active")
+            return
+        
+        self.background_sync_active = True
+        print("DEBUG: Starting background sync (every 15 minutes)")
+        
+        def background_sync_loop():
+            while self.background_sync_active:
+                try:
+                    current_time = time.time()
+                    
+                    if current_time - self.last_background_sync_time >= self.background_sync_interval:
+                        if not self.is_locked:
+                            print(f"DEBUG: Running scheduled background sync at {time.strftime('%H:%M:%S')}")
+                            self.sync_all_wallets()
+                            self.last_background_sync_time = current_time
+                        else:
+                            print("DEBUG: Wallet locked, skipping background sync")
+                    
+                    time.sleep(60)
+                    
+                except Exception as e:
+                    print(f"DEBUG: Background sync error: {e}")
+                    time.sleep(60)
+        
+        threading.Thread(target=background_sync_loop, daemon=True).start()
+
+    def update_wallet_data(self):
+        """Update wallet balance and transaction data"""
+        try:
+            print("DEBUG: Updating wallet data...")
+            
+            if not hasattr(self, 'wallet_core') or not self.wallet_core:
+                print("DEBUG: No wallet core available")
+                return
+            
+            # Get current wallet address
+            if hasattr(self.wallet_core, 'current_wallet_address') and self.wallet_core.current_wallet_address:
+                address = self.wallet_core.current_wallet_address
+                print(f"DEBUG: Updating data for address: {address}")
+                
+                # Scan for transactions
+                try:
+                    transactions = self.blockchain_manager.scan_transactions_for_address(address)
+                    print(f"DEBUG: Found {len(transactions)} transactions")
+                    
+                    # Update wallet balance
+                    if hasattr(self.wallet_core, 'update_balance'):
+                        self.wallet_core.update_balance()
+                    
+                    # Trigger UI update if wallet page is active
+                    if hasattr(self, 'current_page') and self.current_page:
+                        self.page.update()
+                        
+                except Exception as scan_error:
+                    print(f"DEBUG: Transaction scan error: {scan_error}")
+            else:
+                print("DEBUG: No current wallet address")
+                
+        except Exception as e:
+            print(f"DEBUG: Error updating wallet data: {e}")
 
     # Add this method to LunaWalletApp class
     def create_enhanced_blockchain_scanner(self):
@@ -1927,8 +2069,10 @@ class LunaWalletApp:
                 on_send=self.show_send_page,
                 on_receive=self.show_receive_page,
                 on_export_key=self.show_export_key_page,
+                on_lock=self.show_lock_page,
                 on_create_wallet=self.show_create_wallet,
-                on_import_wallet=self.show_import_wallet
+                on_import_wallet=self.show_import_wallet,
+                on_settings=self.show_settings_page
             )
             self.current_page = wallet_page.create()
             
@@ -1939,11 +2083,14 @@ class LunaWalletApp:
             
             self.update_wallet_data()
             
+            # Start background sync for all wallets every 15 minutes
+            self.start_background_sync()
+            
         except Exception as e:
             print(f"DEBUG: Error showing wallet page: {e}")
+            import traceback
+            traceback.print_exc()
             self.show_snackbar("Error loading wallet interface", "error")
-            # Fallback to lock screen
-            self.show_lock_page()
 
     def show_create_wallet(self):
         create_page = CreateWalletPage(
@@ -2048,9 +2195,22 @@ class LunaWalletApp:
         self.current_page = export_page.create()
         self.show_current_page()
 
+    def show_settings_page(self):
+        """Show settings page for wallet configuration"""
+        settings_page = SettingsPage(
+            self,
+            on_back=self.show_previous_page
+        )
+        self.current_page = settings_page.create()
+        self.show_current_page()
+
     def show_previous_page(self):
         if self.is_locked:
-            self.show_lock_page()
+            wallet_exists = self.wallet_count > 0
+            self.show_lock_page(
+                wallet_exists=wallet_exists,
+                show_create=not wallet_exists
+            )
         else:
             self.show_wallet_page()
 
@@ -2074,6 +2234,15 @@ class LunaWalletApp:
             
             # Update wallet metadata for future sessions
             self._load_wallet_metadata()
+            
+            # Initialize balance for new wallet
+            if hasattr(self.wallet_core, 'current_wallet_address') and self.wallet_core.current_wallet_address:
+                current_addr = self.wallet_core.current_wallet_address
+                if current_addr in self.wallet_core.wallets:
+                    self.wallet_core.wallets[current_addr]['balance'] = 0.0
+            
+            # Sync all wallets to populate balances
+            self.sync_all_wallets()
             
             # Show success message
             self.show_snackbar("Wallet created successfully!", "success")
@@ -2105,6 +2274,15 @@ class LunaWalletApp:
         
         # Update wallet metadata for future sessions
         self._load_wallet_metadata()
+        
+        # Initialize balance for imported wallet
+        if hasattr(self.wallet_core, 'current_wallet_address') and self.wallet_core.current_wallet_address:
+            current_addr = self.wallet_core.current_wallet_address
+            if current_addr in self.wallet_core.wallets:
+                self.wallet_core.wallets[current_addr]['balance'] = 0.0
+        
+        # Sync all wallets to populate balances
+        self.sync_all_wallets()
         
         self.show_snackbar("Wallet imported successfully!", "success")
         self.show_wallet_page()
@@ -2227,8 +2405,8 @@ class LunaWalletApp:
             from lunalib.core.blockchain import BlockchainManager
             from lunalib.core.mempool import MempoolManager
             
-            blockchain = BlockchainManager()
-            mempool = MempoolManager()
+            blockchain = BlockchainManager(endpoint_url=self.blockchain_manager.endpoint_url)
+            mempool = MempoolManager(endpoint_url=self.blockchain_manager.endpoint_url)
             
             # Get confirmed transactions from blockchain
             confirmed_txs = blockchain.scan_transactions_for_address(self.address)
@@ -2266,8 +2444,8 @@ class LunaWalletApp:
             # Import transaction manager
             from lunalib.transactions.transactions import TransactionManager
             
-            # Create transaction manager
-            tx_manager = TransactionManager()
+            # Create transaction manager with same endpoint as blockchain manager
+            tx_manager = TransactionManager(endpoint_url=self.blockchain_manager.endpoint_url)
             
             # Create and sign transaction
             transaction = tx_manager.create_transaction(
@@ -2339,6 +2517,9 @@ class LunaWalletApp:
     def lock_wallet(self, wtfisthis):
         """Lock wallet and save state"""
         print(wtfisthis)
+        # Stop background sync when locking
+        self.background_sync_active = False
+        
         # Save wallet before locking
         self.save_wallet_data(force_save=True)
         
