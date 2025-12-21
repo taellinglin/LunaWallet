@@ -140,7 +140,7 @@ class LunaWalletApp:
         # Background sync state
         self.background_sync_active = False
         self.last_background_sync_time = 0
-        self.background_sync_interval = 15 * 60  # 15 minutes in seconds
+        self.background_sync_interval = 60 * 60  # 60 minutes in seconds
     def debug_transaction_detection(self):
         """Debug method to see what transactions are being detected"""
         if not self.wallet_core.current_wallet_address:
@@ -199,7 +199,8 @@ class LunaWalletApp:
                 
                 # Check block reward (miner rewards)
                 miner = block.get('miner', '').lower()
-                if miner == address_lower:
+                reward_address = block.get('reward_address', '').lower()
+                if miner == address_lower or reward_address == address_lower:
                     reward_tx = {
                         'type': 'reward',
                         'from': 'network',
@@ -1133,27 +1134,56 @@ class LunaWalletApp:
             wallet_addresses = list(self.wallet_core.wallets.keys())
             print(f"DEBUG: Syncing {len(wallet_addresses)} wallets")
             
+            try:
+                from lunalib.core.mempool import MempoolManager
+                mempool_manager = MempoolManager()
+                has_mempool = True
+            except Exception as e:
+                print(f"DEBUG: MempoolManager not available: {e}")
+                has_mempool = False
+            
             for address in wallet_addresses:
                 try:
                     print(f"DEBUG: Syncing wallet {address[:8]}...")
                     
                     transactions = self.blockchain_manager.scan_transactions_for_address(address)
-                    print(f"DEBUG: Found {len(transactions)} transactions for {address[:8]}...")
+                    print(f"DEBUG: Found {len(transactions)} confirmed transactions for {address[:8]}...")
                     
                     balance = 0.0
                     for tx in transactions:
                         direction = tx.get('direction', 'unknown')
+                        tx_type = tx.get('type', '')
                         amount = float(tx.get('amount', 0))
                         fee = float(tx.get('fee', 0))
                         
-                        if direction == 'incoming':
+                        if direction == 'incoming' or tx_type == 'reward':
                             balance += amount
                         elif direction == 'outgoing':
                             balance -= (amount + fee)
                     
+                    pending_balance = 0.0
+                    if has_mempool:
+                        try:
+                            pending_txs = mempool_manager.get_pending_transactions(address)
+                            print(f"DEBUG: Found {len(pending_txs)} pending transactions for {address[:8]}...")
+                            
+                            for tx in pending_txs:
+                                direction = tx.get('direction', 'unknown')
+                                tx_type = tx.get('type', '')
+                                amount = float(tx.get('amount', 0))
+                                fee = float(tx.get('fee', 0))
+                                
+                                if direction == 'incoming' or tx_type == 'reward':
+                                    pending_balance += amount
+                                elif direction == 'outgoing':
+                                    pending_balance -= (amount + fee)
+                        except Exception as e:
+                            print(f"DEBUG: Error getting pending transactions for {address}: {e}")
+                    
                     if address in self.wallet_core.wallets:
                         self.wallet_core.wallets[address]['balance'] = balance
-                        print(f"DEBUG: Updated balance for {address[:8]}... to {balance:.6f} LUN")
+                        self.wallet_core.wallets[address]['pending_balance'] = pending_balance
+                        print(f"DEBUG: Updated balance for {address[:8]}... to {balance:.6f} LUN (pending: {pending_balance:.6f} LUN)")
                     
                     if hasattr(self, 'database'):
                         for tx in transactions:
@@ -2081,10 +2111,28 @@ class LunaWalletApp:
             self.page.add(self.current_page)
             self.page.update()
             
-            self.update_wallet_data()
+            # Populate sidebar and main UI immediately with cached data
+            try:
+                if hasattr(self.current_page, '_refresh_sidebar_wallets'):
+                    self.current_page._refresh_sidebar_wallets()
+                if hasattr(self.current_page, '_update_wallet_data_ui_only'):
+                    self.current_page._update_wallet_data_ui_only()
+                if hasattr(self.page, 'update'):
+                    self.page.update()
+            except Exception as e:
+                print(f"DEBUG: Error populating UI with cached data: {e}")
             
             # Start background sync for all wallets every 15 minutes
             self.start_background_sync()
+            
+            # Defer wallet data update to background to not block UI
+            def load_wallet_data():
+                try:
+                    self.update_wallet_data()
+                except Exception as e:
+                    print(f"DEBUG: Error loading wallet data in background: {e}")
+            
+            threading.Thread(target=load_wallet_data, daemon=True).start()
             
         except Exception as e:
             print(f"DEBUG: Error showing wallet page: {e}")
@@ -2241,15 +2289,22 @@ class LunaWalletApp:
                 if current_addr in self.wallet_core.wallets:
                     self.wallet_core.wallets[current_addr]['balance'] = 0.0
             
-            # Sync all wallets to populate balances
-            self.sync_all_wallets()
-            
             # Show success message
             self.show_snackbar("Wallet created successfully!", "success")
             
             # Force immediate transition
             print("DEBUG: Immediately showing wallet page")
             self.show_wallet_page()
+            
+            # Sync all wallets to populate balances asynchronously
+            def sync_after_creation():
+                try:
+                    self.sync_all_wallets()
+                    print("DEBUG: Background sync completed after wallet creation")
+                except Exception as e:
+                    print(f"DEBUG: Background sync error after creation: {e}")
+            
+            threading.Thread(target=sync_after_creation, daemon=True).start()
             
         except Exception as e:
             print(f"DEBUG: Error in on_wallet_created: {e}")
@@ -2281,11 +2336,19 @@ class LunaWalletApp:
             if current_addr in self.wallet_core.wallets:
                 self.wallet_core.wallets[current_addr]['balance'] = 0.0
         
-        # Sync all wallets to populate balances
-        self.sync_all_wallets()
-        
         self.show_snackbar("Wallet imported successfully!", "success")
         self.show_wallet_page()
+        
+        # Sync all wallets to populate balances asynchronously
+        def sync_after_import():
+            try:
+                self.sync_all_wallets()
+                print("DEBUG: Background sync completed after wallet import")
+            except Exception as e:
+                print(f"DEBUG: Background sync error after import: {e}")
+        
+        threading.Thread(target=sync_after_import, daemon=True).start()
+    
     def debug_transaction_parameters(self, to_address, amount, fee=None, memo=None):
         """Debug transaction parameters before sending"""
         print("=" * 50)
@@ -2445,7 +2508,7 @@ class LunaWalletApp:
             from lunalib.transactions.transactions import TransactionManager
             
             # Create transaction manager with same endpoint as blockchain manager
-            tx_manager = TransactionManager(endpoint_url=self.blockchain_manager.endpoint_url)
+            tx_manager = TransactionManager(network_endpoints=[self.blockchain_manager.endpoint_url])
             
             # Create and sign transaction
             transaction = tx_manager.create_transaction(
