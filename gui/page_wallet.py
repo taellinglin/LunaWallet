@@ -270,7 +270,7 @@ class WalletPage:
                 ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=5),
                 padding=10,
                 on_click=lambda e, idx=index: self._on_wallet_select(idx),
-                tooltip=f"{wallet['label']}\nBalance: {wallet.get('confirmed_balance', wallet.get('balance', 0)):.6f} LUN",
+                tooltip=f"{wallet['label']}\nBalance: {wallet.get('confirmed_balance', wallet.get('balance', 0)):.6f} LUN\nPending: {wallet.get('pending_balance', 0):+.6f} LUN",
                 data=index
             )
         else:
@@ -297,6 +297,9 @@ class WalletPage:
                             ft.Text(f"{wallet.get('confirmed_balance', wallet.get('balance', 0)):.6f} LUN", 
                                 size=10, 
                                 color="#f8d7da"),
+                            ft.Text(f"Pending: {wallet.get('pending_balance', 0):+.6f}", 
+                                size=8, 
+                                color="#ffd700"),
                         ], spacing=2, expand=True)
                     ], spacing=10),
                 ]),
@@ -392,7 +395,7 @@ class WalletPage:
                         # Update pending balance display
                         if pending_balance != 0:
                             sign = "+" if pending_balance > 0 else ""
-                            self.pending_balance_text.value = f"Pending: {sign}{pending_balance:.6f} LUN"
+                            self.pending_balance_text.value = f"Pending Balance: {sign}{pending_balance:.6f} LUN"
                         else:
                             self.pending_balance_text.value = ""
                         
@@ -511,7 +514,7 @@ class WalletPage:
                         
                         if pending_balance != 0:
                             sign = "+" if pending_balance > 0 else ""
-                            self.pending_balance_text.value = f"Pending: {sign}{pending_balance:.6f} LUN"
+                            self.pending_balance_text.value = f"Pending Balance: {sign}{pending_balance:.6f} LUN"
                         else:
                             self.pending_balance_text.value = ""
                         
