@@ -648,11 +648,8 @@ class LunaWalletApp:
                     # Convert back to proper format for LunaWallet
                     restored_wallet = wallet_info.copy()
                     
-                    # Initialize balances to 0 for immediate display
-                    restored_wallet['balance'] = 0.0
-                    restored_wallet['confirmed_balance'] = 0.0
-                    restored_wallet['pending_balance'] = 0.0
-                    restored_wallet['available_balance'] = 0.0
+                    # Keep cached balances from saved wallet data - DO NOT RESET TO 0
+                    # (Placeholder or previous cached value will show until recalculated)
                     
                     # Handle encrypted_private_key - convert back to bytes
                     encrypted_key = restored_wallet.get('encrypted_private_key')
@@ -1196,50 +1193,65 @@ class LunaWalletApp:
             traceback.print_exc()
 
     def _perform_full_blockchain_scan(self, wallet_addresses, latest_height):
-        """Perform complete blockchain scan from genesis, cache results, update all balances at once"""
+        """Perform complete blockchain scan from genesis using batch API"""
         try:
-            print(f"DEBUG: Starting full blockchain scan (0 to {latest_height})")
-            batch_size = 50
+            print(f"DEBUG: Starting full blockchain scan using batch API (0 to {latest_height})")
             
-            for batch_start in range(0, latest_height + 1, batch_size):
-                batch_end = min(batch_start + batch_size - 1, latest_height)
+            # Use new batch method: scan_transactions_for_addresses(addresses: List[str])
+            # Returns Dict[str, List[Dict]] where keys are addresses
+            if hasattr(self.blockchain_manager, 'scan_transactions_for_addresses'):
+                print(f"✓ Using batch scan_transactions_for_addresses() for {len(wallet_addresses)} wallets")
+                all_transactions = self.blockchain_manager.scan_transactions_for_addresses(wallet_addresses)
                 
-                try:
-                    blocks = self.blockchain_manager.get_blocks_range(batch_start, batch_end)
-                    print(f"DEBUG: Fetched batch {batch_start}-{batch_end}: {len(blocks)} blocks")
+                # Process transactions for each wallet
+                wallet_txs_count = {addr: {'reward': 0, 'transfer': 0, 'other': 0} for addr in wallet_addresses}
+                
+                for wallet_addr in wallet_addresses:
+                    wallet_addr_lower = wallet_addr.lower()
+                    wallet_txs = all_transactions.get(wallet_addr_lower, []) or all_transactions.get(wallet_addr, [])
                     
-                    for block in blocks:
-                        block_height = block.get('index', 0)
-                        block_transactions = block.get('transactions', [])
+                    print(f"\n📨 Processing {len(wallet_txs)} transactions for {wallet_addr[:12]}...")
+                    
+                    for tx in wallet_txs:
+                        tx_type = tx.get('type', 'transfer').lower()
+                        block_height = tx.get('block_height', 0)
                         
-                        for tx in block_transactions:
-                            tx_from = tx.get('from', '').lower()
-                            tx_to = tx.get('to', '').lower()
-                            tx_type = tx.get('type', 'transfer')
-                            
-                            for wallet_addr in wallet_addresses:
-                                wallet_addr_lower = wallet_addr.lower()
-                                
-                                # Mining rewards
-                                if tx_type == 'reward' and tx_from == 'network' and tx_to == wallet_addr_lower:
-                                    tx['block_height'] = block_height
-                                    tx['status'] = 'confirmed'
-                                    if hasattr(self, 'database'):
-                                        self.database.save_transaction(tx, wallet_addr)
-                                
-                                # Regular transactions
-                                elif tx_from == wallet_addr_lower or tx_to == wallet_addr_lower:
-                                    tx['block_height'] = block_height
-                                    tx['status'] = 'confirmed'
-                                    if hasattr(self, 'database'):
-                                        self.database.save_transaction(tx, wallet_addr)
-                    
-                except Exception as e:
-                    print(f"DEBUG: Error in batch {batch_start}-{batch_end}: {e}")
-                    continue
+                        # Save transaction with proper status
+                        tx['status'] = 'confirmed'
+                        if hasattr(self, 'database'):
+                            self.database.save_transaction(tx, wallet_addr)
+                        
+                        # Count by type
+                        if tx_type == 'reward':
+                            wallet_txs_count[wallet_addr]['reward'] += 1
+                            print(f"  ✓ Reward: {tx.get('amount')} LKC @ block {block_height}")
+                        elif tx_type == 'fee_distribution':
+                            wallet_txs_count[wallet_addr]['other'] += 1
+                        else:
+                            wallet_txs_count[wallet_addr]['transfer'] += 1
+                
+                # Print summary
+                print(f"\n📊 BLOCKCHAIN SCAN SUMMARY:")
+                for wallet_addr in wallet_addresses:
+                    counts = wallet_txs_count[wallet_addr]
+                    total = counts['reward'] + counts['transfer'] + counts['other']
+                    print(f"  {wallet_addr[:12]}...: {counts['reward']} rewards, {counts['transfer']} transfers, {counts['other']} other = {total} total")
+            else:
+                # Fallback to legacy single-address method
+                print(f"⚠ Batch scan not available, falling back to single-address scan")
+                for wallet_addr in wallet_addresses:
+                    txs = self.blockchain_manager.scan_transactions_for_address(wallet_addr)
+                    print(f"  {wallet_addr[:12]}...: {len(txs)} transactions")
+                    for tx in txs:
+                        tx['status'] = 'confirmed'
+                        if hasattr(self, 'database'):
+                            self.database.save_transaction(tx, wallet_addr)
             
-            # Check mempool for pending transactions
+            # Check mempool for ALL pending transactions at once
             self._check_mempool_for_pending(wallet_addresses)
+            
+            # Detect new incoming transactions and play sound
+            self._detect_new_incoming_transactions(wallet_addresses)
             
             # Update ALL wallet balances at once
             self._update_all_wallet_balances(wallet_addresses)
@@ -1249,56 +1261,154 @@ class LunaWalletApp:
             
         except Exception as e:
             print(f"DEBUG: Error in _perform_full_blockchain_scan: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _scan_all_rewards_iteratively(self, wallet_addresses, max_iterations=5):
+        """
+        Iteratively scan for ALL reward transactions for all wallets.
+        Handles case where cache has 100+ rewards but only returns 100 at a time.
+        
+        Args:
+            wallet_addresses: List of wallet addresses to scan
+            max_iterations: Maximum number of scan iterations per wallet
+        """
+        try:
+            for wallet_addr in wallet_addresses:
+                wallet_addr_lower = wallet_addr.lower()
+                iteration = 0
+                total_found = 0
+                last_height = None
+                
+                print(f"\n🔄 Iterative scan for {wallet_addr[:12]}...")
+                
+                while iteration < max_iterations:
+                    iteration += 1
+                    
+                    # Scan for this wallet's rewards
+                    try:
+                        # Use the enhanced scanner if available
+                        if hasattr(self.blockchain_manager, 'scan_transactions_for_address'):
+                            txs = self.blockchain_manager.scan_transactions_for_address(wallet_addr)
+                        else:
+                            txs = []
+                        
+                        # Filter for just reward transactions
+                        reward_txs = [tx for tx in txs if tx.get('type', '').lower() == 'reward']
+                        
+                        if not reward_txs:
+                            print(f"  Iteration {iteration}: No new rewards found, stopping scan")
+                            break
+                        
+                        print(f"  Iteration {iteration}: Found {len(reward_txs)} reward transactions")
+                        
+                        # Process each reward
+                        current_height_min = float('inf')
+                        for tx in reward_txs:
+                            block_height = tx.get('block_height', 0)
+                            if block_height < current_height_min:
+                                current_height_min = block_height
+                            
+                            # Save to database if not already saved
+                            tx['status'] = 'confirmed'
+                            if hasattr(self, 'database'):
+                                self.database.save_transaction(tx, wallet_addr)
+                            total_found += 1
+                        
+                        # If we got the same height range, we've found all rewards
+                        if last_height is not None and current_height_min == last_height:
+                            print(f"  Iteration {iteration}: Same height range as previous, all rewards found")
+                            break
+                        
+                        last_height = current_height_min
+                        
+                    except Exception as e:
+                        print(f"  Iteration {iteration}: Error during scan: {e}")
+                        break
+                
+                print(f"  ✅ Total rewards found for {wallet_addr[:12]}...: {total_found}")
+                
+        except Exception as e:
+            print(f"ERROR in _scan_all_rewards_iteratively: {e}")
+            import traceback
+            traceback.print_exc()
 
     def _perform_incremental_scan(self, wallet_addresses, start_height, latest_height):
-        """Perform incremental scan for only NEW transactions since last scan"""
+        """Perform incremental scan for only NEW transactions since last scan using batch API"""
         try:
             print(f"DEBUG: Incremental scan from block {start_height} to {latest_height}")
-            batch_size = 50
             new_transactions_found = False
             
-            for batch_start in range(start_height, latest_height + 1, batch_size):
-                batch_end = min(batch_start + batch_size - 1, latest_height)
+            wallet_txs_count = {addr: {'reward': 0, 'transfer': 0, 'other': 0} for addr in wallet_addresses}
+            
+            # Use new batch method to scan all wallets at once
+            if hasattr(self.blockchain_manager, 'scan_transactions_for_addresses'):
+                print(f"✓ Using batch scan_transactions_for_addresses() for new blocks {start_height}-{latest_height}")
+                all_transactions = self.blockchain_manager.scan_transactions_for_addresses(
+                    wallet_addresses, 
+                    start_height=start_height, 
+                    end_height=latest_height
+                )
                 
-                try:
-                    blocks = self.blockchain_manager.get_blocks_range(batch_start, batch_end)
+                for wallet_addr in wallet_addresses:
+                    wallet_addr_lower = wallet_addr.lower()
+                    wallet_txs = all_transactions.get(wallet_addr_lower, []) or all_transactions.get(wallet_addr, [])
                     
-                    for block in blocks:
-                        block_height = block.get('index', 0)
-                        block_transactions = block.get('transactions', [])
+                    if wallet_txs:
+                        new_transactions_found = True
+                        print(f"\n📨 Processing {len(wallet_txs)} transactions for {wallet_addr[:12]}...")
                         
-                        for tx in block_transactions:
-                            tx_from = tx.get('from', '').lower()
-                            tx_to = tx.get('to', '').lower()
-                            tx_type = tx.get('type', 'transfer')
+                        for tx in wallet_txs:
+                            tx_type = tx.get('type', 'transfer').lower()
+                            block_height = tx.get('block_height', 0)
                             
-                            for wallet_addr in wallet_addresses:
-                                wallet_addr_lower = wallet_addr.lower()
-                                
-                                # Mining rewards
-                                if tx_type == 'reward' and tx_from == 'network' and tx_to == wallet_addr_lower:
-                                    print(f"🎁 Found mining reward: {tx.get('amount')} LKC for block #{block_height}")
-                                    new_transactions_found = True
-                                    tx['block_height'] = block_height
-                                    tx['status'] = 'confirmed'
-                                    if hasattr(self, 'database'):
-                                        self.database.save_transaction(tx, wallet_addr)
-                                
-                                # Regular transactions
-                                elif tx_from == wallet_addr_lower or tx_to == wallet_addr_lower:
-                                    print(f"Found transaction in block {block_height}")
-                                    new_transactions_found = True
-                                    tx['block_height'] = block_height
-                                    tx['status'] = 'confirmed'
-                                    if hasattr(self, 'database'):
-                                        self.database.save_transaction(tx, wallet_addr)
+                            # Save transaction with proper status
+                            tx['status'] = 'confirmed'
+                            if hasattr(self, 'database'):
+                                self.database.save_transaction(tx, wallet_addr)
+                            
+                            # Count by type
+                            if tx_type == 'reward':
+                                wallet_txs_count[wallet_addr]['reward'] += 1
+                                print(f"  🎁 Reward: {tx.get('amount')} LKC @ block {block_height}")
+                            elif tx_type == 'fee_distribution':
+                                wallet_txs_count[wallet_addr]['other'] += 1
+                            else:
+                                wallet_txs_count[wallet_addr]['transfer'] += 1
+                                print(f"  Found transaction in block {block_height} for {wallet_addr[:12]}...")
+            else:
+                # Fallback to legacy single-address method (shouldn't happen with 1.5.1)
+                print(f"⚠ Batch scan not available, falling back to legacy method")
+                for wallet_addr in wallet_addresses:
+                    txs = self.blockchain_manager.scan_transactions_for_address(wallet_addr)
+                    relevant_txs = [tx for tx in txs if start_height <= tx.get('block_height', 0) <= latest_height]
                     
-                except Exception as e:
-                    print(f"DEBUG: Error in batch {batch_start}-{batch_end}: {e}")
-                    continue
+                    if relevant_txs:
+                        new_transactions_found = True
+                        for tx in relevant_txs:
+                            tx['status'] = 'confirmed'
+                            if hasattr(self, 'database'):
+                                self.database.save_transaction(tx, wallet_addr)
+                            tx_type = tx.get('type', 'transfer').lower()
+                            if tx_type == 'reward':
+                                wallet_txs_count[wallet_addr]['reward'] += 1
+                            else:
+                                wallet_txs_count[wallet_addr]['transfer'] += 1
+            
+            # Print summary
+            if new_transactions_found:
+                print(f"\n📊 INCREMENTAL SCAN SUMMARY:")
+                for wallet_addr in wallet_addresses:
+                    counts = wallet_txs_count[wallet_addr]
+                    total = counts['reward'] + counts['transfer'] + counts['other']
+                    if total > 0:
+                        print(f"  {wallet_addr[:12]}...: {counts['reward']} rewards, {counts['transfer']} transfers, {counts['other']} other")
             
             # Check mempool for pending transactions
             self._check_mempool_for_pending(wallet_addresses)
+            
+            # Detect new incoming transactions and play sound
+            self._detect_new_incoming_transactions(wallet_addresses)
             
             # Only update UI and balances if new transactions were found
             if new_transactions_found:
@@ -1308,18 +1418,26 @@ class LunaWalletApp:
             
         except Exception as e:
             print(f"DEBUG: Error in _perform_incremental_scan: {e}")
+            import traceback
+            traceback.print_exc()
 
     def _check_mempool_for_pending(self, wallet_addresses):
-        """Check mempool for pending transactions"""
+        """Check mempool for pending transactions using batch API"""
         try:
             from lunalib.core.mempool import MempoolManager
             mempool_manager = MempoolManager()
             
             print(f"\n=== CHECKING MEMPOOL FOR {len(wallet_addresses)} WALLETS ===")
             
-            for wallet_addr in wallet_addresses:
-                try:
-                    pending_txs = mempool_manager.get_pending_transactions(wallet_addr)
+            # Use new batch method: get_pending_transactions_for_addresses(addresses: List[str])
+            # Returns Dict[str, List[Dict]] where keys are addresses
+            if hasattr(mempool_manager, 'get_pending_transactions_for_addresses'):
+                print(f"✓ Using batch get_pending_transactions_for_addresses()")
+                all_pending = mempool_manager.get_pending_transactions_for_addresses(wallet_addresses, fetch_remote=True)
+                
+                for wallet_addr in wallet_addresses:
+                    wallet_addr_lower = wallet_addr.lower()
+                    pending_txs = all_pending.get(wallet_addr_lower, []) or all_pending.get(wallet_addr, [])
                     
                     if pending_txs:
                         print(f"✓ Found {len(pending_txs)} pending transactions for {wallet_addr[:12]}...")
@@ -1335,15 +1453,40 @@ class LunaWalletApp:
                             # Mark as pending and save to database
                             tx['status'] = 'pending'
                             if hasattr(self, 'database'):
-                                self.database.save_transaction(tx, wallet_addr)
+                                self.database.save_pending_transaction(tx, wallet_addr)
                                 print(f"      Saved to database")
                     else:
                         print(f"✓ No pending transactions for {wallet_addr[:12]}...")
+            else:
+                # Fallback to single-address method
+                print(f"⚠ Batch mempool not available, falling back to single-address method")
+                for wallet_addr in wallet_addresses:
+                    try:
+                        pending_txs = mempool_manager.get_pending_transactions(wallet_addr)
                         
-                except Exception as e:
-                    print(f"✗ Mempool check error for {wallet_addr[:12]}...: {e}")
-                    import traceback
-                    traceback.print_exc()
+                        if pending_txs:
+                            print(f"✓ Found {len(pending_txs)} pending transactions for {wallet_addr[:12]}...")
+                            for i, tx in enumerate(pending_txs):
+                                tx_hash = tx.get('hash', 'unknown')
+                                tx_from = tx.get('from', 'unknown')
+                                tx_to = tx.get('to', 'unknown')
+                                tx_amount = tx.get('amount', 0)
+                                print(f"  [{i+1}] hash={tx_hash[:8] if isinstance(tx_hash, str) else tx_hash}...")
+                                print(f"      from={tx_from[:8] if isinstance(tx_from, str) else tx_from}... → to={tx_to[:8] if isinstance(tx_to, str) else tx_to}...")
+                                print(f"      amount={tx_amount}")
+                                
+                                # Mark as pending and save to database
+                                tx['status'] = 'pending'
+                                if hasattr(self, 'database'):
+                                    self.database.save_pending_transaction(tx, wallet_addr)
+                                    print(f"      Saved to database")
+                        else:
+                            print(f"✓ No pending transactions for {wallet_addr[:12]}...")
+                            
+                    except Exception as e:
+                        print(f"✗ Mempool check error for {wallet_addr[:12]}...: {e}")
+                        import traceback
+                        traceback.print_exc()
             
             print(f"=== MEMPOOL CHECK COMPLETE ===\n")
                     
@@ -1351,6 +1494,106 @@ class LunaWalletApp:
             print(f"✗ Mempool check failed: {e}")
             import traceback
             traceback.print_exc()
+
+    def _detect_new_incoming_transactions(self, wallet_addresses):
+        """
+        Detect NEW incoming transactions that haven't been seen before.
+        Mark existing transactions as 'old' so we don't replay sound on rescan.
+        Play sound for new incoming transactions.
+        """
+        try:
+            print(f"\n=== DETECTING NEW TRANSACTIONS ===")
+            
+            if not hasattr(self, 'database'):
+                return
+            
+            # Get all transactions from database
+            try:
+                all_txs = self.database.get_all_transactions()
+            except:
+                all_txs = []
+            
+            if not all_txs:
+                print("No transactions in database")
+                return
+            
+            # Process each wallet
+            for wallet_addr in wallet_addresses:
+                wallet_addr_lower = wallet_addr.lower()
+                
+                # Find transactions for this wallet
+                wallet_txs = [tx for tx in all_txs if 
+                             (tx.get('to', '').lower() == wallet_addr_lower or 
+                              tx.get('reward_address', '').lower() == wallet_addr_lower or
+                              tx.get('recipient', '').lower() == wallet_addr_lower)]
+                
+                print(f"\n  Checking {len(wallet_txs)} transactions for {wallet_addr[:12]}...")
+                
+                for tx in wallet_txs:
+                    # Mark existing transactions as 'old'
+                    if not tx.get('tx_age'):
+                        # This is a NEW transaction (first time seeing it)
+                        tx['tx_age'] = 'new'
+                        
+                        # Check if it's an incoming transaction
+                        is_incoming = (tx.get('to', '').lower() == wallet_addr_lower or
+                                      tx.get('reward_address', '').lower() == wallet_addr_lower or
+                                      tx.get('recipient', '').lower() == wallet_addr_lower)
+                        
+                        tx_type = tx.get('type', 'transfer').lower()
+                        amount = tx.get('amount', 0)
+                        
+                        if is_incoming:
+                            print(f"    ✨ NEW incoming {tx_type}: {amount} LKC")
+                            # Play sound for new incoming transaction
+                            self._play_transaction_sound()
+                        else:
+                            tx['tx_age'] = 'old'  # Mark outgoing as old
+                    else:
+                        # Mark as old so sound doesn't replay on rescan
+                        tx['tx_age'] = 'old'
+            
+            print(f"=== NEW TRANSACTION DETECTION COMPLETE ===\n")
+            
+        except Exception as e:
+            print(f"Error detecting new transactions: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def _play_transaction_sound(self):
+        """Play transaction notification sound"""
+        try:
+            import os
+            sound_file = os.path.join(os.path.dirname(__file__), 'assets', 'sounds', 'transaction.wav')
+            
+            if os.path.exists(sound_file):
+                print(f"Playing transaction sound: {sound_file}")
+                # Try to play using platform-specific methods
+                try:
+                    import platform
+                    system = platform.system()
+                    
+                    if system == 'Windows':
+                        import winsound
+                        winsound.PlaySound(sound_file, winsound.SND_FILENAME)
+                    elif system == 'Darwin':  # macOS
+                        os.system(f'afplay "{sound_file}"')
+                    elif system == 'Linux':
+                        os.system(f'paplay "{sound_file}"')
+                except Exception as play_error:
+                    print(f"Could not play sound with platform method: {play_error}")
+                    # Fallback: try with pygame if available
+                    try:
+                        import pygame
+                        pygame.mixer.init()
+                        pygame.mixer.music.load(sound_file)
+                        pygame.mixer.music.play()
+                    except:
+                        print("Could not play sound with pygame either")
+            else:
+                print(f"Sound file not found: {sound_file}")
+        except Exception as e:
+            print(f"Error playing sound: {e}")
 
     def _update_all_wallet_balances(self, wallet_addresses):
         """Update balances for all wallets using unified calculation"""
@@ -1361,6 +1604,14 @@ class LunaWalletApp:
             mempool_manager = None
         
         print(f"\n=== UPDATING BALANCES FOR {len(wallet_addresses)} WALLETS ===")
+        print(f"Database available: {hasattr(self, 'database')}")
+        
+        if hasattr(self, 'database'):
+            try:
+                all_txs = self.database.get_all_transactions()
+                print(f"Database has {len(all_txs) if all_txs else 0} total transactions")
+            except Exception as e:
+                print(f"ERROR getting transactions from database: {e}")
         
         for wallet_addr in wallet_addresses:
             if wallet_addr in self.wallet_core.wallets:
@@ -1429,11 +1680,8 @@ class LunaWalletApp:
                 import traceback
                 traceback.print_exc()
         
-        # Schedule UI update on main thread
-        if hasattr(self.page, 'run_task'):
-            self.page.run_task(update_ui)
-        else:
-            self.page.run_thread(update_ui)
+        # Schedule UI update on main thread using run_thread (not run_task which expects async)
+        self.page.run_thread(update_ui)
             
         # Save wallet data
         self.save_wallet_data(force_save=True)
@@ -2019,6 +2267,7 @@ class LunaWalletApp:
         try:
             # Get current wallet info
             wallet_info = None
+            current_address = None
             if hasattr(self, 'wallet_core') and self.wallet_core:
                 if hasattr(self.wallet_core, 'current_wallet_address'):
                     current_address = self.wallet_core.current_wallet_address
@@ -2026,14 +2275,36 @@ class LunaWalletApp:
                         if isinstance(self.wallet_core.wallets, dict) and current_address in self.wallet_core.wallets:
                             wallet_info = self.wallet_core.wallets[current_address]
 
+            print(f"DEBUG update_balance_display: current_address={current_address[:12] if current_address else 'None'}")
+            print(f"DEBUG update_balance_display: wallet_info keys={list(wallet_info.keys()) if wallet_info else 'None'}")
+            
             if wallet_info:
-                # Get available and pending balances
-                confirmed_balance = wallet_info.get('confirmed_balance', 0.0)
-                pending_balance = wallet_info.get('pending_balance', 0.0)
-                total_balance = confirmed_balance + pending_balance
+                # Get available and pending balances - use cached values or placeholder
+                confirmed_balance = wallet_info.get('confirmed_balance')
+                available_balance = wallet_info.get('available_balance')
+                pending_balance = wallet_info.get('pending_balance')
+                total_balance = wallet_info.get('balance')
+                
+                # If balances are not set (None), show placeholder text instead of 0
+                if confirmed_balance is None:
+                    print(f"  confirmed_balance=None (not calculated yet)")
+                else:
+                    print(f"  confirmed_balance={confirmed_balance}")
+                if pending_balance is None:
+                    print(f"  pending_balance=None (not calculated yet)")
+                else:
+                    print(f"  pending_balance={pending_balance}")
+                if total_balance is None:
+                    print(f"  total_balance=None (not calculated yet)")
+                else:
+                    print(f"  total_balance={total_balance}")
 
                 # Update main balance display (total balance)
-                formatted_balance = format_balance(total_balance)
+                if total_balance is not None:
+                    formatted_balance = format_balance(total_balance)
+                else:
+                    formatted_balance = "--.--"  # Placeholder
+                
                 if hasattr(self, 'balance_text'):
                     self.balance_text.value = f"{formatted_balance} LUNAR"
                     self.balance_text.update()
@@ -2044,16 +2315,38 @@ class LunaWalletApp:
 
                 # Update balance card display via wallet page
                 if hasattr(self, 'wallet_page') and self.wallet_page:
+                    # Use available_balance if it exists and > 0, otherwise confirmed_balance, otherwise placeholder
+                    if available_balance is not None and available_balance > 0:
+                        display_balance = available_balance
+                    elif confirmed_balance is not None:
+                        display_balance = confirmed_balance
+                    else:
+                        display_balance = None  # Will show placeholder
+                    
                     if hasattr(self.wallet_page, 'balance_text'):
-                        self.wallet_page.balance_text.value = f"{confirmed_balance:.6f} LKC"
+                        if display_balance is not None:
+                            self.wallet_page.balance_text.value = f"{display_balance:.6f} LKC"
+                            print(f"  Updated wallet_page.balance_text to {display_balance:.6f}")
+                        else:
+                            self.wallet_page.balance_text.value = "--.-- LKC"
+                            print(f"  Updated wallet_page.balance_text to placeholder")
                         self.wallet_page.balance_text.update()
 
                     if hasattr(self.wallet_page, 'pending_balance_text'):
-                        self.wallet_page.pending_balance_text.value = f"{pending_balance:.6f} LKC"
+                        if pending_balance is not None:
+                            self.wallet_page.pending_balance_text.value = f"{pending_balance:.6f} LKC"
+                            print(f"  Updated wallet_page.pending_balance_text to {pending_balance:.6f}")
+                        else:
+                            self.wallet_page.pending_balance_text.value = "--.-- LKC"
+                            print(f"  Updated wallet_page.pending_balance_text to placeholder")
                         self.wallet_page.pending_balance_text.update()
+            else:
+                print(f"DEBUG update_balance_display: No wallet_info found, cannot update balances")
 
         except Exception as e:
             print(f"DEBUG: Balance display update error: {e}")
+            import traceback
+            traceback.print_exc()
 
     def update_transaction_history(self):
         """Update transaction history using lunalib transactions"""
@@ -2087,10 +2380,10 @@ class LunaWalletApp:
                     # Get transactions using lunalib
                     transactions = []
                     
-                    # Method 1: Try database first
+                    # Method 1: Try database first - PRIORITIZE get_all_transactions (no 100-tx limit)
                     if hasattr(self, 'database'):
-                        # Try common database methods
-                        db_methods = ['get_transactions', 'get_wallet_transactions', 'load_transactions', 'get_all_transactions']
+                        # Try common database methods - get_all_transactions FIRST to avoid 100 tx limit
+                        db_methods = ['get_all_transactions', 'get_transactions', 'get_wallet_transactions', 'load_transactions']
                         for method in db_methods:
                             if hasattr(self.database, method):
                                 try:
@@ -2574,14 +2867,8 @@ class LunaWalletApp:
             else:
                 print("DEBUG: WARNING: Failed to save wallet after creation")
             
-            # Update wallet metadata for future sessions
-            self._load_wallet_metadata()
-            
-            # Initialize balance for new wallet
-            if hasattr(self.wallet_core, 'current_wallet_address') and self.wallet_core.current_wallet_address:
-                current_addr = self.wallet_core.current_wallet_address
-                if current_addr in self.wallet_core.wallets:
-                    self.wallet_core.wallets[current_addr]['balance'] = 0.0
+            # Wallet creation complete - balances will be calculated during blockchain sync
+            # Do not reset balances here - placeholder will show until scan completes
             
             # Show success message
             self.show_snackbar("Wallet created successfully!", "success")
@@ -2622,13 +2909,11 @@ class LunaWalletApp:
             self.create_backup()
         
         # Update wallet metadata for future sessions
+        # Update wallet metadata for future sessions
         self._load_wallet_metadata()
         
-        # Initialize balance for imported wallet
-        if hasattr(self.wallet_core, 'current_wallet_address') and self.wallet_core.current_wallet_address:
-            current_addr = self.wallet_core.current_wallet_address
-            if current_addr in self.wallet_core.wallets:
-                self.wallet_core.wallets[current_addr]['balance'] = 0.0
+        # Wallet import complete - balances will be calculated during blockchain sync
+        # Do not reset balances here - placeholder will show until scan completes
         
         self.show_snackbar("Wallet imported successfully!", "success")
         self.show_wallet_page()

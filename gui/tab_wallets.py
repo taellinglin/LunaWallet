@@ -1,5 +1,7 @@
 import flet as ft
 from typing import List, Dict
+from utils import calculate_wallet_balances
+from lunalib.core.mempool import MempoolManager
 
 class WalletsTab:
     def __init__(self, wallet_core, is_mobile=False, selected_wallet_index=0, on_wallet_select=None, on_create_wallet=None, on_import_wallet=None, page=None):
@@ -250,7 +252,7 @@ class WalletsTab:
         self.page.update()
     
     def refresh_wallets_list(self):
-        """Refresh the wallets list display"""
+        """Refresh the wallets list display with cached balances"""
         wallets = self.wallet_core.get_wallets()
         
         # Update mobile list
@@ -270,15 +272,92 @@ class WalletsTab:
             for i, wallet in enumerate(wallets):
                 wallet_card = self._create_wallet_card(wallet, i)
                 desktop_list.controls.append(wallet_card)
+        
+        # Refresh balances in background for all wallets
+        if self.page:
+            def update_balances():
+                try:
+                    from lunalib.storage.database import WalletDatabase
+                    database = WalletDatabase()
+                    mempool_manager = MempoolManager()
+                    
+                    for wallet in wallets:
+                        wallet_address = wallet.get('address') if isinstance(wallet, dict) else str(wallet)
+                        
+                        # Calculate fresh balances using lunalib
+                        balances = calculate_wallet_balances(
+                            wallet_address,
+                            database=database,
+                            mempool_manager=mempool_manager
+                        )
+                        
+                        # Store in wallet_core for caching
+                        if hasattr(self.wallet_core, 'wallets') and wallet_address in self.wallet_core.wallets:
+                            self.wallet_core.wallets[wallet_address]['confirmed_balance'] = balances.get('available', 0.0)
+                            self.wallet_core.wallets[wallet_address]['pending_balance'] = balances.get('pending', 0.0)
+                            self.wallet_core.wallets[wallet_address]['available_balance'] = balances.get('available', 0.0)
+                            self.wallet_core.wallets[wallet_address]['balance'] = balances.get('total', 0.0)
+                            
+                            print(f"Updated balance for {wallet_address[:12]}: confirmed={balances.get('available')}, pending={balances.get('pending')}")
+                    
+                    # Refresh UI after balances are calculated
+                    if self.page:
+                        self.page.run_thread(lambda: self.refresh_wallets_list_ui())
+                        
+                except Exception as e:
+                    print(f"Error updating wallet balances: {e}")
+            
+            import threading
+            threading.Thread(target=update_balances, daemon=True).start()
+    
+    def refresh_wallets_list_ui(self):
+        """Refresh just the UI with updated balances"""
+        wallets = self.wallet_core.get_wallets()
+        
+        # Update mobile list
+        if 'mobile_wallets_list' in self.refs:
+            mobile_list = self.refs['mobile_wallets_list'].current
+            mobile_list.controls.clear()
+            
+            for i, wallet in enumerate(wallets):
+                wallet_card = self._create_wallet_card(wallet, i)
+                mobile_list.controls.append(wallet_card)
+        
+        # Update desktop list
+        if 'desktop_wallets_list' in self.refs:
+            desktop_list = self.refs['desktop_wallets_list'].current
+            desktop_list.controls.clear()
+            
+            for i, wallet in enumerate(wallets):
+                wallet_card = self._create_wallet_card(wallet, i)
+                desktop_list.controls.append(wallet_card)
+        
+        if self.page:
+            self.page.update()
     
     def _create_wallet_card(self, wallet, index):
-        """Create a wallet card for display"""
+        """Create a wallet card for display with balances"""
         is_selected = index == self.selected_wallet_index
+        
+        # Get wallet address and cached balances
+        wallet_address = wallet.get('address') if isinstance(wallet, dict) else str(wallet)
+        cached_confirmed = wallet.get('confirmed_balance') if isinstance(wallet, dict) else None
+        cached_pending = wallet.get('pending_balance') if isinstance(wallet, dict) else None
+        wallet_name = wallet.get('name', wallet.get('label', 'Unknown Wallet')) if isinstance(wallet, dict) else 'Unknown Wallet'
+        
+        # Format balance display
+        if cached_confirmed is not None and cached_pending is not None:
+            confirmed_str = f"{cached_confirmed:.6f}"
+            pending_str = f"{cached_pending:.6f}"
+            balance_display = f"Available: {confirmed_str} LKC | Pending: {pending_str} LKC"
+        else:
+            balance_display = "Balance: Loading..."
         
         return ft.Container(
             content=ft.Column([
-                ft.Text(wallet['name'], size=16, weight=ft.FontWeight.BOLD, color="#ffffff"),
-                ft.Text(f"Address: {wallet['address'][:12]}...", size=12, color="#aaaaaa"),
+                ft.Text(wallet_name, size=16, weight=ft.FontWeight.BOLD, color="#ffffff"),
+                ft.Text(f"Address: {wallet_address[:12]}...", size=12, color="#aaaaaa"),
+                ft.Text(balance_display, size=11, color="#cccccc"),
             ]),
             padding=15,
             bgcolor="#dc3545" if is_selected else "#2a2a2a",

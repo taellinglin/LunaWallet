@@ -1,4 +1,5 @@
 import flet as ft
+from utils import calculate_wallet_balances
 
 class SendPage:
     def __init__(self, app, on_back, on_send_complete, from_address=None):
@@ -77,14 +78,44 @@ class SendPage:
             print(f"DEBUG: {error_msg}")
             return False, error_msg
     def get_available_balance(self):
-        """Get current wallet available balance"""
+        """Get current wallet available balance using unified calculation system"""
         try:
-            if hasattr(self.app, 'wallet_core') and self.app.wallet_core:
-                # Calculate available balance (total - pending)
-                return self.app.wallet_core.get_available_balance()
-            return 0.0
+            if not hasattr(self.app, 'wallet_core') or not self.app.wallet_core:
+                return 0.0
+            
+            # Determine which address to use
+            wallet_address = self.from_address or getattr(self.app.wallet_core, 'current_wallet_address', None)
+            if not wallet_address:
+                return 0.0
+            
+            # Use unified balance calculation system
+            try:
+                from lunalib.core.mempool import MempoolManager
+                mempool_manager = MempoolManager()
+            except:
+                mempool_manager = None
+            
+            database = self.app.database if hasattr(self.app, 'database') else None
+            
+            # Calculate using unified system
+            balances = calculate_wallet_balances(
+                wallet_address,
+                database=database,
+                mempool_manager=mempool_manager
+            )
+            
+            print(f"DEBUG SendPage: Available balance for {wallet_address[:12]}...")
+            print(f"  Available (confirmed): {balances['available']:.6f} LKC")
+            print(f"  Pending: {balances['pending']:.6f} LKC")
+            print(f"  Total: {balances['total']:.6f} LKC")
+            
+            # Return available (confirmed) balance
+            return balances['available']
+            
         except Exception as e:
             print(f"DEBUG: Error getting available balance: {e}")
+            import traceback
+            traceback.print_exc()
             return 0.0
     def _debug_wallet_state(self):
         """Debug wallet state before sending"""
@@ -201,6 +232,18 @@ class SendPage:
                 if hasattr(self.app, 'save_wallet_data'):
                     self.app.save_wallet_data(force_save=True)
                 
+                # For inter-wallet transfers: refresh all wallet balances
+                # This ensures the recipient wallet's balance is also updated
+                print("DEBUG: Refreshing all wallet balances to account for inter-wallet transfer...")
+                try:
+                    from utils import update_all_wallet_balances
+                    if hasattr(self.app, 'wallet_core') and hasattr(self.app.wallet_core, 'wallets'):
+                        database = getattr(self.app.wallet_core, 'database', None)
+                        mempool_manager = getattr(self.app.wallet_core, 'mempool_manager', None)
+                        update_all_wallet_balances(self.app.wallet_core.wallets, database, mempool_manager)
+                except Exception as e:
+                    print(f"DEBUG: Error updating all wallet balances: {e}")
+                
                 # Clear form
                 self.recipient.value = ""
                 self.amount.value = ""
@@ -299,22 +342,38 @@ class SendPage:
         )
     
     def get_current_balance(self):
-        """Get current wallet balance with error handling"""
+        """Get current wallet total balance using unified calculation system"""
         try:
-            if self.from_address and hasattr(self.app.wallet_core, 'wallets'):
-                if isinstance(self.app.wallet_core.wallets, dict) and self.from_address in self.app.wallet_core.wallets:
-                    return self.app.wallet_core.wallets[self.from_address].get('balance', 0)
-                elif isinstance(self.app.wallet_core.wallets, list):
-                    for wallet in self.app.wallet_core.wallets:
-                        if isinstance(wallet, dict) and wallet.get('address') == self.from_address:
-                            return wallet.get('balance', 0)
-            if hasattr(self.app.wallet_core, 'get_wallet_info'):
-                wallet_info = self.app.wallet_core.get_wallet_info()
-                return wallet_info.get('balance', 0) if wallet_info else 0
-            return 0
+            if not hasattr(self.app, 'wallet_core') or not self.app.wallet_core:
+                return 0.0
+            
+            # Determine which address to use
+            wallet_address = self.from_address or getattr(self.app.wallet_core, 'current_wallet_address', None)
+            if not wallet_address:
+                return 0.0
+            
+            # Use unified balance calculation system
+            try:
+                from lunalib.core.mempool import MempoolManager
+                mempool_manager = MempoolManager()
+            except:
+                mempool_manager = None
+            
+            database = self.app.database if hasattr(self.app, 'database') else None
+            
+            # Calculate using unified system
+            balances = calculate_wallet_balances(
+                wallet_address,
+                database=database,
+                mempool_manager=mempool_manager
+            )
+            
+            # Return total balance (available + pending)
+            return balances['total']
+            
         except Exception as e:
-            print(f"DEBUG: Error getting balance: {e}")
-            return 0
+            print(f"DEBUG: Error getting total balance: {e}")
+            return 0.0
     
     def _debug_transaction_parameters(self, recipient, amount, memo, password):
         """Debug transaction parameters before sending"""
