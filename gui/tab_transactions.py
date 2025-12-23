@@ -127,7 +127,7 @@ class TransactionsTab:
                         ft.DataCell(ft.Text(date_str, size=12, color="#f8d7da")),
                         ft.DataCell(ft.Text(f"{type_icon} {tx_type}", size=12, color="#f8d7da")),
                         ft.DataCell(ft.Text(direction, size=12, color="#f8d7da")),
-                        ft.DataCell(ft.Text(f"{amount:.6f} LUN", size=12, color=amount_color)),
+                        ft.DataCell(ft.Text(f"{amount:.6f} LKC", size=12, color=amount_color)),
                         ft.DataCell(ft.Text(f"{status_icon} {status}", size=12, color="#f8d7da")),
                         ft.DataCell(ft.Text(memo, size=12, color="#f8d7da")),
                     ])
@@ -181,7 +181,7 @@ class TransactionsTab:
                         # First row: Amount and Status
                         ft.Row([
                             ft.Text(
-                                f"{amount:.6f} LUN",
+                                f"{amount:.6f} LKC",
                                 size=18,
                                 color=amount_color,
                                 weight="bold",

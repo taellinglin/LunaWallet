@@ -249,12 +249,12 @@ def format_balance_display(available: float, pending: float = None, decimals: in
     Returns:
         Tuple of (available_text, pending_text)
     """
-    available_text = f"{available:.{decimals}f} LUN"
+    available_text = f"{available:.{decimals}f} LKC"
     
     if pending is not None:
-        pending_text = f"{pending:.{decimals}f} LUN"
+        pending_text = f"{pending:.{decimals}f} LKC"
     else:
-        pending_text = "0.000000 LUN"
+        pending_text = "0.000000 LKC"
     
     return (available_text, pending_text)
 
@@ -271,7 +271,7 @@ def get_balance_summary(available: float, pending: float) -> str:
         Summary string
     """
     total = available + pending
-    return f"Available: {available:.6f} LUN | Pending: {pending:.6f} LUN | Total: {total:.6f} LUN"
+    return f"Available: {available:.6f} LKC | Pending: {pending:.6f} LKC | Total: {total:.6f} LKC"
 
 def generate_qr_code(data: str, size: int = 200) -> str:
     """Generate QR code as base64 string using lunalib wallet"""

@@ -228,7 +228,7 @@ class LunaWalletApp:
                         'direction': 'incoming'
                     }
                     transactions.append(reward_tx)
-                    print(f"🎁 Found mining reward: {block.get('reward', 0)} LUN")
+                    print(f"🎁 Found mining reward: {block.get('reward', 0)} LKC")
                 
                 # Check all transactions in the block
                 block_transactions = block.get('transactions', [])
@@ -1277,7 +1277,7 @@ class LunaWalletApp:
                                 
                                 # Mining rewards
                                 if tx_type == 'reward' and tx_from == 'network' and tx_to == wallet_addr_lower:
-                                    print(f"🎁 Found mining reward: {tx.get('amount')} LUN for block #{block_height}")
+                                    print(f"🎁 Found mining reward: {tx.get('amount')} LKC for block #{block_height}")
                                     new_transactions_found = True
                                     tx['block_height'] = block_height
                                     tx['status'] = 'confirmed'
@@ -1656,7 +1656,7 @@ class LunaWalletApp:
                 enhanced_tx['to'] = to_addr
                 enhanced_tx['amount'] = float(tx.get('amount', 0))
                 enhanced_tx['effective_amount'] = float(tx.get('amount', 0))
-                print(f"⬆️ Found INCOMING in block #{block.get('index')}: {tx.get('amount')} LUN")
+                print(f"⬆️ Found INCOMING in block #{block.get('index')}: {tx.get('amount')} LKC")
             
             transactions.append(enhanced_tx)
         
@@ -1916,20 +1916,20 @@ class LunaWalletApp:
                     if direction == 'incoming':
                         total_incoming += amount
                         incoming_txs.append(tx)
-                        print(f"   + Incoming: {amount} LUN (from {tx.get('from', 'unknown')})")
+                        print(f"   + Incoming: {amount} LKC (from {tx.get('from', 'unknown')})")
                     elif direction == 'outgoing':
                         # For outgoing, include both amount AND fee
                         total_outgoing += (amount + fee)
                         outgoing_txs.append(tx)
-                        print(f"   - Outgoing: {amount} LUN + {fee} fee = {amount + fee} LUN (to {tx.get('to', 'unknown')})")
+                        print(f"   - Outgoing: {amount} LKC + {fee} fee = {amount + fee} LKC (to {tx.get('to', 'unknown')})")
                 
                 # Calculate CORRECT balance
                 balance = total_incoming - total_outgoing
                 
                 print(f"\n[BALANCE] BALANCE CALCULATION:")
-                print(f"   Total Incoming: {total_incoming:.6f} LUN")
-                print(f"   Total Outgoing: {total_outgoing:.6f} LUN")
-                print(f"   Current Balance: {balance:.6f} LUN")
+                print(f"   Total Incoming: {total_incoming:.6f} LKC")
+                print(f"   Total Outgoing: {total_outgoing:.6f} LKC")
+                print(f"   Current Balance: {balance:.6f} LKC")
                 
                 print(f"\n[COUNT] TRANSACTION COUNT:")
                 print(f"   Incoming: {len(incoming_txs)} transactions")
@@ -1956,7 +1956,7 @@ class LunaWalletApp:
                     self.update_balance_display()
                     self.update_transaction_history()
                     
-                    message = f"Sync: {len(incoming_txs)} in, {len(outgoing_txs)} out, Balance: {balance:.6f} LUN"
+                    message = f"Sync: {len(incoming_txs)} in, {len(outgoing_txs)} out, Balance: {balance:.6f} LKC"
                     self.show_snackbar(message, "success")
                     
                     # Save wallet after sync
@@ -2045,11 +2045,11 @@ class LunaWalletApp:
                 # Update balance card display via wallet page
                 if hasattr(self, 'wallet_page') and self.wallet_page:
                     if hasattr(self.wallet_page, 'balance_text'):
-                        self.wallet_page.balance_text.value = f"{confirmed_balance:.6f} LUN"
+                        self.wallet_page.balance_text.value = f"{confirmed_balance:.6f} LKC"
                         self.wallet_page.balance_text.update()
 
                     if hasattr(self.wallet_page, 'pending_balance_text'):
-                        self.wallet_page.pending_balance_text.value = f"{pending_balance:.6f} LUN"
+                        self.wallet_page.pending_balance_text.value = f"{pending_balance:.6f} LKC"
                         self.wallet_page.pending_balance_text.update()
 
         except Exception as e:
@@ -2180,7 +2180,7 @@ class LunaWalletApp:
             color = "#00ff00"  # Green for incoming
             icon = "📥"
             direction = "Received"
-            amount_display = f"+{amount:.6f} LUN"
+            amount_display = f"+{amount:.6f} LKC"
             # For incoming transactions, show who sent it
             display_address = from_addr if from_addr else "Unknown Sender"
         elif is_outgoing:
@@ -2189,7 +2189,7 @@ class LunaWalletApp:
             direction = "Sent"
             # Include fee in outgoing amount display
             total_amount = amount + fee
-            amount_display = f"-{total_amount:.6f} LUN"
+            amount_display = f"-{total_amount:.6f} LKC"
             # For outgoing transactions, show who received it
             display_address = to_addr if to_addr else "Unknown Recipient"
         else:
@@ -2197,7 +2197,7 @@ class LunaWalletApp:
             color = "#ffa500"  # Orange
             icon = "❓"
             direction = "Unknown"
-            amount_display = f"{amount:.6f} LUN"
+            amount_display = f"{amount:.6f} LKC"
             display_address = "Unknown"
         
         # Format address for display
@@ -2213,7 +2213,7 @@ class LunaWalletApp:
         # Add fee display for outgoing transactions
         fee_display = ""
         if is_outgoing and fee > 0:
-            fee_display = f" (Fee: {fee:.6f} LUN)"
+            fee_display = f" (Fee: {fee:.6f} LKC)"
         
         # Create transaction card
         return ft.Container(

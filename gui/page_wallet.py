@@ -26,8 +26,8 @@ class WalletPage:
         self.transaction_history = []
         
         # UI elements
-        self.balance_text = ft.Text("0.00 LUN", size=28, weight="bold", color="#ffffff")
-        self.pending_balance_text = ft.Text("0.00 LUN", size=16, weight="500", color="#ffd700")
+        self.balance_text = ft.Text("0.00 LKC", size=28, weight="bold", color="#ffffff")
+        self.pending_balance_text = ft.Text("0.00 LKC", size=16, weight="500", color="#ffd700")
         self.address_text = ft.Text("", size=12, color="#f8d7da")
         
         # Create balance card and store in ref
@@ -219,13 +219,15 @@ class WalletPage:
                             print(f"\n=== REFRESHING SIDEBAR: Found {len(self.app.wallet_core.wallets)} wallets ===")
                             for address, wallet_data in self.app.wallet_core.wallets.items():
                                 balance = wallet_data.get('balance', 0)
+                                confirmed_balance = wallet_data.get('confirmed_balance', balance)  # Use confirmed_balance if available
                                 pending = wallet_data.get('pending_balance', 0)
                                 label = wallet_data.get('label', 'Wallet')
-                                print(f"  {label} ({address[:12]}...): balance={balance:.6f}, pending={pending:.6f}")
+                                print(f"  {label} ({address[:12]}...): balance={balance:.6f}, confirmed={confirmed_balance:.6f}, pending={pending:.6f}")
                                 wallets.append({
                                     'address': address,
                                     'label': label,
                                     'balance': balance,
+                                    'confirmed_balance': confirmed_balance,  # Include confirmed_balance
                                     'pending_balance': pending
                                 })
                         elif isinstance(self.app.wallet_core.wallets, list):
@@ -287,7 +289,7 @@ class WalletPage:
                 ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=5),
                 padding=10,
                 on_click=lambda e, idx=index: self._on_wallet_select(idx),
-                tooltip=f"{wallet['label']}\nBalance: {wallet.get('confirmed_balance', wallet.get('balance', 0)):.6f} LUN\nPending: {wallet.get('pending_balance', 0):+.6f} LUN",
+                tooltip=f"{wallet['label']}\nBalance: {wallet.get('confirmed_balance', wallet.get('balance', 0)):.6f} LKC\nPending: {wallet.get('pending_balance', 0):+.6f} LKC",
                 data=index
             )
         else:
@@ -311,7 +313,7 @@ class WalletPage:
                                 size=14, 
                                 color="#ffffff",
                                 weight="bold"),
-                            ft.Text(f"{wallet.get('confirmed_balance', wallet.get('balance', 0)):.6f} LUN", 
+                            ft.Text(f"{wallet.get('confirmed_balance', wallet.get('balance', 0)):.6f} LKC", 
                                 size=10, 
                                 color="#f8d7da"),
                             ft.Text(f"Pending: {wallet.get('pending_balance', 0):+.6f}", 
@@ -423,10 +425,10 @@ class WalletPage:
             
             # Update display with stored values
             if confirmed_balance is not None:
-                self.balance_text.value = f"{confirmed_balance:.6f} LUN"
+                self.balance_text.value = f"{confirmed_balance:.6f} LKC"
                 self.balance_text.update()
             if pending_balance is not None:
-                self.pending_balance_text.value = f"{pending_balance:.6f} LUN"
+                self.pending_balance_text.value = f"{pending_balance:.6f} LKC"
                 self.pending_balance_text.update()
             
             # Update the page to reflect changes
@@ -465,10 +467,9 @@ class WalletPage:
             
             # Update UI with wallet data
             if wallet_data and current_address:
-                # Read balance: use 'balance' field like sidebar does (total confirmed balance)
-                # The sidebar creates a filtered dict without 'confirmed_balance', so it falls back to 'balance'
-                # Here we read directly from the full dict, so match that behavior
-                available_balance = wallet_data.get('balance', 0.0)  # Total balance (not just confirmed)
+                # Read balance: use 'available_balance' (confirmed only, not including pending)
+                # to match what sidebar shows with confirmed_balance
+                available_balance = wallet_data.get('available_balance', wallet_data.get('confirmed_balance', wallet_data.get('balance', 0.0)))
                 pending_balance = wallet_data.get('pending_balance', 0.0)
                 label = wallet_data.get('label', 'Wallet')
                 
@@ -484,8 +485,8 @@ class WalletPage:
                     available_balance = 0.0
                     pending_balance = 0.0
                 
-                balance_str = f"{available_balance:.6f} LUN"
-                pending_str = f"{pending_balance:+.6f} LUN"
+                balance_str = f"{available_balance:.6f} LKC"
+                pending_str = f"{pending_balance:+.6f} LKC"
                 
                 print(f"DEBUG CARD: Final balance_str = '{balance_str}'")
                 
@@ -529,8 +530,8 @@ class WalletPage:
                         print(f"DEBUG CARD: Error updating page: {page_error}")
             else:
                 print(f"DEBUG CARD: No wallet_data found or no current_address")
-                self.balance_text.value = "0.000000 LUN"
-                self.pending_balance_text.value = "0.000000 LUN"
+                self.balance_text.value = "0.000000 LKC"
+                self.pending_balance_text.value = "0.000000 LKC"
                 self.address_text.value = "No wallet selected"
                 
                 if hasattr(self.app, 'page') and self.app.page:
@@ -543,7 +544,7 @@ class WalletPage:
             print(f"ERROR in _update_wallet_data_ui_only: {e}")
             import traceback
             traceback.print_exc()
-            self.pending_balance_text.value = "0.000000 LUN"
+            self.pending_balance_text.value = "0.000000 LKC"
             self.address_text.value = "Error loading balance"
     
     def create_header(self):
@@ -996,8 +997,8 @@ class WalletPage:
         """Update balance card UI with calculated values"""
         try:
             # Update balance text
-            self.balance_text.value = f"{available_balance:.6f} LUN"
-            self.pending_balance_text.value = f"{pending_balance:+.6f} LUN"
+            self.balance_text.value = f"{available_balance:.6f} LKC"
+            self.pending_balance_text.value = f"{pending_balance:+.6f} LKC"
             
             # Color pending balance
             if pending_balance > 0:
@@ -1079,7 +1080,7 @@ class WalletPage:
                     size=20
                 ),
                 title=ft.Row([
-                    ft.Text(f"{amount_prefix}{amount:.6f} LUN", 
+                    ft.Text(f"{amount_prefix}{amount:.6f} LKC", 
                         color=amount_color, 
                         size=14,
                         weight="bold",
@@ -1395,7 +1396,7 @@ class WalletPage:
                         address = wallet_info.get('address', 'No wallet')
                         label = wallet_info.get('label', 'Wallet')
                         
-                        self.balance_text.value = f"{balance:.6f} LUN"
+                        self.balance_text.value = f"{balance:.6f} LKC"
                         self.balance_text.update()
                         
                         if pending_balance != 0:
@@ -1408,7 +1409,7 @@ class WalletPage:
                         self.address_text.value = f"{label}: {address[:12]}...{address[-6:]}" if len(address) > 20 else address
                         self.address_text.update()
                     else:
-                        self.balance_text.value = "0.00 LUN"
+                        self.balance_text.value = "0.00 LKC"
                         self.balance_text.update()
                         self.pending_balance_text.value = ""
                         self.pending_balance_text.update()
@@ -1416,7 +1417,7 @@ class WalletPage:
                         self.address_text.update()
                     
                 else:
-                    self.balance_text.value = "0.00 LUN"
+                    self.balance_text.value = "0.00 LKC"
                     self.pending_balance_text.value = ""
                     self.address_text.value = "Wallet Locked"
                 
@@ -1425,7 +1426,7 @@ class WalletPage:
                 self._refresh_sidebar_wallets()  # Refresh sidebar when wallet data updates
             
         except Exception as e:
-            self.balance_text.value = "0.00 LUN"
+            self.balance_text.value = "0.00 LKC"
             self.pending_balance_text.value = ""
             self.address_text.value = "Failed to load"
             print(f"Error updating wallet data: {e}")
