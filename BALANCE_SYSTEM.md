@@ -34,9 +34,9 @@ balances = calculate_wallet_balances(
     mempool_manager=mempool_instance
 )
 
-print(f"Available: {balances['available']:.6f} LUN")
-print(f"Pending: {balances['pending']:.6f} LUN")
-print(f"Total: {balances['total']:.6f} LUN")
+print(f"Available: {balances['available']:.6f} LKC")
+print(f"Pending: {balances['pending']:.6f} LKC")
+print(f"Total: {balances['total']:.6f} LKC")
 ```
 
 #### 2. `_calculate_confirmed_balance(wallet_address_lower, database)`
@@ -82,7 +82,7 @@ Formats balances for UI display.
 
 Creates a human-readable balance summary string.
 
-**Returns:** String like `"Available: 100.500000 LUN | Pending: 5.250000 LUN | Total: 105.750000 LUN"`
+**Returns:** String like `"Available: 100.500000 LKC | Pending: 5.250000 LKC | Total: 105.750000 LKC"`
 
 ---
 
@@ -118,7 +118,7 @@ Each wallet in the sidebar shows both available and pending balances:
 ```
 ┌─────────────────────────────┐
 │  A  Wallet A                │
-│      100.500000 LUN         │ ← Available (Confirmed)
+│      100.500000 LKC         │ ← Available (Confirmed)
 │      Pending: +5.250000     │ ← Pending (Unconfirmed)
 └─────────────────────────────┘
 ```
@@ -141,11 +141,11 @@ The main balance card for the selected wallet displays detailed balance informat
 │  Wallet Balance                    [OK] Synced │
 ├────────────────────────────────────────────────┤
 │ Available Balance (Confirmed)                   │
-│ 100.500000 LUN                                 │
+│ 100.500000 LKC                                 │
 │ Blockchain confirmed and ready to spend        │
 ├────────────────────────────────────────────────┤
 │ Pending Balance (Unconfirmed)                  │
-│ +5.250000 LUN                                  │
+│ +5.250000 LKC                                  │
 │ Waiting for blockchain confirmation           │
 ├────────────────────────────────────────────────┤
 │ Wallet: LUN_BzFRa...7Mj4wJ                    │
@@ -340,14 +340,14 @@ available_text, pending_text = format_balance_display(
     decimals=6
 )
 
-# "100.500000 LUN", "5.250000 LUN"
+# "100.500000 LKC", "5.250000 LKC"
 ```
 
 ### Get Summary
 
 ```python
 summary = get_balance_summary(available=100.5, pending=5.25)
-# "Available: 100.500000 LUN | Pending: 5.250000 LUN | Total: 105.750000 LUN"
+# "Available: 100.500000 LKC | Pending: 5.250000 LKC | Total: 105.750000 LKC"
 ```
 
 ---
@@ -367,8 +367,8 @@ print(f'Available: {av_text}')
 print(f'Pending: {pend_text}')
 
 # Should output:
-# Available: 100.500000 LUN
-# Pending: 5.250000 LUN
+# Available: 100.500000 LKC
+# Pending: 5.250000 LKC
 "
 ```
 
