@@ -26,15 +26,21 @@ class WalletPage:
         self.transaction_history = []
         
         # UI elements
-        self.balance_text = ft.Text("0.00", size=28, weight="bold", color="#ffffff")
-        self.pending_balance_text = ft.Text("", size=13, color="#ffd700", weight="500")
+        self.balance_text = ft.Text("0.00 LUN", size=28, weight="bold", color="#ffffff")
+        self.pending_balance_text = ft.Text("0.00 LUN", size=16, weight="500", color="#ffd700")
         self.address_text = ft.Text("", size=12, color="#f8d7da")
-        self.sync_status = ft.Text("Syncing...", size=11, color="#ffd700")
+        
+        # Create balance card and store in ref
+        self.refs['balance_card'] = ft.Ref[ft.Container]()
+        self.balance_card = self.create_balance_card()
         
         # Preloader state - start with loading FALSE so main content shows
         self.is_loading = False
         self.preloader = self.create_preloader()
         self.main_content = self.create_main_content()
+        
+        # Threading lock for sidebar updates to prevent duplicates
+        self.sidebar_update_lock = threading.Lock()
         
     def create(self):
         # Auto-hide loading after a short delay to ensure data is loaded
@@ -174,7 +180,7 @@ class WalletPage:
         return ft.Container(
             content=ft.Column([
                 self.create_header(),
-                self.create_balance_card(),
+                self.balance_card,  # Use stored balance card reference
                 self.create_action_buttons(),
                 self.create_transaction_history(),
             ], spacing=15),
@@ -192,45 +198,56 @@ class WalletPage:
     
     def _refresh_sidebar_wallets(self):
         """Refresh the wallets list in the sidebar"""
-        if 'sidebar_wallets_list' not in self.refs:
-            return
-            
-        sidebar_list = self.refs['sidebar_wallets_list'].current
-        if not sidebar_list:
-            return
-            
-        sidebar_list.controls.clear()
-        
-        try:
-            if hasattr(self.app, 'wallet_core') and self.app.wallet_core:
-                # Get wallets from wallet core
-                wallets = []
-                if hasattr(self.app.wallet_core, 'wallets'):
-                    if isinstance(self.app.wallet_core.wallets, dict):
-                        # Convert dictionary to list, including address for selection
-                        for address, wallet_data in self.app.wallet_core.wallets.items():
-                            wallets.append({
-                                'address': address,
-                                'label': wallet_data.get('label', 'Wallet'),
-                                'balance': wallet_data.get('balance', 0),
-                                'pending_balance': wallet_data.get('pending_balance', 0)
-                            })
-                    elif isinstance(self.app.wallet_core.wallets, list):
-                        # Include address from list wallets
-                        for wallet in self.app.wallet_core.wallets:
-                            wallets.append({
-                                'address': wallet.get('address', ''),
-                                'label': wallet.get('label', 'Wallet'),
-                                'balance': wallet.get('balance', 0),
-                                'pending_balance': wallet.get('pending_balance', 0)
-                            })
+        # Use lock to prevent concurrent updates causing duplicates
+        with self.sidebar_update_lock:
+            if 'sidebar_wallets_list' not in self.refs:
+                return
                 
-                for i, wallet in enumerate(wallets):
-                    wallet_item = self._create_sidebar_wallet_item(wallet, i)
-                    sidebar_list.controls.append(wallet_item)
+            sidebar_list = self.refs['sidebar_wallets_list'].current
+            if not sidebar_list:
+                return
+                
+            sidebar_list.controls.clear()
+            
+            try:
+                if hasattr(self.app, 'wallet_core') and self.app.wallet_core:
+                    # Get wallets from wallet core
+                    wallets = []
+                    if hasattr(self.app.wallet_core, 'wallets'):
+                        if isinstance(self.app.wallet_core.wallets, dict):
+                            # Convert dictionary to list, including address for selection
+                            print(f"\n=== REFRESHING SIDEBAR: Found {len(self.app.wallet_core.wallets)} wallets ===")
+                            for address, wallet_data in self.app.wallet_core.wallets.items():
+                                balance = wallet_data.get('balance', 0)
+                                pending = wallet_data.get('pending_balance', 0)
+                                label = wallet_data.get('label', 'Wallet')
+                                print(f"  {label} ({address[:12]}...): balance={balance:.6f}, pending={pending:.6f}")
+                                wallets.append({
+                                    'address': address,
+                                    'label': label,
+                                    'balance': balance,
+                                    'pending_balance': pending
+                                })
+                        elif isinstance(self.app.wallet_core.wallets, list):
+                            # Include address from list wallets
+                            for wallet in self.app.wallet_core.wallets:
+                                wallets.append({
+                                    'address': wallet.get('address', ''),
+                                    'label': wallet.get('label', 'Wallet'),
+                                    'balance': wallet.get('balance', 0),
+                                    'pending_balance': wallet.get('pending_balance', 0)
+                                })
                     
-        except Exception as e:
-            print(f"Error refreshing sidebar wallets: {e}")
+                    for i, wallet in enumerate(wallets):
+                        wallet_item = self._create_sidebar_wallet_item(wallet, i)
+                        sidebar_list.controls.append(wallet_item)
+                    
+                    print(f"=== SIDEBAR REFRESH COMPLETE ===\n")
+                        
+            except Exception as e:
+                print(f"Error refreshing sidebar wallets: {e}")
+                import traceback
+                traceback.print_exc()
     
     def _create_sidebar_wallet_item(self, wallet, index):
         """Create wallet item for sidebar"""
@@ -310,122 +327,6 @@ class WalletPage:
                 on_click=lambda e, idx=index: self._on_wallet_select(idx),
                 data=index
             )
-    def _sync_selected_wallet(self, wallet_address):
-        """Sync blockchain data for the selected wallet only"""
-        try:
-            print(f"DEBUG: Starting sync for selected wallet: {wallet_address}")
-            
-            # Update sync status
-            self.sync_status.value = "🔄 Syncing wallet..."
-            if hasattr(self.app, 'page'):
-                self.app.page.update()
-            
-            # Store the current address before sync
-            original_address = getattr(self.app.wallet_core, 'current_wallet_address', None)
-            
-            # Ensure we're syncing the correct wallet
-            if wallet_address != original_address:
-                print(f"DEBUG: Address mismatch during sync: {wallet_address} vs {original_address}")
-                return
-            
-            # Use the blockchain manager to scan for this specific wallet
-            if hasattr(self.app, 'blockchain_manager'):
-                try:
-                    # Scan transactions for this specific wallet only
-                    wallet_transactions = self.app.blockchain_manager.scan_transactions_for_address(wallet_address)
-                    print(f"DEBUG: Found {len(wallet_transactions)} transactions for {wallet_address}")
-                    
-                    # Update the database with transactions for this wallet
-                    if hasattr(self.app, 'database'):
-                        for tx in wallet_transactions:
-                            # Mark the transaction as belonging to this wallet
-                            tx['wallet_address'] = wallet_address
-                            self.app.database.save_transaction(tx, wallet_address)
-                    
-                    # Calculate balance for THIS wallet only - separate confirmed and pending
-                    confirmed_balance = 0.0
-                    pending_balance = 0.0
-                    
-                    for tx in wallet_transactions:
-                        # Determine if this transaction is incoming to our wallet
-                        is_incoming = self._is_incoming_transaction(tx, wallet_address)
-                        amount = float(tx.get('amount', 0))
-                        fee = float(tx.get('fee', 0))
-                        status = tx.get('status', 'confirmed').lower()
-                        
-                        # Calculate the net effect of this transaction
-                        if is_incoming:
-                            net_amount = amount
-                        else:
-                            net_amount = -(amount + fee)
-                        
-                        # Add to confirmed or pending balance based on status
-                        if status == 'confirmed':
-                            confirmed_balance += net_amount
-                        else:
-                            pending_balance += net_amount
-                    
-                    # Total balance is confirmed + pending
-                    total_balance = confirmed_balance + pending_balance
-                    
-                    print(f"DEBUG: Calculated balances for {wallet_address}:")
-                    print(f"  Confirmed: {confirmed_balance:.6f} LUN")
-                    print(f"  Pending: {pending_balance:.6f} LUN")
-                    print(f"  Total: {total_balance:.6f} LUN")
-                    
-                    # Update the wallet balance in the core
-                    if hasattr(self.app.wallet_core, 'update_balance'):
-                        self.app.wallet_core.update_balance(total_balance)
-                    
-                    # Update the specific wallet's balance in the wallets dict
-                    if wallet_address in self.app.wallet_core.wallets:
-                        self.app.wallet_core.wallets[wallet_address]['balance'] = total_balance
-                        self.app.wallet_core.wallets[wallet_address]['confirmed_balance'] = confirmed_balance
-                        self.app.wallet_core.wallets[wallet_address]['pending_balance'] = pending_balance
-                    
-                    # Save the updated wallet data
-                    self.app.save_wallet_data(force_save=True)
-                    
-                    # Update UI
-                    def update_ui():
-                        self.sync_status.value = "✅ Synced"
-                        # Update balance with the calculated values
-                        self.balance_text.value = f"{confirmed_balance:.6f} LUN"
-                        
-                        # Update pending balance display
-                        if pending_balance != 0:
-                            sign = "+" if pending_balance > 0 else ""
-                            self.pending_balance_text.value = f"Pending Balance: {sign}{pending_balance:.6f} LUN"
-                        else:
-                            self.pending_balance_text.value = ""
-                        
-                        self.refresh_transaction_history()
-                        self._refresh_sidebar_wallets()  # Update sidebar with new balance
-                        
-                        if hasattr(self.app, 'show_snackbar'):
-                            self.app.show_snackbar(f"Synced wallet: {wallet_address[:8]}...", "success")
-                        
-                        if hasattr(self.app, 'page'):
-                            self.app.page.update()
-                    
-                    if hasattr(self.app, 'page'):
-                        self.app.page.run_thread(update_ui)
-                    
-                except Exception as e:
-                    print(f"DEBUG: Sync error for {wallet_address}: {e}")
-                    
-                    def show_error():
-                        self.sync_status.value = "❌ Sync failed"
-                        if hasattr(self.app, 'show_snackbar'):
-                            self.app.show_snackbar(f"Sync failed: {str(e)[:50]}", "error")
-                        if hasattr(self.app, 'page'):
-                            self.app.page.update()
-                    
-                    if hasattr(self.app, 'page'):
-                        self.app.page.run_thread(show_error)
-            
-        except Exception as e:
-            print(f"DEBUG: Error in _sync_selected_wallet: {e}")
     def _on_wallet_select(self, index):
         """Handle wallet selection from sidebar - immediate UI update with background refresh"""
         try:
@@ -463,13 +364,28 @@ class WalletPage:
                     # Save wallet selection
                     self.app.save_wallet_data(force_save=True)
                     
-                    # Refresh transactions and stats
+                    # Recalculate balances fresh from all transactions
+                    self.recalculate_wallet_balances(selected_address)
+                    
+                    # Refresh transactions list for display
                     self.refresh_transaction_history()
                     self.update_quick_stats()
                     
-                    # Update UI with refreshed data
-                    if hasattr(self.app, 'page'):
-                        self.app.page.update()
+                    # Schedule UI update on main thread
+                    def update_ui():
+                        try:
+                            if hasattr(self.app, 'page'):
+                                self.app.page.update()
+                        except Exception as ui_error:
+                            print(f"DEBUG: Error updating UI: {ui_error}")
+                    
+                    # Use page.run_task to schedule on main thread
+                    if hasattr(self.app, 'page') and hasattr(self.app.page, 'run_task'):
+                        self.app.page.run_task(update_ui)
+                    else:
+                        # Fallback if run_task not available
+                        update_ui()
+                        
                 except Exception as e:
                     print(f"DEBUG: Error in background operations: {e}")
             
@@ -478,61 +394,157 @@ class WalletPage:
         except Exception as e:
             print(f"Error selecting wallet: {e}")
     
-    def _update_wallet_data_ui_only(self):
-        """Update wallet data UI from cached data without blocking on blockchain queries"""
+    def _get_pending_balance(self, address: str) -> float:
+        """Get pending balance from stored wallet data (no mempool scanning)"""
         try:
             if hasattr(self.app, 'wallet_core') and self.app.wallet_core:
-                is_unlocked = (
-                    getattr(self.app.wallet_core, 'is_unlocked', False) or
-                    getattr(self.app.wallet_core, 'is_locked', True) == False or
-                    getattr(self.app, 'is_locked', True) == False
-                )
-                
-                if is_unlocked:
-                    wallet_info = None
-                    
-                    if hasattr(self.app.wallet_core, 'current_wallet_address'):
-                        current_address = self.app.wallet_core.current_wallet_address
-                        if current_address and hasattr(self.app.wallet_core, 'wallets'):
-                            if isinstance(self.app.wallet_core.wallets, dict) and current_address in self.app.wallet_core.wallets:
-                                wallet_info = self.app.wallet_core.wallets[current_address]
-                    
-                    if not wallet_info and hasattr(self.app.wallet_core, 'wallets'):
-                        if isinstance(self.app.wallet_core.wallets, dict) and self.app.wallet_core.wallets:
-                            first_address = list(self.app.wallet_core.wallets.keys())[0]
-                            wallet_info = self.app.wallet_core.wallets[first_address]
-                    
-                    if wallet_info:
-                        # Start with 0 balance until sync completes
-                        confirmed_balance = wallet_info.get('confirmed_balance', 0.0)
-                        pending_balance = wallet_info.get('pending_balance', 0.0)
-                        total_balance = confirmed_balance + pending_balance
-                        address = wallet_info.get('address', 'No wallet')
-                        label = wallet_info.get('label', 'Wallet')
-                        
-                        self.balance_text.value = f"{confirmed_balance:.6f} LUN"
-                        
-                        if pending_balance != 0:
-                            sign = "+" if pending_balance > 0 else ""
-                            self.pending_balance_text.value = f"Pending Balance: {sign}{pending_balance:.6f} LUN"
-                        else:
-                            self.pending_balance_text.value = ""
-                        
-                        self.address_text.value = f"{label}: {address[:12]}...{address[-6:]}" if len(address) > 20 else address
-                    else:
-                        self.balance_text.value = "0.00 LUN"
-                        self.pending_balance_text.value = ""
-                        self.address_text.value = "No wallet data"
-                    
-                    self.sync_status.value = "⏳ Loading..."
-                else:
-                    self.balance_text.value = "0.00 LUN"
-                    self.pending_balance_text.value = ""
-                    self.address_text.value = "Wallet Locked"
-                    self.sync_status.value = "🔒 Locked"
-            
+                if hasattr(self.app.wallet_core, 'wallets'):
+                    if isinstance(self.app.wallet_core.wallets, dict) and address in self.app.wallet_core.wallets:
+                        wallet = self.app.wallet_core.wallets[address]
+                        return wallet.get('pending_balance', 0.0)
+            return 0.0
         except Exception as e:
-            print(f"Error updating wallet data UI: {e}")
+            print(f"Error getting pending balance: {e}")
+            return 0.0
+    
+    def update_balance_card(self, confirmed_balance: float = None, pending_balance: float = None):
+        """Update balance card display with stored values (no scanning)"""
+        try:
+            # If no values provided, get from current wallet
+            if confirmed_balance is None or pending_balance is None:
+                if hasattr(self.app, 'wallet_core') and self.app.wallet_core:
+                    if hasattr(self.app.wallet_core, 'current_wallet_address'):
+                        current_addr = self.app.wallet_core.current_wallet_address
+                        if current_addr and hasattr(self.app.wallet_core, 'wallets'):
+                            if isinstance(self.app.wallet_core.wallets, dict) and current_addr in self.app.wallet_core.wallets:
+                                wallet = self.app.wallet_core.wallets[current_addr]
+                                confirmed_balance = wallet.get('confirmed_balance', 0.0)
+                                pending_balance = wallet.get('pending_balance', 0.0)
+            
+            # Update display with stored values
+            if confirmed_balance is not None:
+                self.balance_text.value = f"{confirmed_balance:.6f} LUN"
+                self.balance_text.update()
+            if pending_balance is not None:
+                self.pending_balance_text.value = f"{pending_balance:.6f} LUN"
+                self.pending_balance_text.update()
+            
+            # Update the page to reflect changes
+            if hasattr(self, 'page') and self.page:
+                try:
+                    self.page.update()
+                except:
+                    pass
+                    
+        except Exception as e:
+            print(f"Error updating balance card: {e}")
+    
+    def _update_wallet_data_ui_only(self):
+        """Update wallet data UI from cached data - recreate balance card content"""
+        try:
+            current_address = None
+            wallet_data = None
+            
+            # Get current wallet address and data
+            if hasattr(self.app, 'wallet_core') and self.app.wallet_core:
+                if hasattr(self.app.wallet_core, 'current_wallet_address'):
+                    current_address = self.app.wallet_core.current_wallet_address
+                    print(f"DEBUG CARD: current_address = {current_address}")
+                
+                if current_address and hasattr(self.app.wallet_core, 'wallets'):
+                    if isinstance(self.app.wallet_core.wallets, dict):
+                        wallet_data = self.app.wallet_core.wallets.get(current_address)
+                        print(f"DEBUG CARD: wallet_data found = {wallet_data is not None}")
+                
+                # Fallback: get first wallet if no current address
+                if not wallet_data and hasattr(self.app.wallet_core, 'wallets'):
+                    if isinstance(self.app.wallet_core.wallets, dict) and self.app.wallet_core.wallets:
+                        current_address = list(self.app.wallet_core.wallets.keys())[0]
+                        wallet_data = self.app.wallet_core.wallets[current_address]
+                        print(f"DEBUG CARD: Using fallback wallet: {current_address}")
+            
+            # Update UI with wallet data
+            if wallet_data and current_address:
+                # Read balance: use 'balance' field like sidebar does (total confirmed balance)
+                # The sidebar creates a filtered dict without 'confirmed_balance', so it falls back to 'balance'
+                # Here we read directly from the full dict, so match that behavior
+                available_balance = wallet_data.get('balance', 0.0)  # Total balance (not just confirmed)
+                pending_balance = wallet_data.get('pending_balance', 0.0)
+                label = wallet_data.get('label', 'Wallet')
+                
+                print(f"DEBUG CARD: available_balance = {available_balance}, type = {type(available_balance)}")
+                print(f"DEBUG CARD: pending_balance = {pending_balance}, type = {type(pending_balance)}")
+                
+                # Convert to float
+                try:
+                    available_balance = float(available_balance) if available_balance is not None else 0.0
+                    pending_balance = float(pending_balance) if pending_balance is not None else 0.0
+                except Exception as conv_error:
+                    print(f"DEBUG CARD: Error converting balance: {conv_error}")
+                    available_balance = 0.0
+                    pending_balance = 0.0
+                
+                balance_str = f"{available_balance:.6f} LUN"
+                pending_str = f"{pending_balance:+.6f} LUN"
+                
+                print(f"DEBUG CARD: Final balance_str = '{balance_str}'")
+                
+                # Update the text widget values directly
+                self.balance_text.value = balance_str
+                self.pending_balance_text.value = pending_str
+                
+                # Set color
+                if pending_balance > 0:
+                    self.pending_balance_text.color = "#00ff00"  # Green for positive
+                elif pending_balance < 0:
+                    self.pending_balance_text.color = "#ff4444"  # Red for negative
+                else:
+                    self.pending_balance_text.color = "#ffd700"  # Yellow for zero
+                
+                # Update address display
+                label_text = label if label else "Wallet"
+                addr_text = f"{current_address[:12]}...{current_address[-6:]}" if len(current_address) > 20 else current_address
+                self.address_text.value = f"{label_text}: {addr_text}"
+                
+                # Force update on the balance card container and everything inside it
+                try:
+                    if 'balance_card' in self.refs:
+                        card_ref = self.refs['balance_card'].current
+                        if card_ref:
+                            print(f"DEBUG CARD: Updating balance_card container")
+                            card_ref.update()
+                        else:
+                            print(f"DEBUG CARD: balance_card.current is None")
+                    else:
+                        print(f"DEBUG CARD: balance_card not in refs")
+                except Exception as ref_error:
+                    print(f"DEBUG CARD: Error accessing balance_card ref: {ref_error}")
+                
+                # Always update the page
+                if hasattr(self.app, 'page') and self.app.page:
+                    try:
+                        print(f"DEBUG CARD: Calling page.update()")
+                        self.app.page.update()
+                    except Exception as page_error:
+                        print(f"DEBUG CARD: Error updating page: {page_error}")
+            else:
+                print(f"DEBUG CARD: No wallet_data found or no current_address")
+                self.balance_text.value = "0.000000 LUN"
+                self.pending_balance_text.value = "0.000000 LUN"
+                self.address_text.value = "No wallet selected"
+                
+                if hasattr(self.app, 'page') and self.app.page:
+                    try:
+                        self.app.page.update()
+                    except:
+                        pass
+                
+        except Exception as e:
+            print(f"ERROR in _update_wallet_data_ui_only: {e}")
+            import traceback
+            traceback.print_exc()
+            self.pending_balance_text.value = "0.000000 LUN"
+            self.address_text.value = "Error loading balance"
     
     def create_header(self):
         return ft.Container(
@@ -551,14 +563,6 @@ class WalletPage:
                 ft.Container(expand=True),
                 ft.Row([
                     ft.IconButton(
-                        icon=ft.Icons.REFRESH,
-                        icon_color="#f8d7da",
-                        icon_size=18,
-                        on_click=self.manual_sync,
-                        tooltip="Sync",
-                        style=ft.ButtonStyle(padding=5)
-                    ),
-                    ft.IconButton(
                         icon=ft.Icons.LOCK,
                         icon_color="#f8d7da",
                         icon_size=18,
@@ -573,20 +577,16 @@ class WalletPage:
     
     def create_balance_card(self):
         return ft.Container(
+            ref=self.refs['balance_card'],
             content=ft.Column([
-                ft.Row([
-                    ft.Text("Available Balance", size=14, color="#f8d7da", expand=True),
-                    ft.Container(
-                        content=self.sync_status,
-                        padding=5,
-                        bgcolor="#1a0f0f",
-                        border_radius=8
-                    )
-                ]),
+                ft.Text("Wallet Balance", size=14, color="#f8d7da"),
                 ft.Column([
                     self.balance_text,
-                    self.pending_balance_text,
-                ], spacing=3),
+                    ft.Row([
+                        ft.Text("Pending:", size=10, color="#999999"),
+                        self.pending_balance_text,
+                    ], spacing=5),
+                ], spacing=4),
                 ft.Container(
                     content=self.address_text,
                     padding=8,
@@ -731,26 +731,22 @@ class WalletPage:
                         self.app.page.run_thread(show_no_wallet)
                     return
                 
+                print(f"\n=== LOADING TRANSACTIONS FOR {current_address[:12]}... ===")
+                
                 # Try to get transactions from various sources
                 all_transactions = []
                 
-                # Method 1: Try blockchain manager
-                if hasattr(self.app, 'blockchain_manager'):
+                # Method 1: Try database (most reliable - includes both confirmed and pending)
+                if hasattr(self.app, 'database'):
                     try:
-                        all_transactions = self.app.blockchain_manager.scan_transactions_for_address(current_address)
-                        print(f"DEBUG: Found {len(all_transactions)} total transactions for {current_address}")
-                    except Exception as e:
-                        print(f"DEBUG: Error loading from blockchain: {e}")
-                
-                # Method 2: Try database
-                if not all_transactions and hasattr(self.app, 'database'):
-                    try:
-                        db_methods = ['get_transactions', 'get_wallet_transactions', 'get_all_transactions']
+                        db_methods = ['get_all_transactions', 'get_transactions', 'get_wallet_transactions']
                         for method in db_methods:
                             if hasattr(self.app.database, method):
                                 try:
                                     if method == 'get_all_transactions':
                                         all_txs = getattr(self.app.database, method)()
+                                        print(f"DEBUG: Database returned {len(all_txs)} total transactions")
+                                        
                                         # Filter for current wallet
                                         all_transactions = []
                                         for tx in all_txs:
@@ -759,6 +755,7 @@ class WalletPage:
                                             to_addr = tx.get('to', '').lower()
                                             reward_addr = tx.get('reward_address', '').lower()
                                             recipient_addr = tx.get('recipient', '').lower()
+                                            status = tx.get('status', 'unknown')
                                             
                                             current_lower = current_address.lower()
                                             
@@ -768,20 +765,32 @@ class WalletPage:
                                                 reward_addr == current_lower or
                                                 recipient_addr == current_lower):
                                                 all_transactions.append(tx)
+                                                print(f"  Found: {tx.get('hash', 'unknown')[:8]}... (status={status}, type={tx.get('type', 'unknown')})")
                                         
-                                        print(f"DEBUG: Filtered {len(all_transactions)} transactions from all transactions")
+                                        print(f"DEBUG: Filtered {len(all_transactions)} transactions for current wallet")
+                                        if all_transactions:
+                                            break
                                     else:
                                         # These methods should return filtered transactions
                                         all_transactions = getattr(self.app.database, method)(current_address)
-                                    
-                                    if all_transactions:
-                                        print(f"DEBUG: Loaded {len(all_transactions)} transactions from database")
-                                        break
+                                        if all_transactions:
+                                            print(f"DEBUG: Loaded {len(all_transactions)} transactions via {method}")
+                                            break
                                 except Exception as e:
                                     print(f"DEBUG: Error with database method {method}: {e}")
                                     continue
                     except Exception as e:
                         print(f"DEBUG: Error loading from database: {e}")
+                
+                # Method 2: Try blockchain manager (for confirmed transactions only)
+                if not all_transactions and hasattr(self.app, 'blockchain_manager'):
+                    try:
+                        all_transactions = self.app.blockchain_manager.scan_transactions_for_address(current_address)
+                        print(f"DEBUG: Found {len(all_transactions)} transactions from blockchain manager")
+                    except Exception as e:
+                        print(f"DEBUG: Error loading from blockchain: {e}")
+                
+                print(f"DEBUG: Total transactions to display: {len(all_transactions)}")
                 
                 # Filter transactions specifically for the current wallet
                 filtered_transactions = []
@@ -789,11 +798,14 @@ class WalletPage:
                     if self._transaction_involves_wallet(tx, current_address):
                         filtered_transactions.append(tx)
                 
-                print(f"DEBUG: Filtered to {len(filtered_transactions)} transactions for wallet {current_address[:8]}...")
+                print(f"DEBUG: After filtering: {len(filtered_transactions)} transactions")
                 
                 # Sort by timestamp (newest first) and limit
                 filtered_transactions.sort(key=lambda x: x.get('timestamp', 0), reverse=True)
                 filtered_transactions = filtered_transactions[:20]
+                
+                # Note: Balance recalculation is now done in _on_wallet_select() instead
+                # to avoid duplicate sidebar refreshes during wallet selection
                 
                 def update_ui():
                     self.transactions_list.controls.clear()
@@ -815,6 +827,208 @@ class WalletPage:
                 print(f"Error in load_transactions: {e}")
         
         threading.Thread(target=load_transactions, daemon=True).start()
+    
+    def recalculate_wallet_balances(self, wallet_address=None):
+        """
+        Recalculate available and pending balances from scratch by tallying:
+        - All confirmed blockchain transactions (transfers, rewards, fees)
+        - All pending mempool transactions
+        Updates both balance card and sidebar immediately.
+        """
+        try:
+            if not wallet_address:
+                if hasattr(self.app.wallet_core, 'current_wallet_address'):
+                    wallet_address = self.app.wallet_core.current_wallet_address
+                else:
+                    return
+            
+            if not wallet_address:
+                return
+            
+            print(f"\n=== RECALCULATING BALANCES FOR {wallet_address[:12]}... ===")
+            
+            wallet_lower = wallet_address.lower()
+            available_balance = 0.0
+            pending_balance = 0.0
+            
+            # Get all transactions for this specific wallet from database
+            all_transactions = []
+            if hasattr(self.app, 'database'):
+                print(f"DEBUG: Checking database methods...")
+                print(f"  Database type: {type(self.app.database)}")
+                print(f"  Has get_wallet_transactions: {hasattr(self.app.database, 'get_wallet_transactions')}")
+                print(f"  Has get_all_transactions: {hasattr(self.app.database, 'get_all_transactions')}")
+                
+                # Try get_wallet_transactions first (specific to wallet)
+                if hasattr(self.app.database, 'get_wallet_transactions'):
+                    try:
+                        all_transactions = self.app.database.get_wallet_transactions(wallet_address)
+                        print(f"SUCCESS: get_wallet_transactions() returned {len(all_transactions)} transactions")
+                    except Exception as e:
+                        print(f"ERROR calling get_wallet_transactions({wallet_address[:12]}...): {e}")
+                        all_transactions = []
+                
+                # If that didn't work, try get_all_transactions
+                if not all_transactions and hasattr(self.app.database, 'get_all_transactions'):
+                    try:
+                        print(f"Attempting fallback: get_all_transactions()...")
+                        all_txs = self.app.database.get_all_transactions()
+                        print(f"DEBUG: Fallback - got {len(all_txs)} total transactions from database")
+                        
+                        # Filter for this wallet
+                        for tx in all_txs:
+                            from_addr = tx.get('from', '').lower()
+                            to_addr = tx.get('to', '').lower()
+                            reward_addr = tx.get('reward_address', '').lower()
+                            
+                            # Include if this wallet is involved
+                            if (from_addr == wallet_lower or 
+                                to_addr == wallet_lower or
+                                reward_addr == wallet_lower):
+                                all_transactions.append(tx)
+                        print(f"DEBUG: After filtering, {len(all_transactions)} transactions for this wallet")
+                    except Exception as e:
+                        print(f"ERROR with get_all_transactions: {e}")
+                
+                if not all_transactions:
+                    print(f"WARNING: No transactions found via any database method")
+
+            
+            # Process each transaction
+            for tx in all_transactions:
+                tx_type = tx.get('type', 'transfer').lower()
+                tx_status = tx.get('status', 'confirmed').lower()
+                amount = float(tx.get('amount', 0))
+                fee = float(tx.get('fee', 0))
+                from_addr = tx.get('from', '').lower()
+                to_addr = tx.get('to', '').lower()
+                reward_addr = tx.get('reward_address', '').lower()
+                
+                # Determine if this is a confirmed or pending transaction
+                is_confirmed = (tx_status == 'confirmed')
+                
+                # Process based on transaction type
+                if tx_type == 'reward':
+                    # Mining reward - add to available if confirmed
+                    if reward_addr == wallet_lower or (from_addr == 'network' and to_addr == wallet_lower):
+                        if is_confirmed:
+                            available_balance += amount
+                            print(f"    → REWARD (confirmed): +{amount}")
+                        else:
+                            pending_balance += amount
+                            print(f"    → REWARD (pending): +{amount}")
+                
+                elif tx_type == 'fee_distribution':
+                    # Fee distribution - add if recipient
+                    recipient = tx.get('recipient', '').lower()
+                    if recipient == wallet_lower or reward_addr == wallet_lower:
+                        if is_confirmed:
+                            available_balance += amount
+                            print(f"    → FEE DIST (confirmed): +{amount}")
+                        else:
+                            pending_balance += amount
+                            print(f"    → FEE DIST (pending): +{amount}")
+                
+                else:
+                    # Regular transfer (transfer, stake, delegate, gtx_genesis)
+                    # Incoming
+                    if to_addr == wallet_lower:
+                        if is_confirmed:
+                            available_balance += amount
+                            print(f"    → INCOMING (confirmed): +{amount}")
+                        else:
+                            pending_balance += amount
+                            print(f"    → INCOMING (pending): +{amount}")
+                    # Outgoing
+                    elif from_addr == wallet_lower:
+                        net_amount = amount + fee
+                        if is_confirmed:
+                            available_balance -= net_amount
+                            print(f"    → OUTGOING (confirmed): -{net_amount} (amount: {amount}, fee: {fee})")
+                        else:
+                            pending_balance -= net_amount
+                            print(f"    → OUTGOING (pending): -{net_amount} (amount: {amount}, fee: {fee})")
+            
+            # Ensure non-negative available balance
+            available_balance = max(0.0, available_balance)
+            
+            print(f"RESULT: available={available_balance:.6f}, pending={pending_balance:.6f}")
+            print(f"=== BALANCE RECALCULATION COMPLETE ===\n")
+            
+            # Update wallet_core.wallets with recalculated balances
+            print(f"DEBUG: Updating wallet_core.wallets[{wallet_address[:8]}...]")
+            if hasattr(self.app.wallet_core, 'wallets'):
+                print(f"  wallet_core.wallets exists: {self.app.wallet_core.wallets is not None}")
+                if isinstance(self.app.wallet_core.wallets, dict):
+                    print(f"  wallet_core.wallets is dict: True")
+                    if wallet_address in self.app.wallet_core.wallets:
+                        print(f"  wallet_address in dict: True")
+                        # Update all balance fields
+                        self.app.wallet_core.wallets[wallet_address]['available_balance'] = available_balance
+                        self.app.wallet_core.wallets[wallet_address]['balance'] = available_balance + pending_balance
+                        self.app.wallet_core.wallets[wallet_address]['pending_balance'] = pending_balance
+                        self.app.wallet_core.wallets[wallet_address]['confirmed_balance'] = available_balance
+                        
+                        # Verify the update
+                        updated_balance = self.app.wallet_core.wallets[wallet_address].get('balance', 'MISSING')
+                        updated_pending = self.app.wallet_core.wallets[wallet_address].get('pending_balance', 'MISSING')
+                        print(f"  VERIFIED: balance={updated_balance}, pending_balance={updated_pending}")
+                        print(f"Updated wallet_core.wallets[{wallet_address[:8]}...] with recalculated balances")
+                    else:
+                        print(f"  ERROR: wallet_address NOT in dict! Keys: {list(self.app.wallet_core.wallets.keys())}")
+                else:
+                    print(f"  ERROR: wallet_core.wallets is not dict, it's {type(self.app.wallet_core.wallets)}")
+            else:
+                print(f"  ERROR: wallet_core.wallets does not exist")
+            
+            # Update UI immediately
+            self._update_balance_display_ui(available_balance, pending_balance, wallet_address)
+            
+            # Update sidebar
+            self._refresh_sidebar_wallets()
+            
+        except Exception as e:
+            print(f"ERROR in recalculate_wallet_balances: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def _update_balance_display_ui(self, available_balance, pending_balance, wallet_address):
+        """Update balance card UI with calculated values"""
+        try:
+            # Update balance text
+            self.balance_text.value = f"{available_balance:.6f} LUN"
+            self.pending_balance_text.value = f"{pending_balance:+.6f} LUN"
+            
+            # Color pending balance
+            if pending_balance > 0:
+                self.pending_balance_text.color = "#00ff00"  # Green
+            elif pending_balance < 0:
+                self.pending_balance_text.color = "#ff4444"  # Red
+            else:
+                self.pending_balance_text.color = "#ffd700"  # Yellow
+            
+            # Update address display
+            label = self.app.wallet_core.wallets.get(wallet_address, {}).get('label', 'Wallet') if hasattr(self.app.wallet_core, 'wallets') else 'Wallet'
+            addr_text = f"{wallet_address[:12]}...{wallet_address[-6:]}" if len(wallet_address) > 20 else wallet_address
+            self.address_text.value = f"{label}: {addr_text}"
+            
+            # Update the balance card
+            if 'balance_card' in self.refs and self.refs['balance_card'].current:
+                try:
+                    self.refs['balance_card'].current.update()
+                except:
+                    pass
+            
+            # Update page
+            if hasattr(self.app, 'page'):
+                try:
+                    self.app.page.update()
+                except:
+                    pass
+        
+        except Exception as e:
+            print(f"ERROR in _update_balance_display_ui: {e}")
+    
     def _create_transaction_item(self, tx_data, current_address):
         """Create a minimalistic transaction list item"""
         tx_type = tx_data.get('type', 'transfer')
@@ -1055,11 +1269,9 @@ class WalletPage:
             network_status = self._check_network_status()
             
             if network_status['connected']:
-                self.sync_status.value = "✅ Connected"
                 if hasattr(self.app, 'show_snackbar'):
                     self.app.show_snackbar("Connected to blockchain", "success")
             else:
-                self.sync_status.value = "❌ Offline"
                 if hasattr(self.app, 'show_snackbar'):
                     self.app.show_snackbar("Cannot connect to blockchain", "error")
             
@@ -1122,50 +1334,6 @@ class WalletPage:
             margin=ft.margin.symmetric(horizontal=2)
         )
     
-    def manual_sync(self, e=None):
-        self.sync_status.value = "🔄 Syncing all wallets..."
-        if self.app.page:
-            self.app.page.update()
-        
-        def sync_thread():
-            try:
-                if hasattr(self.app, 'sync_all_wallets'):
-                    self.app.sync_all_wallets()
-                    
-                    def update_ui():
-                        self.sync_status.value = "✅ Synced"
-                        self.update_wallet_data()
-                        self._refresh_sidebar_wallets()
-                        self.refresh_transaction_history()
-                        
-                        if hasattr(self.app, 'show_snackbar'):
-                            self.app.show_snackbar("All wallets synced!", "success")
-                        
-                        if self.app.page:
-                            self.app.page.update()
-                    
-                    if hasattr(self.app, 'page'):
-                        self.app.page.run_thread(update_ui)
-                else:
-                    self.sync_status.value = "❌ Sync unavailable"
-                    if self.app.page:
-                        self.app.page.update()
-                        
-            except Exception as e:
-                print(f"DEBUG: Manual sync error: {e}")
-                
-                def show_error():
-                    self.sync_status.value = "❌ Sync failed"
-                    if hasattr(self.app, 'show_snackbar'):
-                        self.app.show_snackbar(f"Sync error: {str(e)[:50]}", "error")
-                    if self.app.page:
-                        self.app.page.update()
-                
-                if hasattr(self.app, 'page'):
-                    self.app.page.run_thread(show_error)
-        
-        threading.Thread(target=sync_thread, daemon=True).start()
-
     def show_loading(self):
         self.is_loading = True
         self.preloader.visible = True
@@ -1228,25 +1396,29 @@ class WalletPage:
                         label = wallet_info.get('label', 'Wallet')
                         
                         self.balance_text.value = f"{balance:.6f} LUN"
+                        self.balance_text.update()
                         
                         if pending_balance != 0:
                             sign = "+" if pending_balance > 0 else ""
                             self.pending_balance_text.value = f"Pending Balance: {sign}{pending_balance:.6f}"
                         else:
                             self.pending_balance_text.value = ""
+                        self.pending_balance_text.update()
                         
                         self.address_text.value = f"{label}: {address[:12]}...{address[-6:]}" if len(address) > 20 else address
+                        self.address_text.update()
                     else:
                         self.balance_text.value = "0.00 LUN"
+                        self.balance_text.update()
                         self.pending_balance_text.value = ""
+                        self.pending_balance_text.update()
                         self.address_text.value = "No wallet data"
+                        self.address_text.update()
                     
-                    self.sync_status.value = "✅ Ready"
                 else:
                     self.balance_text.value = "0.00 LUN"
                     self.pending_balance_text.value = ""
                     self.address_text.value = "Wallet Locked"
-                    self.sync_status.value = "🔒 Locked"
                 
                 self.update_quick_stats()
                 self.refresh_transaction_history()
@@ -1256,5 +1428,4 @@ class WalletPage:
             self.balance_text.value = "0.00 LUN"
             self.pending_balance_text.value = ""
             self.address_text.value = "Failed to load"
-            self.sync_status.value = "❌ Error"
             print(f"Error updating wallet data: {e}")

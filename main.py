@@ -10,6 +10,14 @@ from typing import Dict, List
 import sqlite3
 from pathlib import Path
 
+# Import unified balance utilities
+from utils import (
+    calculate_wallet_balances,
+    update_all_wallet_balances,
+    format_balance_display,
+    get_balance_summary
+)
+
 # FIX: Ensure cache directory exists with proper permissions
 def setup_cache_directory():
     """Create cache directory for lunalib with proper permissions"""
@@ -1120,8 +1128,18 @@ class LunaWalletApp:
             
             def sync_thread():
                 try:
-                    self.sync_all_wallets()
+                    self.scan_all_wallets_for_changes(force_full_scan=True)
                     print("DEBUG: Blockchain sync completed for all wallets")
+                    
+                    # After initial sync, start continuous background monitoring
+                    print("DEBUG: Starting continuous background monitoring...")
+                    # Use a separate method so it runs in background
+                    def start_monitoring():
+                        time.sleep(1)  # Small delay to ensure UI is settled
+                        self.start_continuous_blockchain_scan()
+                    
+                    threading.Thread(target=start_monitoring, daemon=True).start()
+                    
                 except Exception as e:
                     print(f"DEBUG: Blockchain sync error: {e}")
             
@@ -1130,8 +1148,12 @@ class LunaWalletApp:
         except Exception as e:
             print(f"DEBUG: Error starting blockchain sync: {e}")
 
-    def scan_all_wallets_for_changes(self):
-        """Scan all wallets for new transactions since last scanned block and update balances only on changes"""
+    def scan_all_wallets_for_changes(self, force_full_scan=False):
+        """
+        Scan wallets for transactions.
+        - If force_full_scan=True: Do complete blockchain scan from start, cache results, then update all balances
+        - Otherwise: Only check for NEW transactions since last scan, update balances when new found
+        """
         try:
             if not hasattr(self, 'wallet_core') or not self.wallet_core or not hasattr(self.wallet_core, 'wallets'):
                 return
@@ -1147,203 +1169,274 @@ class LunaWalletApp:
                 
             latest_height = latest_block.get('index', 0)
             
-            # If this is the first scan, do a full scan and cache the results
-            if self.last_scanned_block == 0:
-                print(f"DEBUG: First scan - scanning all wallets from genesis to block {latest_height}")
+            # If this is the first scan OR force_full_scan is True, do complete blockchain scan
+            if self.last_scanned_block == 0 or force_full_scan:
+                print(f"DEBUG: Full blockchain scan - scanning from genesis to block {latest_height}")
+                self._perform_full_blockchain_scan(wallet_addresses, latest_height)
                 self.last_scanned_block = latest_height
-                self.sync_all_wallets()  # Do full sync on first run
                 return
             
-            # Only scan new blocks since last scan
-            if latest_height <= self.last_scanned_block:
-                return  # No new blocks
+            # Check what's already cached to avoid redundant scanning
+            cached_height = self.blockchain_manager.cache.get_highest_cached_height()
             
-            print(f"DEBUG: Scanning blocks {self.last_scanned_block + 1} to {latest_height} for {len(wallet_addresses)} wallets")
+            # Determine start height for incremental scan (only new blocks since last scan)
+            effective_start_height = max(self.last_scanned_block + 1, cached_height + 1)
             
-            # Use batch block fetching for better performance
-            batch_size = 50  # Fetch blocks in batches of 50
-            start_height = self.last_scanned_block + 1
+            # If everything is already cached and scanned, no need to scan
+            if effective_start_height > latest_height:
+                return  # No new blocks to scan
             
-            # Scan new blocks for transactions involving our wallets
+            print(f"DEBUG: Incremental scan - checking blocks {effective_start_height} to {latest_height}")
+            self._perform_incremental_scan(wallet_addresses, effective_start_height, latest_height)
+            self.last_scanned_block = latest_height
+            
+        except Exception as e:
+            print(f"DEBUG: Error in scan_all_wallets_for_changes: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _perform_full_blockchain_scan(self, wallet_addresses, latest_height):
+        """Perform complete blockchain scan from genesis, cache results, update all balances at once"""
+        try:
+            print(f"DEBUG: Starting full blockchain scan (0 to {latest_height})")
+            batch_size = 50
+            
+            for batch_start in range(0, latest_height + 1, batch_size):
+                batch_end = min(batch_start + batch_size - 1, latest_height)
+                
+                try:
+                    blocks = self.blockchain_manager.get_blocks_range(batch_start, batch_end)
+                    print(f"DEBUG: Fetched batch {batch_start}-{batch_end}: {len(blocks)} blocks")
+                    
+                    for block in blocks:
+                        block_height = block.get('index', 0)
+                        block_transactions = block.get('transactions', [])
+                        
+                        for tx in block_transactions:
+                            tx_from = tx.get('from', '').lower()
+                            tx_to = tx.get('to', '').lower()
+                            tx_type = tx.get('type', 'transfer')
+                            
+                            for wallet_addr in wallet_addresses:
+                                wallet_addr_lower = wallet_addr.lower()
+                                
+                                # Mining rewards
+                                if tx_type == 'reward' and tx_from == 'network' and tx_to == wallet_addr_lower:
+                                    tx['block_height'] = block_height
+                                    tx['status'] = 'confirmed'
+                                    if hasattr(self, 'database'):
+                                        self.database.save_transaction(tx, wallet_addr)
+                                
+                                # Regular transactions
+                                elif tx_from == wallet_addr_lower or tx_to == wallet_addr_lower:
+                                    tx['block_height'] = block_height
+                                    tx['status'] = 'confirmed'
+                                    if hasattr(self, 'database'):
+                                        self.database.save_transaction(tx, wallet_addr)
+                    
+                except Exception as e:
+                    print(f"DEBUG: Error in batch {batch_start}-{batch_end}: {e}")
+                    continue
+            
+            # Check mempool for pending transactions
+            self._check_mempool_for_pending(wallet_addresses)
+            
+            # Update ALL wallet balances at once
+            self._update_all_wallet_balances(wallet_addresses)
+            
+            # Refresh UI after full scan complete
+            self._refresh_ui_after_scan(force_update=True)
+            
+        except Exception as e:
+            print(f"DEBUG: Error in _perform_full_blockchain_scan: {e}")
+
+    def _perform_incremental_scan(self, wallet_addresses, start_height, latest_height):
+        """Perform incremental scan for only NEW transactions since last scan"""
+        try:
+            print(f"DEBUG: Incremental scan from block {start_height} to {latest_height}")
+            batch_size = 50
             new_transactions_found = False
             
             for batch_start in range(start_height, latest_height + 1, batch_size):
                 batch_end = min(batch_start + batch_size - 1, latest_height)
                 
                 try:
-                    # Fetch blocks in batch
                     blocks = self.blockchain_manager.get_blocks_range(batch_start, batch_end)
-                    print(f"DEBUG: Fetched batch of {len(blocks)} blocks ({batch_start}-{batch_end})")
                     
                     for block in blocks:
                         block_height = block.get('index', 0)
                         block_transactions = block.get('transactions', [])
                         
-                        # Check each transaction in the block
                         for tx in block_transactions:
                             tx_from = tx.get('from', '').lower()
                             tx_to = tx.get('to', '').lower()
-                            amount = float(tx.get('amount', 0))
-                            fee = float(tx.get('fee', 0))
                             tx_type = tx.get('type', 'transfer')
                             
-                            # Check if this transaction involves any of our wallets
                             for wallet_addr in wallet_addresses:
                                 wallet_addr_lower = wallet_addr.lower()
                                 
-                                # Handle mining rewards (from: 'network', to: miner_address)
+                                # Mining rewards
                                 if tx_type == 'reward' and tx_from == 'network' and tx_to == wallet_addr_lower:
-                                    print(f"🎁 FOUND MINING REWARD: {amount} LUN for block #{block_height}")
+                                    print(f"🎁 Found mining reward: {tx.get('amount')} LUN for block #{block_height}")
                                     new_transactions_found = True
-                                    
-                                    print(f"  + Mining reward: {amount} LUN")
-                                    
-                                    # Save transaction to database
                                     tx['block_height'] = block_height
                                     tx['status'] = 'confirmed'
                                     if hasattr(self, 'database'):
                                         self.database.save_transaction(tx, wallet_addr)
                                 
-                                # Handle regular transactions
+                                # Regular transactions
                                 elif tx_from == wallet_addr_lower or tx_to == wallet_addr_lower:
-                                    print(f"DEBUG: Found regular transaction in block {block_height} for wallet {wallet_addr[:8]}...")
+                                    print(f"Found transaction in block {block_height}")
                                     new_transactions_found = True
-                                    
-                                    # Determine if it's incoming or outgoing
-                                    if tx_to == wallet_addr_lower:
-                                        print(f"  + Incoming: {amount} LUN")
-                                    elif tx_from == wallet_addr_lower:
-                                        print(f"  - Outgoing: {amount + fee} LUN (amount: {amount}, fee: {fee})")
-                                    
-                                    # Save transaction to database
                                     tx['block_height'] = block_height
                                     tx['status'] = 'confirmed'
                                     if hasattr(self, 'database'):
                                         self.database.save_transaction(tx, wallet_addr)
-                        
+                    
                 except Exception as e:
-                    print(f"DEBUG: Error scanning batch {batch_start}-{batch_end}: {e}")
+                    print(f"DEBUG: Error in batch {batch_start}-{batch_end}: {e}")
                     continue
             
-            # Update last scanned block
-            self.last_scanned_block = latest_height
+            # Check mempool for pending transactions
+            self._check_mempool_for_pending(wallet_addresses)
             
-            # Also check for mempool transactions (pending)
-            try:
-                from lunalib.core.mempool import MempoolManager
-                mempool_manager = MempoolManager()
-                
-                for wallet_addr in wallet_addresses:
-                    try:
-                        pending_txs = mempool_manager.get_pending_transactions(wallet_addr)
-                        if pending_txs:
-                            print(f"DEBUG: Found {len(pending_txs)} pending transactions for {wallet_addr[:8]}...")
-                            new_transactions_found = True
-                            
-                            for tx in pending_txs:
-                                # Save pending transaction
-                                tx['status'] = 'pending'
-                                if hasattr(self, 'database'):
-                                    self.database.save_transaction(tx, wallet_addr)
-                                    
-                    except Exception as e:
-                        print(f"DEBUG: Error checking mempool for {wallet_addr}: {e}")
-                        
-            except Exception as e:
-                print(f"DEBUG: Mempool check failed: {e}")
-            
-            # If new transactions were found, update UI
+            # Only update UI and balances if new transactions were found
             if new_transactions_found:
-                print("DEBUG: New transactions found - updating UI")
-                
-                # Use page.run_task for thread-safe UI updates
-                if hasattr(self, 'page') and self.page:
-                    def update_ui():
-                        try:
-                            # Update wallet balances using lunalib's balance calculation
-                            for wallet_addr in wallet_addresses:
-                                if wallet_addr in self.wallet_core.wallets:
-                                    wallet_obj = self.wallet_core.wallets[wallet_addr]
-                                    
-                                    try:
-                                        # Use lunalib's balance calculation methods on the wallet object
-                                        available_balance = wallet_obj.calculate_available_balance()
-                                        total_balance = wallet_obj.get_balance()
-                                        
-                                        # Calculate pending balance (total - available)
-                                        pending_balance = total_balance - available_balance
-                                        
-                                        # Update wallet data
-                                        wallet_obj['confirmed_balance'] = available_balance
-                                        wallet_obj['pending_balance'] = pending_balance
-                                        wallet_obj['balance'] = total_balance
-                                        
-                                        print(f"DEBUG: Updated balance for {wallet_addr[:8]}...: available={available_balance:.6f}, pending={pending_balance:.6f}, total={total_balance:.6f}")
-                                        
-                                    except Exception as balance_error:
-                                        print(f"DEBUG: Error calculating balance for {wallet_addr}: {balance_error}")
-                                        # Fallback: keep existing balances if calculation fails
-                                        pass
-                            
-                            # Update sidebar wallets
-                            if hasattr(self, 'current_page') and self.current_page:
-                                if hasattr(self.current_page, '_refresh_sidebar_wallets'):
-                                    self.current_page._refresh_sidebar_wallets()
-                                if hasattr(self.current_page, '_update_wallet_data_ui_only'):
-                                    self.current_page._update_wallet_data_ui_only()
-                            
-                            # Update main balance display
-                            self.update_balance_display()
-                            self.update_transaction_history()
-                            
-                            # Play notification sound
-                            self._play_sound("transaction")
-                            
-                            # Show notification
-                            self.show_snackbar("New transactions detected!", "success")
-                            
-                            self.page.update()
-                            
-                        except Exception as e:
-                            print(f"DEBUG: Error updating UI after new transactions: {e}")
-                    
-                    # Schedule UI update on main thread
-                    import asyncio
-                    if hasattr(self.page, 'run_task'):
-                        # Flet 0.21+ way
-                        self.page.run_task(update_ui)
-                    else:
-                        # Fallback for older versions
-                        self.page.run_thread(update_ui)
-                else:
-                    print("DEBUG: No page available for UI update")
-                    
-                # Save wallet data
-                self.save_wallet_data(force_save=True)
+                self._update_all_wallet_balances(wallet_addresses)
+                self._refresh_ui_after_scan(force_update=True)
+                self.show_snackbar("New transactions detected!", "success")
             
         except Exception as e:
-            print(f"DEBUG: Error in scan_all_wallets_for_changes: {e}")
+            print(f"DEBUG: Error in _perform_incremental_scan: {e}")
+
+    def _check_mempool_for_pending(self, wallet_addresses):
+        """Check mempool for pending transactions"""
+        try:
+            from lunalib.core.mempool import MempoolManager
+            mempool_manager = MempoolManager()
             
-            self.save_wallet_data(force_save=True)
-            print("DEBUG: All wallets synced and saved")
+            print(f"\n=== CHECKING MEMPOOL FOR {len(wallet_addresses)} WALLETS ===")
             
-            # Refresh UI with updated balances
-            def refresh_ui():
+            for wallet_addr in wallet_addresses:
                 try:
-                    if hasattr(self, 'current_page') and self.current_page:
-                        if hasattr(self.current_page, '_refresh_sidebar_wallets'):
-                            self.current_page._refresh_sidebar_wallets()
-                        if hasattr(self.current_page, '_update_wallet_data_ui_only'):
-                            self.current_page._update_wallet_data_ui_only()
-                    self.page.update()
+                    pending_txs = mempool_manager.get_pending_transactions(wallet_addr)
+                    
+                    if pending_txs:
+                        print(f"✓ Found {len(pending_txs)} pending transactions for {wallet_addr[:12]}...")
+                        for i, tx in enumerate(pending_txs):
+                            tx_hash = tx.get('hash', 'unknown')
+                            tx_from = tx.get('from', 'unknown')
+                            tx_to = tx.get('to', 'unknown')
+                            tx_amount = tx.get('amount', 0)
+                            print(f"  [{i+1}] hash={tx_hash[:8] if isinstance(tx_hash, str) else tx_hash}...")
+                            print(f"      from={tx_from[:8] if isinstance(tx_from, str) else tx_from}... → to={tx_to[:8] if isinstance(tx_to, str) else tx_to}...")
+                            print(f"      amount={tx_amount}")
+                            
+                            # Mark as pending and save to database
+                            tx['status'] = 'pending'
+                            if hasattr(self, 'database'):
+                                self.database.save_transaction(tx, wallet_addr)
+                                print(f"      Saved to database")
+                    else:
+                        print(f"✓ No pending transactions for {wallet_addr[:12]}...")
+                        
                 except Exception as e:
-                    print(f"DEBUG: Error refreshing UI after sync: {e}")
+                    print(f"✗ Mempool check error for {wallet_addr[:12]}...: {e}")
+                    import traceback
+                    traceback.print_exc()
             
-            if hasattr(self, 'page'):
-                self.page.run_thread(refresh_ui)
-            
+            print(f"=== MEMPOOL CHECK COMPLETE ===\n")
+                    
         except Exception as e:
-            print(f"DEBUG: Error in sync_all_wallets: {e}")
+            print(f"✗ Mempool check failed: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _update_all_wallet_balances(self, wallet_addresses):
+        """Update balances for all wallets using unified calculation"""
+        try:
+            from lunalib.core.mempool import MempoolManager
+            mempool_manager = MempoolManager()
+        except:
+            mempool_manager = None
+        
+        print(f"\n=== UPDATING BALANCES FOR {len(wallet_addresses)} WALLETS ===")
+        
+        for wallet_addr in wallet_addresses:
+            if wallet_addr in self.wallet_core.wallets:
+                wallet_obj = self.wallet_core.wallets[wallet_addr]
+                
+                try:
+                    balances = calculate_wallet_balances(
+                        wallet_addr,
+                        database=self.database if hasattr(self, 'database') else None,
+                        mempool_manager=mempool_manager
+                    )
+                    
+                    # Store in wallet_core.wallets
+                    wallet_obj['confirmed_balance'] = balances['available']
+                    wallet_obj['available_balance'] = balances['available']
+                    wallet_obj['pending_balance'] = balances['pending']
+                    wallet_obj['balance'] = balances['total']
+                    
+                    print(f"✓ {wallet_addr[:12]}...")
+                    print(f"  available={balances['available']:.6f}, pending={balances['pending']:.6f}, total={balances['total']:.6f}")
+                    print(f"  wallet_core.wallets[addr]['balance'] = {wallet_obj['balance']:.6f}")
+                    
+                except Exception as e:
+                    print(f"✗ Error calculating balance for {wallet_addr[:12]}...: {e}")
+                    import traceback
+                    traceback.print_exc()
+        
+        print(f"=== BALANCE UPDATE COMPLETE ===\n")
+
+    def _refresh_ui_after_scan(self, force_update=False):
+        """Refresh UI after scan - must be called from scanning thread, schedules on main thread"""
+        if not hasattr(self, 'page') or not self.page:
+            return
+        
+        print(f"\n=== SCHEDULING UI REFRESH (from scan) ===")
+        
+        def update_ui():
+            try:
+                print(f">>> UI REFRESH STARTING (on main thread)")
+                
+                if hasattr(self, 'wallet_page') and self.wallet_page:
+                    print(f">>> Refreshing sidebar...")
+                    if hasattr(self.wallet_page, '_refresh_sidebar_wallets'):
+                        self.wallet_page._refresh_sidebar_wallets()
+                    
+                    print(f">>> Recalculating balance from all transactions...")
+                    if hasattr(self.wallet_page, 'recalculate_wallet_balances'):
+                        if hasattr(self.wallet_core, 'current_wallet_address'):
+                            self.wallet_page.recalculate_wallet_balances(self.wallet_core.current_wallet_address)
+                    
+                    print(f">>> Updating balance card...")
+                    if hasattr(self.wallet_page, '_update_wallet_data_ui_only'):
+                        self.wallet_page._update_wallet_data_ui_only()
+                
+                print(f">>> Updating transaction history...")
+                self.update_balance_display()
+                self.update_transaction_history()
+                
+                print(f">>> Calling page.update()...")
+                self.page.update()
+                
+                print(f">>> UI REFRESH COMPLETE\n")
+                
+            except Exception as e:
+                print(f"ERROR in UI refresh: {e}")
+                import traceback
+                traceback.print_exc()
+        
+        # Schedule UI update on main thread
+        if hasattr(self.page, 'run_task'):
+            self.page.run_task(update_ui)
+        else:
+            self.page.run_thread(update_ui)
+            
+        # Save wallet data
+        self.save_wallet_data(force_save=True)
 
     def start_continuous_blockchain_scan(self):
         """Start continuous blockchain scanning for all wallets in background"""
@@ -1511,7 +1604,7 @@ class LunaWalletApp:
         
         # Apply the patch
         self.blockchain_manager.scan_transactions_for_address = enhanced_scan
-        print("✅ Enhanced blockchain scanner activated")
+        print("[OK] Enhanced blockchain scanner activated")
         
         return enhanced_scan
 
@@ -1549,7 +1642,7 @@ class LunaWalletApp:
                 enhanced_tx['fee'] = fee
                 enhanced_tx['effective_amount'] = -(amount + fee)  # Negative for outgoing
                 
-                print(f"✅ FOUND OUTGOING in block #{block.get('index')}:")
+                print(f"[OK] FOUND OUTGOING in block #{block.get('index')}:")
                 print(f"   From: {from_addr} (OURS)")
                 print(f"   To: {to_addr}")
                 print(f"   Amount: {amount}")
@@ -1678,63 +1771,76 @@ class LunaWalletApp:
                 all_transactions = []
                 address_lower = address.lower()
                 
-                # Scan blocks
-                for height in range(start_height, end_height + 1):
-                    block = self.blockchain_manager.get_block(height)
-                    if block:
-                        block_txs = block.get('transactions', [])
+                # Use batch block fetching for better performance
+                batch_size = 50  # Fetch blocks in batches of 50
+                
+                for batch_start in range(start_height, end_height + 1, batch_size):
+                    batch_end = min(batch_start + batch_size - 1, end_height)
+                    
+                    try:
+                        # Fetch blocks in batch
+                        blocks = self.blockchain_manager.get_blocks_range(batch_start, batch_end)
+                        print(f"DEBUG: Enhanced scan fetched batch of {len(blocks)} blocks ({batch_start}-{batch_end})")
                         
-                        # Check each transaction in the block
-                        for tx in block_txs:
-                            # Get addresses from transaction
-                            from_addr = tx.get('from', '').lower()
-                            to_addr = tx.get('to', '').lower()
+                        for block in blocks:
+                            height = block.get('index', 0)
+                            block_txs = block.get('transactions', [])
                             
-                            # Check if this transaction involves our address
-                            is_our_tx = False
-                            direction = None
-                            
-                            # OUTGOING: Our address is the sender
-                            if from_addr == address_lower:
-                                is_our_tx = True
-                                direction = 'outgoing'
-                                print(f"✅ FOUND OUTGOING TX in block {height}:")
-                                print(f"   From: {from_addr} (OURS)")
-                                print(f"   To: {to_addr}")
-                                print(f"   Amount: {tx.get('amount')}")
-                                print(f"   Hash: {tx.get('hash', '')[:16]}...")
-                            
-                            # INCOMING: Our address is the receiver
-                            elif to_addr == address_lower:
-                                is_our_tx = True
-                                direction = 'incoming'
-                                print(f"✅ FOUND INCOMING TX in block {height}:")
-                                print(f"   From: {from_addr}")
-                                print(f"   To: {to_addr} (OURS)")
-                                print(f"   Amount: {tx.get('amount')}")
-                                print(f"   Hash: {tx.get('hash', '')[:16]}...")
-                            
-                            if is_our_tx:
-                                # Create enhanced transaction with direction info
-                                enhanced_tx = tx.copy()
-                                enhanced_tx['block_height'] = height
-                                enhanced_tx['status'] = 'confirmed'
-                                enhanced_tx['direction'] = direction
+                            # Check each transaction in the block
+                            for tx in block_txs:
+                                # Get addresses from transaction
+                                from_addr = tx.get('from', '').lower()
+                                to_addr = tx.get('to', '').lower()
                                 
-                                # Calculate effective amount
-                                amount = float(tx.get('amount', 0))
-                                fee = float(tx.get('fee', 0))
+                                # Check if this transaction involves our address
+                                is_our_tx = False
+                                direction = None
                                 
-                                if direction == 'outgoing':
-                                    # Outgoing: negative amount (amount + fee)
-                                    enhanced_tx['effective_amount'] = -(amount + fee)
-                                    print(f"   Effective amount: -{amount + fee} ({amount} + {fee} fee)")
-                                else:
-                                    # Incoming: positive amount
-                                    enhanced_tx['effective_amount'] = amount
-                                    print(f"   Effective amount: +{amount}")
+                                # OUTGOING: Our address is the sender
+                                if from_addr == address_lower:
+                                    is_our_tx = True
+                                    direction = 'outgoing'
+                                    print(f"[OK] FOUND OUTGOING TX in block {height}:")
+                                    print(f"   From: {from_addr} (OURS)")
+                                    print(f"   To: {to_addr}")
+                                    print(f"   Amount: {tx.get('amount')}")
+                                    print(f"   Hash: {tx.get('hash', '')[:16]}...")
                                 
-                                all_transactions.append(enhanced_tx)
+                                # INCOMING: Our address is the receiver
+                                elif to_addr == address_lower:
+                                    is_our_tx = True
+                                    direction = 'incoming'
+                                    print(f"[OK] FOUND INCOMING TX in block {height}:")
+                                    print(f"   From: {from_addr}")
+                                    print(f"   To: {to_addr} (OURS)")
+                                    print(f"   Amount: {tx.get('amount')}")
+                                    print(f"   Hash: {tx.get('hash', '')[:16]}...")
+                                
+                                if is_our_tx:
+                                    # Create enhanced transaction with direction info
+                                    enhanced_tx = tx.copy()
+                                    enhanced_tx['block_height'] = height
+                                    enhanced_tx['status'] = 'confirmed'
+                                    enhanced_tx['direction'] = direction
+                                    
+                                    # Calculate effective amount
+                                    amount = float(tx.get('amount', 0))
+                                    fee = float(tx.get('fee', 0))
+                                    
+                                    if direction == 'outgoing':
+                                        # Outgoing: negative amount (amount + fee)
+                                        enhanced_tx['effective_amount'] = -(amount + fee)
+                                        print(f"   Effective amount: -{amount + fee} ({amount} + {fee} fee)")
+                                    else:
+                                        # Incoming: positive amount
+                                        enhanced_tx['effective_amount'] = amount
+                                        print(f"   Effective amount: +{amount}")
+                                    
+                                    all_transactions.append(enhanced_tx)
+                    
+                    except Exception as e:
+                        print(f"DEBUG: Error scanning batch {batch_start}-{batch_end}: {e}")
+                        continue
                 
                 print(f"\n📊 ENHANCED SCAN RESULTS:")
                 print(f"   Total transactions found: {len(all_transactions)}")
@@ -1768,13 +1874,13 @@ class LunaWalletApp:
         
         # Apply the patch
         self.blockchain_manager.scan_transactions_for_address = enhanced_scan
-        print("✅ Blockchain scanner patched with proper outgoing detection")
+        print("[OK] Blockchain scanner patched with proper outgoing detection")
     def start_blockchain_sync(self):
         """Start blockchain synchronization - FIXED BALANCE CALCULATION"""
         def sync_thread():
             try:
                 print("\n" + "="*60)
-                print("🚀 STARTING BLOCKCHAIN SYNC")
+                print("[START] STARTING BLOCKCHAIN SYNC")
                 print("="*60)
                 
                 if not self.wallet_core.current_wallet_address:
@@ -1782,16 +1888,16 @@ class LunaWalletApp:
                     return
                 
                 address = self.wallet_core.current_wallet_address
-                print(f"🔍 Syncing address: {address}")
+                print(f"[SYNC] Syncing address: {address}")
                 
                 # Use the patched scanner
                 transactions = self.blockchain_manager.scan_transactions_for_address(address)
                 
-                print(f"\n📊 TRANSACTION SUMMARY:")
+                print(f"\n[SUMMARY] TRANSACTION SUMMARY:")
                 print(f"   Found: {len(transactions)} total transactions")
                 
                 if not transactions:
-                    print("⚠️ No transactions found")
+                    print("[WARN] No transactions found")
                     self.page.run_thread(lambda: self.show_snackbar("No transactions found", "warning"))
                     return
                 
@@ -1820,18 +1926,18 @@ class LunaWalletApp:
                 # Calculate CORRECT balance
                 balance = total_incoming - total_outgoing
                 
-                print(f"\n💰 BALANCE CALCULATION:")
+                print(f"\n[BALANCE] BALANCE CALCULATION:")
                 print(f"   Total Incoming: {total_incoming:.6f} LUN")
                 print(f"   Total Outgoing: {total_outgoing:.6f} LUN")
                 print(f"   Current Balance: {balance:.6f} LUN")
                 
-                print(f"\n📋 TRANSACTION COUNT:")
+                print(f"\n[COUNT] TRANSACTION COUNT:")
                 print(f"   Incoming: {len(incoming_txs)} transactions")
                 print(f"   Outgoing: {len(outgoing_txs)} transactions")
                 
                 # Show all outgoing transactions for debugging
                 if outgoing_txs:
-                    print(f"\n🔍 ALL OUTGOING TRANSACTIONS:")
+                    print(f"\n[DEBUG] ALL OUTGOING TRANSACTIONS:")
                     for i, tx in enumerate(outgoing_txs, 1):
                         print(f"   {i}. Block: {tx.get('block_height')}")
                         print(f"      Hash: {tx.get('hash', 'unknown')}")
@@ -1860,7 +1966,7 @@ class LunaWalletApp:
                 self.page.run_thread(update_ui)
                 
             except Exception as e:
-                print(f"❌ Sync error: {e}")
+                print(f"[ERROR] Sync error: {e}")
                 import traceback
                 traceback.print_exc()
                 
@@ -1909,20 +2015,43 @@ class LunaWalletApp:
             self.page.run_thread(lambda: self.show_snackbar("Fallback sync failed", "error"))
 
     def update_balance_display(self):
-        """Update balance display in UI"""
+        """Update balance display in UI with available and pending balances"""
         try:
-            balance = self.wallet_core.get_balance()
-            formatted_balance = format_balance(balance)
-            
-            # Update your balance display components
-            if hasattr(self, 'balance_text'):
-                self.balance_text.value = f"{formatted_balance} LUNAR"
-                self.balance_text.update()
-                
-            if hasattr(self, 'balance_amount'):
-                self.balance_amount.value = formatted_balance
-                self.balance_amount.update()
-                
+            # Get current wallet info
+            wallet_info = None
+            if hasattr(self, 'wallet_core') and self.wallet_core:
+                if hasattr(self.wallet_core, 'current_wallet_address'):
+                    current_address = self.wallet_core.current_wallet_address
+                    if current_address and hasattr(self.wallet_core, 'wallets'):
+                        if isinstance(self.wallet_core.wallets, dict) and current_address in self.wallet_core.wallets:
+                            wallet_info = self.wallet_core.wallets[current_address]
+
+            if wallet_info:
+                # Get available and pending balances
+                confirmed_balance = wallet_info.get('confirmed_balance', 0.0)
+                pending_balance = wallet_info.get('pending_balance', 0.0)
+                total_balance = confirmed_balance + pending_balance
+
+                # Update main balance display (total balance)
+                formatted_balance = format_balance(total_balance)
+                if hasattr(self, 'balance_text'):
+                    self.balance_text.value = f"{formatted_balance} LUNAR"
+                    self.balance_text.update()
+
+                if hasattr(self, 'balance_amount'):
+                    self.balance_amount.value = formatted_balance
+                    self.balance_amount.update()
+
+                # Update balance card display via wallet page
+                if hasattr(self, 'wallet_page') and self.wallet_page:
+                    if hasattr(self.wallet_page, 'balance_text'):
+                        self.wallet_page.balance_text.value = f"{confirmed_balance:.6f} LUN"
+                        self.wallet_page.balance_text.update()
+
+                    if hasattr(self.wallet_page, 'pending_balance_text'):
+                        self.wallet_page.pending_balance_text.value = f"{pending_balance:.6f} LUN"
+                        self.wallet_page.pending_balance_text.update()
+
         except Exception as e:
             print(f"DEBUG: Balance display update error: {e}")
 
@@ -2246,6 +2375,8 @@ class LunaWalletApp:
                 on_import_wallet=self.show_import_wallet,
                 on_settings=self.show_settings_page
             )
+            # Keep reference to WalletPage object (not the Flet Container it returns)
+            self.wallet_page = wallet_page
             self.current_page = wallet_page.create()
             
             # Clear and add the wallet page
@@ -2255,10 +2386,10 @@ class LunaWalletApp:
             
             # Populate sidebar and main UI immediately with cached data
             try:
-                if hasattr(self.current_page, '_refresh_sidebar_wallets'):
-                    self.current_page._refresh_sidebar_wallets()
-                if hasattr(self.current_page, '_update_wallet_data_ui_only'):
-                    self.current_page._update_wallet_data_ui_only()
+                if hasattr(self.wallet_page, '_refresh_sidebar_wallets'):
+                    self.wallet_page._refresh_sidebar_wallets()
+                if hasattr(self.wallet_page, '_update_wallet_data_ui_only'):
+                    self.wallet_page._update_wallet_data_ui_only()
                 if hasattr(self.page, 'update'):
                     self.page.update()
             except Exception as e:
@@ -2404,6 +2535,27 @@ class LunaWalletApp:
         else:
             self.show_wallet_page()
 
+    def on_send_complete(self):
+        """Handle successful transaction send"""
+        try:
+            print("DEBUG: on_send_complete called - transaction sent successfully")
+            
+            # Go back to wallet page
+            self.show_previous_page()
+            
+            # Refresh wallet data and UI
+            if hasattr(self, 'wallet_page') and self.wallet_page:
+                self.wallet_page._refresh_sidebar_wallets()
+                self.wallet_page._update_wallet_data_ui_only()
+            
+            if hasattr(self, 'page'):
+                self.page.update()
+                
+        except Exception as e:
+            print(f"DEBUG: Error in on_send_complete: {e}")
+            import traceback
+            traceback.print_exc()
+
     def on_wallet_created(self):
         """Handle wallet creation success"""
         try:
@@ -2441,7 +2593,7 @@ class LunaWalletApp:
             # Sync all wallets to populate balances asynchronously
             def sync_after_creation():
                 try:
-                    self.sync_all_wallets()
+                    self.scan_all_wallets_for_changes(force_full_scan=True)
                     print("DEBUG: Background sync completed after wallet creation")
                 except Exception as e:
                     print(f"DEBUG: Background sync error after creation: {e}")
@@ -2484,7 +2636,7 @@ class LunaWalletApp:
         # Sync all wallets to populate balances asynchronously
         def sync_after_import():
             try:
-                self.sync_all_wallets()
+                self.scan_all_wallets_for_changes(force_full_scan=True)
                 print("DEBUG: Background sync completed after wallet import")
             except Exception as e:
                 print(f"DEBUG: Background sync error after import: {e}")
@@ -2516,231 +2668,6 @@ class LunaWalletApp:
             print("Blockchain Manager: Not available")
         
         print("=" * 50)
-    def calculate_available_balance(self) -> float:
-        """Calculate available balance (total balance minus pending outgoing transactions)"""
-        try:
-            from lunalib.core.mempool import MempoolManager
-            from lunalib.core.blockchain import BlockchainManager
-            
-            # Get total balance from blockchain
-            total_balance = self._get_total_balance_from_blockchain()
-            
-            # Get pending incoming balance
-            pending_incoming = self._get_pending_incoming_balance()
-            
-            # Get pending outgoing transactions from mempool
-            mempool = MempoolManager()
-            pending_txs = mempool.get_pending_transactions(self.address)
-            
-            # Sum pending outgoing amounts
-            pending_outgoing = 0.0
-            for tx in pending_txs:
-                if tx.get('from') == self.address:
-                    pending_outgoing += float(tx.get('amount', 0)) + float(tx.get('fee', 0))
-            
-            available_balance = max(0.0, total_balance + pending_incoming - pending_outgoing)
-            
-            # Update both current wallet and wallets collection
-            self.available_balance = available_balance
-            if self.current_wallet_address in self.wallets:
-                self.wallets[self.current_wallet_address]['available_balance'] = available_balance
-            
-            print(f"DEBUG: Available balance calculated - Total: {total_balance}, Pending In: {pending_incoming}, Pending Out: {pending_outgoing}, Available: {available_balance}")
-            return available_balance
-            
-        except Exception as e:
-            print(f"DEBUG: Error calculating available balance: {e}")
-            return self.balance  # Fallback to total balance
-
-    def _get_total_balance_from_blockchain(self) -> float:
-        """Get total balance by scanning blockchain for confirmed transactions"""
-        try:
-            from lunalib.core.blockchain import BlockchainManager
-            
-            blockchain = BlockchainManager()
-            transactions = blockchain.scan_transactions_for_address(self.address)
-            
-            total_balance = 0.0
-            for tx in transactions:
-                tx_type = tx.get('type', '')
-                
-                # Handle incoming transactions
-                if tx.get('to') == self.address:
-                    if tx_type in ['transfer', 'reward', 'fee_distribution', 'gtx_genesis']:
-                        total_balance += float(tx.get('amount', 0))
-                
-                # Handle outgoing transactions  
-                elif tx.get('from') == self.address:
-                    if tx_type in ['transfer', 'stake', 'delegate']:
-                        total_balance -= float(tx.get('amount', 0))
-                        total_balance -= float(tx.get('fee', 0))
-            
-            return max(0.0, total_balance)
-            
-        except Exception as e:
-            print(f"DEBUG: Error getting blockchain balance: {e}")
-            return self.balance
-
-    def _get_pending_incoming_balance(self) -> float:
-        """Get pending incoming balance from mempool transactions"""
-        try:
-            from lunalib.core.mempool import MempoolManager
-            
-            mempool = MempoolManager()
-            pending_txs = mempool.get_pending_transactions(self.address)
-            
-            # Sum pending incoming amounts
-            pending_incoming = 0.0
-            for tx in pending_txs:
-                if tx.get('to') == self.address:
-                    pending_incoming += float(tx.get('amount', 0))
-            
-            return pending_incoming
-            
-        except Exception as e:
-            print(f"DEBUG: Error getting pending incoming balance: {e}")
-            return 0.0
-
-    def refresh_balance(self) -> bool:
-        """Refresh both total and available balance from blockchain and mempool"""
-        try:
-            total_balance = self._get_total_balance_from_blockchain()
-            available_balance = self.calculate_available_balance()
-            
-            # Update wallet state
-            self.balance = total_balance
-            self.available_balance = available_balance
-            
-            # Update in wallets collection
-            if self.current_wallet_address in self.wallets:
-                self.wallets[self.current_wallet_address]['balance'] = total_balance
-                self.wallets[self.current_wallet_address]['available_balance'] = available_balance
-            
-            print(f"DEBUG: Balance refreshed - Total: {total_balance}, Available: {available_balance}")
-            return True
-            
-        except Exception as e:
-            print(f"DEBUG: Error refreshing balance: {e}")
-            return False
-
-    def get_available_balance(self) -> float:
-        """Get current wallet available balance"""
-        return self.available_balance
-
-    def get_transaction_history(self) -> dict:
-        """Get complete transaction history (both pending and confirmed)"""
-        try:
-            from lunalib.core.blockchain import BlockchainManager
-            from lunalib.core.mempool import MempoolManager
-            
-            blockchain = BlockchainManager(endpoint_url=self.blockchain_manager.endpoint_url)
-            mempool = MempoolManager(endpoint_url=self.blockchain_manager.endpoint_url)
-            
-            # Get confirmed transactions from blockchain
-            confirmed_txs = blockchain.scan_transactions_for_address(self.address)
-            
-            # Get pending transactions from mempool
-            pending_txs = mempool.get_pending_transactions(self.address)
-            
-            return {
-                'confirmed': confirmed_txs,
-                'pending': pending_txs,
-                'total_confirmed': len(confirmed_txs),
-                'total_pending': len(pending_txs)
-            }
-        except Exception as e:
-            print(f"DEBUG: Error getting transaction history: {e}")
-            return {'confirmed': [], 'pending': [], 'total_confirmed': 0, 'total_pending': 0}
-    def send_transaction(self, to_address: str, amount: float, memo: str = "", password: str = None) -> bool:
-        """Send transaction using lunalib transactions with proper mempool submission"""
-        try:
-            print(f"DEBUG: send_transaction called - to: {to_address}, amount: {amount}, memo: {memo}")
-            
-            # Refresh balances first to get latest state
-            self.refresh_balance()
-            
-            # Check available balance before proceeding
-            if amount > self.available_balance:
-                print(f"DEBUG: Insufficient available balance: {self.available_balance} < {amount}")
-                return False
-            
-            # Check if wallet is unlocked
-            if self.is_locked or not self.private_key:
-                print("DEBUG: Wallet is locked or no private key available")
-                return False
-            
-            # Import transaction manager
-            from lunalib.transactions.transactions import TransactionManager
-            
-            # Create transaction manager with same endpoint as blockchain manager
-            tx_manager = TransactionManager(network_endpoints=[self.blockchain_manager.endpoint_url])
-            
-            # Create and sign transaction
-            transaction = tx_manager.create_transaction(
-                from_address=self.address,
-                to_address=to_address,
-                amount=amount,
-                private_key=self.private_key,
-                memo=memo,
-                transaction_type="transfer"
-            )
-            
-            print(f"DEBUG: Transaction created: {transaction.get('hash')}")
-            
-            # Validate transaction
-            is_valid, message = tx_manager.validate_transaction(transaction)
-            if not is_valid:
-                print(f"DEBUG: Transaction validation failed: {message}")
-                return False
-            
-            # Send to mempool for broadcasting
-            success, message = tx_manager.send_transaction(transaction)
-            if success:
-                print(f"DEBUG: Transaction sent to mempool: {message}")
-                
-                # Update available balance immediately (deduct pending transaction)
-                fee = transaction.get('fee', 0)
-                self.available_balance -= (amount + fee)
-                if self.current_wallet_address in self.wallets:
-                    self.wallets[self.current_wallet_address]['available_balance'] = self.available_balance
-                
-                print(f"DEBUG: Available balance updated - new available: {self.available_balance}")
-                return True
-            else:
-                print(f"DEBUG: Failed to send transaction to mempool: {message}")
-                return False
-                
-        except Exception as e:
-            print(f"DEBUG: Error in send_transaction: {e}")
-            import traceback
-            traceback.print_exc()
-            return False
-    def on_send_complete(self, success=True, error_message=None, tx_hash=None):
-        """Handle send transaction completion"""
-        try:
-            if success:
-                # Play send sound
-                self._play_sound("send")
-                
-                # Refresh data
-                self.update_balance_display()
-                self.update_transaction_history()
-                
-                # Show success message
-                if tx_hash:
-                    self.show_snackbar(f"Transaction sent! TX: {tx_hash[:16]}...", "success")
-                else:
-                    self.show_snackbar("Transaction sent successfully!", "success")
-            else:
-                # Show error
-                if error_message:
-                    self.show_snackbar(f"Send failed: {error_message}", "error")
-                else:
-                    self.show_snackbar("Transaction failed", "error")
-                    
-        except Exception as e:
-            print(f"DEBUG: Error in on_send_complete: {e}")
-            self.show_snackbar("Error processing send completion", "error")
 
     def lock_wallet(self, wtfisthis):
         """Lock wallet and save state"""
@@ -2762,8 +2689,8 @@ class LunaWalletApp:
         self.show_snackbar("Wallet locked", "info")
 
     def update_wallet_data(self):
-        if hasattr(self, 'current_page') and hasattr(self.current_page, 'update_wallet_data'):
-            self.current_page.update_wallet_data()
+        if hasattr(self, 'wallet_page') and self.wallet_page and hasattr(self.wallet_page, 'update_wallet_data'):
+            self.wallet_page.update_wallet_data()
 
     def show_snackbar(self, message, message_type="info"):
         color = {
