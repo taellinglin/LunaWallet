@@ -910,14 +910,24 @@ class WalletPage:
                 
                 # Process based on transaction type
                 if tx_type == 'reward':
-                    # Mining reward - add to available if confirmed
+                    # Mining reward - incoming or outgoing
+                    # Incoming: reward received (reward_address or to address is this wallet)
                     if reward_addr == wallet_lower or (from_addr == 'network' and to_addr == wallet_lower):
                         if is_confirmed:
                             available_balance += amount
-                            print(f"    → REWARD (confirmed): +{amount}")
+                            print(f"    → REWARD RECEIVED (confirmed): +{amount}")
                         else:
                             pending_balance += amount
-                            print(f"    → REWARD (pending): +{amount}")
+                            print(f"    → REWARD RECEIVED (pending): +{amount}")
+                    # Outgoing: reward sent (from address is this wallet)
+                    elif from_addr == wallet_lower:
+                        net_amount = amount + fee
+                        if is_confirmed:
+                            available_balance -= net_amount
+                            print(f"    → REWARD SENT (confirmed): -{net_amount} (amount: {amount}, fee: {fee})")
+                        else:
+                            pending_balance -= net_amount
+                            print(f"    → REWARD SENT (pending): -{net_amount} (amount: {amount}, fee: {fee})")
                 
                 elif tx_type == 'fee_distribution':
                     # Fee distribution - add if recipient
