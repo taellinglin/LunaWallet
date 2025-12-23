@@ -108,10 +108,15 @@ def _calculate_confirmed_balance(wallet_address_lower: str, database) -> float:
             if tx_status == 'confirmed':
                 # Handle mining rewards (saved with 'to' field when from='network' OR with 'reward_address')
                 if tx_type == 'reward':
-                    # Check if this reward is for us (either via reward_address or to field if from is 'network')
+                    # Incoming reward (received by this wallet)
                     if reward_addr == wallet_address_lower or (tx_from == 'network' and tx_to == wallet_address_lower):
-                        print(f"    -> COUNTED as reward: +{tx_amount}")
+                        print(f"    -> COUNTED as reward received: +{tx_amount}")
                         confirmed_balance += tx_amount
+                    # Outgoing reward (sent from this wallet)
+                    elif tx_from == wallet_address_lower:
+                        print(f"    -> COUNTED as reward sent: -{tx_amount} (fee: -{tx_fee})")
+                        confirmed_balance -= tx_amount
+                        confirmed_balance -= tx_fee
                     else:
                         print(f"    -> NOT reward for us (reward_addr={reward_addr}, to={tx_to})")
                 # Handle fee distributions
