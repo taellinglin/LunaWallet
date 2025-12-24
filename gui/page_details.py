@@ -129,14 +129,14 @@ class TransactionDetailsPage:
                 ]),
                 ft.Container(height=10),
                 ft.Text(
-                    f"{'+' if is_incoming else '-'}{amount:.6f} LUN",
+                    f"'{'+' if is_incoming else '-'}{amount:.6f} LKC'",
                     size=20,
                     weight="bold",
                     color=color
                 ),
                 ft.Row([
                     ft.Text(f"{tx_type.title()} • {direction}", size=12, color="#a8a8a8", expand=True),
-                    ft.Text(f"Fee: {fee:.6f} LUN", size=12, color="#a8a8a8"),
+                    ft.Text(f"Fee: {fee:.6f} LKC", size=12, color="#a8a8a8"),
                 ])
             ]),
             padding=15,
@@ -325,7 +325,7 @@ class TransactionDetailsPage:
         tx = self.transaction_data
         share_text = f"""
 Transaction Details:
-Amount: {tx.get('amount', 0):.6f} LUN
+Amount: {tx.get('amount', 0):.6f} LKC
 Type: {tx.get('type', 'transfer')}
 From: {tx.get('from', 'Unknown')}
 To: {tx.get('to', 'Unknown')}
