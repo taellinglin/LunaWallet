@@ -940,7 +940,7 @@ class LunaWalletApp:
                 centered_content = ft.Container(
                     content=self.current_page,
                     expand=True,
-                    alignment=ft.alignment.center,
+                    alignment=ft.Alignment(0, 0),
                     padding=20
                 )
                 self.page.add(centered_content)
@@ -977,7 +977,7 @@ class LunaWalletApp:
         centered_content = ft.Container(
             content=self.current_page,
             expand=True,
-            alignment=ft.alignment.center,
+            alignment=ft.Alignment(0, 0),
             padding=20
         )
         self.page.add(centered_content)
@@ -2581,7 +2581,7 @@ class LunaWalletApp:
                         ft.Text("Your transactions will appear here", color="#a8a8a8", size=12),
                     ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=5),
                     padding=20,
-                    alignment=ft.alignment.center
+                    alignment=ft.Alignment(0, 0)
                 )
             )
 
@@ -2596,7 +2596,7 @@ class LunaWalletApp:
                         ft.Text("Unlock wallet to view transactions", color="#a8a8a8", size=12),
                     ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=5),
                     padding=20,
-                    alignment=ft.alignment.center
+                    alignment=ft.Alignment(0, 0)
                 )
             )
 
@@ -2611,7 +2611,7 @@ class LunaWalletApp:
                         ft.Text("Wallet core not initialized", color="#a8a8a8", size=12),
                     ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=5),
                     padding=20,
-                    alignment=ft.alignment.center
+                    alignment=ft.Alignment(0, 0)
                 )
             )
 
@@ -2626,7 +2626,7 @@ class LunaWalletApp:
                         ft.Text("Select a wallet to view transactions", color="#a8a8a8", size=12),
                     ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=5),
                     padding=20,
-                    alignment=ft.alignment.center
+                    alignment=ft.Alignment(0, 0)
                 )
             )
 
@@ -2641,7 +2641,7 @@ class LunaWalletApp:
                         ft.Text(f"Failed to load transactions", color="#a8a8a8", size=12),
                     ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=5),
                     padding=20,
-                    alignment=ft.alignment.center
+                    alignment=ft.Alignment(0, 0)
                 )
             )
 
@@ -2721,7 +2721,7 @@ class LunaWalletApp:
         centered_content = ft.Container(
             content=self.current_page,
             expand=True,
-            alignment=ft.alignment.center,
+            alignment=ft.Alignment(0, 0),
             padding=20
         )
         

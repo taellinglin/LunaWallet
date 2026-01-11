@@ -80,7 +80,7 @@ class LockPage:
                     src="../wallet_icon.svg",
                     width=80,
                     height=80,
-                    fit=ft.ImageFit.CONTAIN,
+                    fit="contain",
                     error_content=ft.Icon(ft.Icons.ACCOUNT_BALANCE_WALLET, size=80, color="#dc3545")
                 ),
                 margin=ft.margin.only(bottom=20)
@@ -105,7 +105,7 @@ class LockPage:
             expand=True,
             padding=20,
             bgcolor="#2c1a1a",
-            alignment=ft.alignment.center
+            alignment=ft.Alignment(0, 0)
         )
     
     def _create_setup_ui(self):
@@ -120,7 +120,7 @@ class LockPage:
                         src="../wallet_icon.svg",
                         width=80,
                         height=80,
-                        fit=ft.ImageFit.CONTAIN,
+                        fit="contain",
                         error_content=ft.Icon(ft.Icons.ACCOUNT_BALANCE_WALLET, size=80, color="#dc3545")
                     ),
                     margin=ft.margin.only(bottom=20)
@@ -176,7 +176,7 @@ class LockPage:
             expand=True,
             padding=20,
             bgcolor="#2c1a1a",
-            alignment=ft.alignment.center
+            alignment=ft.Alignment(0, 0)
         )
     
     def unlock(self, e):

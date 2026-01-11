@@ -114,13 +114,13 @@ class CreateWalletPage:
                         ], alignment=ft.MainAxisAlignment.CENTER, spacing=10)
                     ], horizontal_alignment=ft.CrossAxisAlignment.CENTER),
                     padding=30,
-                    alignment=ft.alignment.center
+                    alignment=ft.Alignment(0, 0)
                 ),
             ]),
             expand=True,
             padding=20,
             bgcolor="#2c1a1a",
-            alignment=ft.alignment.center
+            alignment=ft.Alignment(0, 0)
         )
     
     def _show_loading_state(self, loading=True):

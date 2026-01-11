@@ -35,14 +35,14 @@ class ReceivePage:
                     margin=15,  # Small margin around the entire content
                     bgcolor="#1a0f0f",
                     border_radius=15,
-                    alignment=ft.alignment.center,
+                    alignment=ft.Alignment(0, 0),
                     expand=True  # Expand to fill available space
                 )
             ]),
             expand=True,  # Fill entire window
             padding=10,   # Small outer padding
             bgcolor="#2c1a1a",
-            alignment=ft.alignment.center  # Center everything
+            alignment=ft.Alignment(0, 0)  # Center everything
         )
     
     def _create_address_section(self, address):
@@ -119,9 +119,9 @@ class ReceivePage:
             img_base64 = base64.b64encode(buffer.getvalue()).decode()
             
             return ft.Container(
-                content=ft.Image(src_base64=img_base64, width=180, height=180, fit=ft.ImageFit.CONTAIN),
+                content=ft.Image(src=f"data:image/png;base64,{img_base64}", width=180, height=180, fit="contain"),
                 width=200, height=200, bgcolor="#ffffff", border_radius=10, padding=10,
-                alignment=ft.alignment.center
+                alignment=ft.Alignment(0, 0)
             )
         except ImportError:
             return self._create_qr_placeholder("QR Code\nNot Available", ft.Icons.WARNING, "#ffd700")
@@ -135,12 +135,18 @@ class ReceivePage:
                 ft.Icon(icon, size=50, color=color),
                 ft.Text(text, size=12, color=color, text_align="center")
             ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=5),
-            width=200, height=200, alignment=ft.alignment.center, bgcolor="#ffffff", border_radius=10
+            width=200, height=200, alignment=ft.Alignment(0, 0), bgcolor="#ffffff", border_radius=10
         )
     
     def copy_address(self, address):
         if address and address not in ["No wallet available", "Error loading address"]:
-            self.app.page.set_clipboard(address)
-            self.app.show_snackbar("✅ Address copied to clipboard", "success")
+            try:
+                self.app.page.set_clipboard_async(address)
+                self.app.show_snackbar("✅ Address copied to clipboard", "success")
+            except AttributeError:
+                # Fallback for different Flet versions
+                import pyperclip
+                pyperclip.copy(address)
+                self.app.show_snackbar("✅ Address copied to clipboard", "success")
         else:
             self.app.show_snackbar("❌ No valid address to copy", "error")

@@ -441,7 +441,7 @@ class TransactionsTab:
                             ft.Text("Your transaction history will appear here", size=12, color="#a8a8a8"),
                         ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=10),
                         padding=40,
-                        alignment=ft.alignment.center
+                        alignment=ft.Alignment(0, 0)
                     )
                 )
             

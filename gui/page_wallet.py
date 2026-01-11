@@ -334,7 +334,7 @@ class WalletPage:
                         height=30,
                         bgcolor="#dc3545" if is_selected else "#5c2e2e",
                         border_radius=15,
-                        alignment=ft.alignment.center
+                        alignment=ft.Alignment(0, 0)
                     ),
                     ft.Text(wallet['label'], 
                         size=10, 
@@ -362,7 +362,7 @@ class WalletPage:
                             height=30,
                             bgcolor="#dc3545" if is_selected else "#5c2e2e",
                             border_radius=15,
-                            alignment=ft.alignment.center
+                            alignment=ft.Alignment(0, 0)
                         ),
                         ft.Column([
                             ft.Text(wallet['label'], 
@@ -1364,7 +1364,7 @@ class WalletPage:
                     ft.Text("Your transactions will appear here", color="#a8a8a8", size=12),
                 ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=5),
                 padding=20,
-                alignment=ft.alignment.center
+                alignment=ft.Alignment(0, 0)
             )
         )
     
@@ -1378,7 +1378,7 @@ class WalletPage:
                     ft.Text("Select a wallet to view transactions", color="#a8a8a8", size=12),
                 ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=5),
                 padding=20,
-                alignment=ft.alignment.center
+                alignment=ft.Alignment(0, 0)
             )
         )
     
@@ -1392,7 +1392,7 @@ class WalletPage:
                     ft.Text(f"Failed to load transactions", color="#a8a8a8", size=12),
                 ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=5),
                 padding=20,
-                alignment=ft.alignment.center
+                alignment=ft.Alignment(0, 0)
             )
         )
     

@@ -294,13 +294,23 @@ class TransactionDetailsPage:
     
     def _copy_tx_hash(self, tx_hash):
         """Copy transaction hash to clipboard"""
-        self.app.page.set_clipboard(tx_hash)
+        try:
+            self.app.page.set_clipboard_async(tx_hash)
+        except AttributeError:
+            # Fallback for different Flet versions
+            import pyperclip
+            pyperclip.copy(tx_hash)
         if hasattr(self.app, 'show_snackbar'):
             self.app.show_snackbar("Transaction hash copied!", "success")
     
     def _copy_to_clipboard(self, text):
         """Copy any text to clipboard"""
-        self.app.page.set_clipboard(text)
+        try:
+            self.app.page.set_clipboard_async(text)
+        except AttributeError:
+            # Fallback for different Flet versions
+            import pyperclip
+            pyperclip.copy(text)
         if hasattr(self.app, 'show_snackbar'):
             self.app.show_snackbar("Copied to clipboard!", "success")
     
@@ -332,7 +342,12 @@ To: {tx.get('to', 'Unknown')}
 Hash: {tx.get('hash', 'Unknown')}
         """.strip()
         
-        self.app.page.set_clipboard(share_text)
+        try:
+            self.app.page.set_clipboard_async(share_text)
+        except AttributeError:
+            # Fallback for different Flet versions
+            import pyperclip
+            pyperclip.copy(share_text)
         if hasattr(self.app, 'show_snackbar'):
             self.app.show_snackbar("Transaction details copied for sharing!", "success")
     

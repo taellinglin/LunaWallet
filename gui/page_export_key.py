@@ -63,10 +63,10 @@ class ExportKeyPage:
                         ], alignment=ft.MainAxisAlignment.CENTER)
                     ], horizontal_alignment=ft.CrossAxisAlignment.CENTER),
                     padding=20, margin=15, bgcolor="#1a0f0f", border_radius=15,
-                    alignment=ft.alignment.center, expand=True
+                    alignment=ft.Alignment(0, 0), expand=True
                 )
             ]),
-            expand=True, padding=10, bgcolor="#2c1a1a", alignment=ft.alignment.center
+            expand=True, padding=10, bgcolor="#2c1a1a", alignment=ft.Alignment(0, 0)
         )
     
     def show_private_key(self, e):
@@ -103,5 +103,10 @@ class ExportKeyPage:
     
     def copy_private_key(self, e):
         if self.private_key_display.value:
-            self.app.page.set_clipboard(self.private_key_display.value)
+            try:
+                self.app.page.set_clipboard_async(self.private_key_display.value)
+            except AttributeError:
+                # Fallback for different Flet versions
+                import pyperclip
+                pyperclip.copy(self.private_key_display.value)
             self.app.show_snackbar("✅ Private key copied to clipboard", "success")
