@@ -45,7 +45,7 @@ class ExportKeyPage:
                         )
                     ], horizontal_alignment=ft.CrossAxisAlignment.CENTER),
                     padding=20, margin=10, bgcolor="#2a1e1e", border_radius=10,
-                    width=500 if not self.app.is_mobile else 350
+                    expand=True
                 ),
                 
                 # Centered form container
@@ -104,9 +104,56 @@ class ExportKeyPage:
     def copy_private_key(self, e):
         if self.private_key_display.value:
             try:
-                self.app.page.set_clipboard_async(self.private_key_display.value)
-            except AttributeError:
-                # Fallback for different Flet versions
-                import pyperclip
-                pyperclip.copy(self.private_key_display.value)
-            self.app.show_snackbar("✅ Private key copied to clipboard", "success")
+                # Try sync first, then async
+                if hasattr(self.app.page, 'set_clipboard'):
+                    self.app.page.set_clipboard(self.private_key_display.value)
+                elif hasattr(self.app.page, 'set_clipboard_async'):
+                    self.app.page.set_clipboard_async(self.private_key_display.value)
+                else:
+                    # Fallback for different Flet versions
+                    import pyperclip
+                    pyperclip.copy(self.private_key_display.value)
+                
+                print(f"DEBUG: Private key copied to clipboard")
+                
+                # Show snackbar on main thread
+                def show_snack():
+                    try:
+                        self.app.show_snackbar("✅ Private key copied to clipboard", "success")
+                    except Exception as e:
+                        print(f"DEBUG: Error in snackbar callback: {e}")
+                
+                if hasattr(self.app.page, 'run_thread'):
+                    self.app.page.run_thread(show_snack)
+                else:
+                    show_snack()
+                    
+            except Exception as e:
+                print(f"DEBUG: Clipboard error: {e}")
+                try:
+                    import pyperclip
+                    pyperclip.copy(self.private_key_display.value)
+                    
+                    def show_snack():
+                        try:
+                            self.app.show_snackbar("✅ Private key copied to clipboard", "success")
+                        except Exception as e:
+                            print(f"DEBUG: Error in snackbar callback: {e}")
+                    
+                    if hasattr(self.app.page, 'run_thread'):
+                        self.app.page.run_thread(show_snack)
+                    else:
+                        show_snack()
+                        
+                except Exception as e2:
+                    print(f"DEBUG: Pyperclip error: {e2}")
+                    def show_error():
+                        try:
+                            self.app.show_snackbar("❌ Could not copy to clipboard", "error")
+                        except Exception as e:
+                            print(f"DEBUG: Error in snackbar callback: {e}")
+                    
+                    if hasattr(self.app.page, 'run_thread'):
+                        self.app.page.run_thread(show_error)
+                    else:
+                        show_error()

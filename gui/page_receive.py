@@ -83,7 +83,7 @@ class ReceivePage:
                 ft.Text("3. Funds will appear in your wallet", size=12, color="#f8d7da"),
             ]),
             padding=15, bgcolor="#1a0f0f", border_radius=10,
-            width=400 if not self.app.is_mobile else 300
+            expand=True
         )
     
     def get_wallet_address(self):
@@ -141,12 +141,105 @@ class ReceivePage:
     def copy_address(self, address):
         if address and address not in ["No wallet available", "Error loading address"]:
             try:
-                self.app.page.set_clipboard_async(address)
-                self.app.show_snackbar("✅ Address copied to clipboard", "success")
-            except AttributeError:
-                # Fallback for different Flet versions
-                import pyperclip
-                pyperclip.copy(address)
-                self.app.show_snackbar("✅ Address copied to clipboard", "success")
+                print(f"DEBUG: copy_address called with: {address[:12]}...")
+                
+                # Try async first
+                if hasattr(self.app.page, 'set_clipboard'):
+                    print("DEBUG: Using page.set_clipboard()")
+                    self.app.page.set_clipboard(address)
+                elif hasattr(self.app.page, 'set_clipboard_async'):
+                    print("DEBUG: Using page.set_clipboard_async()")
+                    self.app.page.set_clipboard_async(address)
+                else:
+                    # Fallback for different Flet versions
+                    print("DEBUG: Using pyperclip fallback")
+                    import pyperclip
+                    pyperclip.copy(address)
+                
+                print(f"DEBUG: Address copied to clipboard: {address[:12]}...")
+                print("DEBUG: About to show snackbar...")
+                
+                # Show snackbar - use a small delay to ensure clipboard operation completes
+                def show_snack():
+                    import time
+                    time.sleep(0.1)  # Small delay
+                    print("DEBUG: Inside show_snack() callback")
+                    try:
+                        print("DEBUG: Calling app.show_snackbar()...")
+                        self.app.show_snackbar("✅ Address copied to clipboard", "success")
+                        print("DEBUG: Snackbar call completed")
+                    except Exception as e:
+                        print(f"DEBUG: Error in snackbar callback: {e}")
+                        import traceback
+                        traceback.print_exc()
+                
+                print("DEBUG: Checking if page.run_thread exists...")
+                if hasattr(self.app.page, 'run_thread'):
+                    print("DEBUG: Using page.run_thread(show_snack)")
+                    self.app.page.run_thread(show_snack)
+                else:
+                    print("DEBUG: Calling show_snack() directly")
+                    show_snack()
+                    
+            except Exception as e:
+                print(f"DEBUG: Clipboard error in primary method: {e}")
+                import traceback
+                traceback.print_exc()
+                # Final fallback
+                try:
+                    print("DEBUG: Trying pyperclip fallback...")
+                    import pyperclip
+                    pyperclip.copy(address)
+                    print("DEBUG: Pyperclip copy succeeded")
+                    
+                    def show_snack():
+                        import time
+                        time.sleep(0.1)
+                        try:
+                            print("DEBUG: Showing snackbar from pyperclip path")
+                            self.app.show_snackbar("✅ Address copied to clipboard", "success")
+                        except Exception as e:
+                            print(f"DEBUG: Error in snackbar callback: {e}")
+                            import traceback
+                            traceback.print_exc()
+                    
+                    if hasattr(self.app.page, 'run_thread'):
+                        self.app.page.run_thread(show_snack)
+                    else:
+                        show_snack()
+                        
+                except Exception as e2:
+                    print(f"DEBUG: Pyperclip error: {e2}")
+                    import traceback
+                    traceback.print_exc()
+                    def show_error():
+                        import time
+                        time.sleep(0.1)
+                        try:
+                            print("DEBUG: Showing error snackbar")
+                            self.app.show_snackbar("❌ Could not copy to clipboard", "error")
+                        except Exception as e:
+                            print(f"DEBUG: Error in error snackbar callback: {e}")
+                            import traceback
+                            traceback.print_exc()
+                    
+                    if hasattr(self.app.page, 'run_thread'):
+                        self.app.page.run_thread(show_error)
+                    else:
+                        show_error()
         else:
-            self.app.show_snackbar("❌ No valid address to copy", "error")
+            print("DEBUG: Invalid address detected")
+            def show_invalid():
+                import time
+                time.sleep(0.1)
+                try:
+                    print("DEBUG: Showing invalid address snackbar")
+                    self.app.show_snackbar("❌ No valid address to copy", "error")
+                except Exception as e:
+                    print(f"DEBUG: Error in invalid snackbar callback: {e}")
+                    import traceback
+                    traceback.print_exc()
+            if hasattr(self.app.page, 'run_thread'):
+                self.app.page.run_thread(show_invalid)
+            else:
+                show_invalid()

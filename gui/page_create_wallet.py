@@ -48,13 +48,13 @@ class CreateWalletPage:
         )
         
         # Create button reference for updating state
-        self.create_button = ft.ElevatedButton(
+        self.create_button = ft.Button(
             "Create Wallet",
             on_click=self.create_wallet,
             style=ft.ButtonStyle(
                 color="#ffffff",
                 bgcolor="#dc3545",
-                padding=ft.padding.symmetric(horizontal=30, vertical=15),
+                padding=ft.Padding.symmetric(horizontal=30, vertical=15),
             ),
             width=200
         )
@@ -77,7 +77,7 @@ class CreateWalletPage:
                         icon_color="#f8d7da",
                         on_click=lambda e: self.on_back(),
                     ),
-                    alignment=ft.alignment.top_left,
+                    alignment=ft.Alignment(-1, -1),
                     padding=10
                 ),
                 

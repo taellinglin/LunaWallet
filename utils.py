@@ -4,6 +4,8 @@ import time
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 from PIL import Image
+import requests
+import socket
 
 # Import from lunalib
 from lunalib.transactions.transactions import TransactionManager
@@ -11,60 +13,56 @@ from lunalib.transactions.security import TransactionSecurity
 from lunalib.core.crypto import KeyManager
 from lunalib.storage.encryption import EncryptionManager
 from lunalib.core.wallet import LunaWallet
+from lunalib.core.p2p import HybridBlockchainClient
+from lunalib.core.blockchain import BlockchainManager
 from lunalib.core.mempool import MempoolManager
+
+# Initialize managers with corrected configurations
+try:
+    blockchain = BlockchainManager(endpoint_url="https://bank.linglin.art/api/blockchain/full")
+    print("DEBUG: BlockchainManager initialized with endpoint: https://bank.linglin.art/api/blockchain/full")
+    mempool = MempoolManager(["https://bank.linglin.art"])
+    client = HybridBlockchainClient(
+        "https://bank.linglin.art",
+        blockchain,
+        mempool
+    )
+    client.start()
+except Exception as e:
+    print(f"ERROR: Failed to initialize blockchain client: {e}")
+    blockchain = None
+    mempool = None
 
 # ============================================================================
 # UNIFIED BALANCE CALCULATION SYSTEM
 # ============================================================================
 
-def calculate_wallet_balances(wallet_address: str, database=None, mempool_manager=None) -> Dict[str, float]:
+# Refactor calculate_wallet_balances to use enhanced client methods
+def calculate_wallet_balances(wallet_address: str) -> Dict[str, float]:
     """
     Calculate both available (confirmed blockchain) and pending (mempool) balances for a wallet.
     
     Args:
         wallet_address: The wallet address to calculate balances for
-        database: The database instance to query confirmed transactions
-        mempool_manager: The mempool manager to query pending transactions
         
     Returns:
         Dict with keys: 'available', 'pending', 'total'
     """
-    print(f"DEBUG: calculate_wallet_balances called for {wallet_address[:8]} with database={database is not None}, mempool={mempool_manager is not None}")
+    print(f"DEBUG: calculate_wallet_balances called for {wallet_address[:8]}")
+
+    # Get confirmed balance from blockchain transactions
+    confirmed_balance = _calculate_confirmed_balance(wallet_address, client.database if hasattr(client, 'database') else None)
     
-    available_balance = 0.0
-    pending_balance = 0.0
-    
-    wallet_addr_lower = wallet_address.lower()
-    
-    # Calculate available balance from confirmed blockchain transactions
-    if database:
-        try:
-            available_balance = _calculate_confirmed_balance(wallet_address, database)
-        except Exception as e:
-            print(f"ERROR: Failed to calculate confirmed balance: {e}")
-            available_balance = 0.0
-    
-    # Calculate pending balance from mempool
-    # NOTE: Pass the ORIGINAL address (not lowercased) to mempool as it may be case-sensitive
-    if mempool_manager:
-        try:
-            pending_balance = _calculate_pending_balance(wallet_address, mempool_manager)
-        except Exception as e:
-            print(f"ERROR: Failed to calculate pending balance: {e}")
-            pending_balance = 0.0
-    
-    # Ensure available balance doesn't go negative
-    available_balance = max(0.0, available_balance)
-    # NOTE: pending_balance CAN be negative for net outgoing transactions
-    # This is intentional - shows pending debits (outgoing transfers/fees)
-    
-    total_balance = available_balance + pending_balance
-    
+    # Get pending balance from mempool
+    pending_balance = _calculate_pending_balance(wallet_address)
+
+    total_balance = confirmed_balance + pending_balance
+
     return {
-        'available': available_balance,
+        'available': confirmed_balance,
         'pending': pending_balance,
         'total': total_balance,
-        'confirmed': available_balance  # Alias for clarity
+        'confirmed': confirmed_balance  # Alias for clarity
     }
 
 
@@ -206,78 +204,50 @@ def _calculate_confirmed_balance(wallet_address: str, database) -> float:
     return max(0.0, confirmed_balance)
 
 
-def _calculate_pending_balance(wallet_address: str, mempool_manager) -> float:
+def _calculate_pending_balance(wallet_address: str) -> float:
     """
     Calculate pending balance from mempool transactions.
-    Accounts for both incoming and outgoing transactions, including inter-wallet transfers.
     
     Args:
-        wallet_address: Wallet address (original case, as lunalib might be case-sensitive)
-        mempool_manager: The MempoolManager instance
+        wallet_address: Wallet address
         
     Returns:
         Pending balance amount (can be negative for net outgoing transactions)
     """
-    pending_balance = 0.0
-    wallet_addr_lower = wallet_address.lower()
-    incoming_count = 0
-    outgoing_count = 0
-    
     try:
-        print(f"\nDEBUG MEMPOOL: Getting pending txs for {wallet_address[:12]}...")
-        print(f"DEBUG MEMPOOL: Wallet (lowercased): {wallet_addr_lower}")
-        
-        # Get pending transactions from mempool
-        pending_txs = mempool_manager.get_pending_transactions(wallet_address)
-        
-        print(f"DEBUG MEMPOOL: mempool_manager.get_pending_transactions() returned: {pending_txs}")
-        print(f"DEBUG MEMPOOL: Type: {type(pending_txs)}, Length: {len(pending_txs) if pending_txs else 0}")
-        
-        if pending_txs:
-            print(f"DEBUG MEMPOOL: Processing {len(pending_txs)} pending transactions...")
-            # Process each pending transaction
-            for i, tx in enumerate(pending_txs):
-                tx_from = tx.get('from', '').lower()
-                tx_to = tx.get('to', '').lower()
-                tx_amount = float(tx.get('amount', 0))
-                tx_fee = float(tx.get('fee', 0))
-                tx_type = tx.get('type', 'transfer').lower()
-                tx_hash = tx.get('hash', 'unknown')
-                
-                print(f"  [TX {i}] hash={tx_hash[:12] if isinstance(tx_hash, str) else tx_hash}, type={tx_type}")
-                print(f"    from={tx_from[:12] if tx_from else 'none'}, to={tx_to[:12] if tx_to else 'none'}")
-                print(f"    amount={tx_amount}, fee={tx_fee}")
-                print(f"    wallet_addr_lower={wallet_addr_lower[:12]}")
-                
-                # Incoming transaction (inter-wallet or external)
-                if tx_to == wallet_addr_lower:
-                    print(f"    -> COUNTED as incoming: +{tx_amount} (to this wallet)")
-                    pending_balance += tx_amount
-                    incoming_count += 1
-                # Outgoing transaction (inter-wallet or external)
-                elif tx_from == wallet_addr_lower:
-                    print(f"    -> COUNTED as outgoing: -{tx_amount} (from this wallet), fee: -{tx_fee}")
-                    pending_balance -= tx_amount
-                    pending_balance -= tx_fee
-                    outgoing_count += 1
-                else:
-                    print(f"    -> NOT COUNTED (neither from nor to this wallet)")
-                    print(f"       tx_from={tx_from[:16] if tx_from else 'none'} vs {wallet_addr_lower}")
-                    print(f"       tx_to={tx_to[:16] if tx_to else 'none'} vs {wallet_addr_lower}")
+        # Try to get pending transactions for this address
+        if mempool is not None and hasattr(mempool, 'get_pending_transactions_for_addresses'):
+            # Use the batch method
+            pending_txs = mempool.get_pending_transactions_for_addresses([wallet_address])
+            if isinstance(pending_txs, dict):
+                pending_txs = pending_txs.get(wallet_address, [])
+        elif mempool is not None and hasattr(mempool, 'get_pending_transactions'):
+            # Fallback to single method
+            pending_txs = mempool.get_pending_transactions(wallet_address)
         else:
-            print(f"DEBUG MEMPOOL: No pending transactions found")
-    
+            pending_txs = []
+        
+        # Calculate net pending balance from transactions
+        pending_balance = 0.0
+        wallet_address_lower = wallet_address.lower()
+        
+        for tx in pending_txs:
+            tx_from = tx.get('from', '').lower()
+            tx_to = tx.get('to', '').lower()
+            tx_amount = float(tx.get('amount', 0))
+            tx_fee = float(tx.get('fee', 0))
+            
+            if tx_from == wallet_address_lower:
+                # Outgoing transaction
+                pending_balance -= (tx_amount + tx_fee)
+            elif tx_to == wallet_address_lower:
+                # Incoming transaction
+                pending_balance += tx_amount
+        
+        return pending_balance
     except Exception as e:
-        print(f"ERROR: Failed to calculate pending balance: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"DEBUG: Error calculating pending balance: {e}")
         return 0.0
-    
-    print(f"DEBUG MEMPOOL: Pending balance summary for {wallet_address[:12]}:")
-    print(f"  - Incoming: {incoming_count} transactions")
-    print(f"  - Outgoing: {outgoing_count} transactions")
-    print(f"  - Net pending balance: {pending_balance}\n")
-    return pending_balance
 
 
 def update_all_wallet_balances(wallets: Dict, database=None, mempool_manager=None) -> Dict:
@@ -288,25 +258,18 @@ def update_all_wallet_balances(wallets: Dict, database=None, mempool_manager=Non
     
     Args:
         wallets: Dictionary of wallet data keyed by address
-        database: The database instance
-        mempool_manager: The mempool manager
+        database: The database instance (optional)
+        mempool_manager: The mempool manager (optional)
         
     Returns:
         Updated wallets dictionary with balance fields
     """
-    # Initialize mempool manager if not provided
-    if mempool_manager is None:
-        try:
-            mempool_manager = MempoolManager()
-        except:
-            mempool_manager = None
-    
     print(f"\n=== UPDATE ALL WALLET BALANCES ===")
     print(f"Updating {len(wallets)} wallets...")
     
     # Calculate and update balance for each wallet
     for wallet_addr, wallet_data in wallets.items():
-        balances = calculate_wallet_balances(wallet_addr, database, mempool_manager)
+        balances = calculate_wallet_balances(wallet_addr)
         
         # Update wallet data with calculated balances
         wallet_data['balance'] = balances['total']
@@ -545,3 +508,197 @@ def validate_transaction_security(transaction: Dict) -> tuple[bool, str]:
     """Validate transaction security using lunalib"""
     security = TransactionSecurity()
     return security.validate_transaction_security(transaction)
+
+# Optimize blockchain scanning to use incremental updates
+
+def scan_blockchain_incrementally():
+    """Perform incremental blockchain scanning using lunalib 1.6.6."""
+    try:
+        print("DEBUG: Starting incremental blockchain scan...")
+        client.blockchain.scan_for_updates()
+        print("DEBUG: Incremental blockchain scan completed.")
+    except Exception as e:
+        print(f"ERROR: Blockchain scan failed: {e}")
+
+def trigger_scan_if_behind():
+    """Trigger a blockchain or mempool scan only if behind the current height."""
+    try:
+        current_blockchain_height = client.blockchain.get_current_height()
+        latest_blockchain_height = client.blockchain.get_latest_height()
+
+        current_mempool_height = client.mempool.get_current_height()
+        latest_mempool_height = client.mempool.get_latest_height()
+
+        if current_blockchain_height < latest_blockchain_height:
+            print("DEBUG: Blockchain is behind. Triggering scan...")
+            client.blockchain.scan_for_updates()
+
+        if current_mempool_height < latest_mempool_height:
+            print("DEBUG: Mempool is behind. Triggering scan...")
+            client.mempool.scan_for_updates()
+
+    except Exception as e:
+        print(f"ERROR: Failed to check or trigger scan: {e}")
+
+def _register_with_primary(self):
+        """Register this node with the primary daemon using the updated endpoint."""
+        max_retries = 3
+        retry_delay = 5  # seconds
+
+        for attempt in range(max_retries):
+            try:
+                peer_info = {
+                    'node_id': self.node_id,
+                    'timestamp': time.time(),
+                    'capabilities': ['sync', 'relay'],
+                    'peer_url': f"https://{socket.gethostname()}:{8545}"  # Example peer URL
+                }
+
+                print(f"DEBUG: Attempting registration with payload: {peer_info}")
+                response = requests.post(
+                    f"{self.primary_node}/peer/add",
+                    json=peer_info,
+                    timeout=10
+                )
+
+                print(f"DEBUG: Server response: {response.status_code} - {response.text}")
+
+                if response.status_code == 200:
+                    print(f"✅ Registered with primary node as peer: {self.node_id}")
+                    return True
+                else:
+                    print(f"⚠️  Registration failed (Attempt {attempt + 1}/{max_retries}): {response.status_code}")
+
+            except requests.exceptions.RequestException as e:
+                print(f"❌ Registration error (Attempt {attempt + 1}/{max_retries}): {e}")
+
+            # Wait before retrying
+            time.sleep(retry_delay)
+
+        print("❌ Registration failed after maximum retries. Continuing without registration.")
+        return False
+
+def get_p2p_status(self) -> Dict:
+        """Get P2P network status"""
+        if not self.p2p_client:
+            return {
+                'connected': False,
+                'peers': 0,
+                'peer_list': [],
+                'status': 'P2P not available'
+            }
+
+        try:
+            # Get peers from client or our local list
+            peer_count = len(self.peers) if self.peers else 0
+            if hasattr(self.p2p_client, 'peers') and self.p2p_client.peers:
+                peer_count = len(self.p2p_client.peers)
+
+            return {
+                'connected': self.p2p_client.is_running if hasattr(self.p2p_client, 'is_running') else True,
+                'peers': peer_count,
+                'peer_list': self.peers[:10],  # Return first 10 peers
+                'status': 'connected'
+            }
+        except Exception as e:
+            return {
+                'connected': False,
+                'peers': 0,
+                'peer_list': [],
+                'status': f'Error: {e}'
+            }
+
+def _fetch_peers_from_daemon(self):
+        try:
+            # Try common P2P daemon endpoints with short timeout
+            endpoints = [
+                f"{self.config.node_url}/api/peers",
+                f"{self.config.node_url}/peers",
+                f"{self.config.node_url}/api/p2p/peers",
+            ]
+
+            for endpoint in endpoints:
+                try:
+                    response = requests.get(endpoint, timeout=5)
+                    if response.status_code == 200:
+                        data = response.json()
+
+                        # Handle different response formats
+                        if isinstance(data, list):
+                            self.peers = data
+                        elif isinstance(data, dict):
+                            self.peers = data.get('peers', data.get('nodes', data.get('data', [])))
+
+                        if self.peers:
+                            print(f"[DEBUG] Fetched {len(self.peers)} peers from {endpoint}")
+
+                            # Register peers with P2P client if available
+                            if self.p2p_client and hasattr(self.p2p_client, 'add_peers'):
+                                try:
+                                    self.p2p_client.add_peers(self.peers)
+                                except:
+                                    pass
+
+                            return True
+                except:
+                    continue
+
+            # No peers found - this is OK, not an error
+            print("[DEBUG] No P2P peers available from daemon")
+            return False
+
+        except Exception as e:
+            print(f"[DEBUG] Peer fetch skipped: {e}")
+            return False
+
+def refresh_peers(self) -> Dict:
+    """Manually refresh peer list from daemon"""
+    success = self._fetch_peers_from_daemon()
+    return {
+        'success': success,
+        'peers': len(self.peers),
+        'peer_list': self.peers[:10]
+    }
+
+def register_as_peer(self, my_address: str = None, my_port: int = None) -> bool:
+    """Register this node as a peer with the daemon (optional, may not be supported)"""
+    try:
+        # Get local address if not provided
+        if not my_address:
+            try:
+                hostname = socket.gethostname()
+                my_address = socket.gethostbyname(hostname)
+            except:
+                my_address = "127.0.0.1"
+
+        if not my_port:
+            my_port = 8545  # Default P2P port
+
+        # Try to register with daemon
+        endpoints = [
+            f"{self.config.node_url}/api/peers/register",
+            f"{self.config.node_url}/peers/register",
+        ]
+
+        registration_data = {
+            'address': my_address,
+            'port': my_port,
+            'node_type': 'miner',
+            'version': '1.0.0'
+        }
+
+        for endpoint in endpoints:
+            try:
+                response = requests.post(endpoint, json=registration_data, timeout=5)
+                if response.status_code in [200, 201]:
+                    print(f"[DEBUG] Registered as peer: {my_address}:{my_port}")
+                    return True
+            except:
+                continue
+
+        # Registration not supported - this is OK
+        return False
+
+    except Exception as e:
+        print(f"[DEBUG] Peer registration skipped: {e}")
+        return False

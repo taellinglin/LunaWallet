@@ -295,24 +295,62 @@ class TransactionDetailsPage:
     def _copy_tx_hash(self, tx_hash):
         """Copy transaction hash to clipboard"""
         try:
-            self.app.page.set_clipboard_async(tx_hash)
-        except AttributeError:
-            # Fallback for different Flet versions
-            import pyperclip
-            pyperclip.copy(tx_hash)
+            if hasattr(self.app.page, 'set_clipboard'):
+                self.app.page.set_clipboard(tx_hash)
+            elif hasattr(self.app.page, 'set_clipboard_async'):
+                self.app.page.set_clipboard_async(tx_hash)
+            else:
+                import pyperclip
+                pyperclip.copy(tx_hash)
+        except Exception as e:
+            print(f"DEBUG: Clipboard error: {e}")
+            try:
+                import pyperclip
+                pyperclip.copy(tx_hash)
+            except Exception as e2:
+                print(f"DEBUG: Pyperclip error: {e2}")
+        
         if hasattr(self.app, 'show_snackbar'):
-            self.app.show_snackbar("Transaction hash copied!", "success")
+            def show_snack():
+                try:
+                    self.app.show_snackbar("Transaction hash copied!", "success")
+                except Exception as e:
+                    print(f"DEBUG: Error in snackbar callback: {e}")
+            
+            if hasattr(self.app.page, 'run_thread'):
+                self.app.page.run_thread(show_snack)
+            else:
+                show_snack()
     
     def _copy_to_clipboard(self, text):
         """Copy any text to clipboard"""
         try:
-            self.app.page.set_clipboard_async(text)
-        except AttributeError:
-            # Fallback for different Flet versions
-            import pyperclip
-            pyperclip.copy(text)
+            if hasattr(self.app.page, 'set_clipboard'):
+                self.app.page.set_clipboard(text)
+            elif hasattr(self.app.page, 'set_clipboard_async'):
+                self.app.page.set_clipboard_async(text)
+            else:
+                import pyperclip
+                pyperclip.copy(text)
+        except Exception as e:
+            print(f"DEBUG: Clipboard error: {e}")
+            try:
+                import pyperclip
+                pyperclip.copy(text)
+            except Exception as e2:
+                print(f"DEBUG: Pyperclip error: {e2}")
+        
         if hasattr(self.app, 'show_snackbar'):
-            self.app.show_snackbar("Copied to clipboard!", "success")
+            def show_snack():
+                try:
+                    self.app.show_snackbar("Copied to clipboard!", "success")
+                except Exception as e:
+                    print(f"DEBUG: Error in snackbar callback: {e}")
+            
+            if hasattr(self.app.page, 'run_thread'):
+                self.app.page.run_thread(show_snack)
+            else:
+                show_snack()
     
     def _view_in_explorer(self, tx_hash):
         """View transaction in blockchain explorer"""

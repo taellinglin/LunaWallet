@@ -1,4 +1,5 @@
 import flet as ft
+import gui.page_create_wallet
 import threading
 import time
 import os
@@ -9,6 +10,7 @@ import base64
 from typing import Dict, List
 import sqlite3
 from pathlib import Path
+import requests  # Ensure requests is imported at the top of the file
 
 # Import unified balance utilities
 from utils import (
@@ -109,6 +111,14 @@ class LunaWalletApp:
         self.transaction_manager = TransactionManager(network_endpoints=["https://bank.linglin.art"])
         self.encryption_manager = EncryptionManager()
         self.database = WalletDatabase()
+        # Initialize mempool manager for pending transaction detection
+        try:
+            from lunalib.core.mempool import MempoolManager
+            self.mempool_manager = MempoolManager()
+            print("DEBUG: MempoolManager initialized successfully")
+        except Exception as e:
+            print(f"DEBUG: Error initializing MempoolManager: {e}")
+            self.mempool_manager = None
         self._patch_blockchain_scanner()
         self.minimized_to_tray = False
         self.current_tab_index = 0
@@ -131,6 +141,13 @@ class LunaWalletApp:
         self.current_page = None
         self.current_lock_page = None
         self.pages = {}
+        
+        # Notification container for custom snackbar overlay
+        self.notification_container = None
+        
+        # Track last scan time per wallet to avoid redundant scans (5 minute threshold)
+        self.wallet_last_scan_times = {}  # {address: timestamp}
+        self.scan_cooldown_minutes = 5
 
         # Wallet persistence state - ENHANCED
         self.wallet_file_path = self._get_wallet_file_path()
@@ -155,6 +172,109 @@ class LunaWalletApp:
         self.last_scanned_block = 0
         self.wallet_balances_cache = {}  # Cache of wallet balances to detect changes
         self.scan_interval = 30  # Scan every 30 seconds
+
+    def show_snackbar(self, message: str, message_type: str = "info"):
+        """Display a slim notification panel docked at the bottom of the window.
+        
+        Args:
+            message: The message to display
+            message_type: Type of message - "success" (green), "error" (red), "info" (blue)
+        """
+        print(f"[SNACKBAR] show_snackbar() called - message_type: {message_type}, message: {message}")
+        
+        if not hasattr(self, 'page') or not self.page:
+            print(f"[SNACKBAR] No page available - printing to console")
+            print(f"Snackbar: {message_type.upper()}: {message}")
+            return
+        
+        # Color mapping for different message types
+        color_map = {
+            "success": "#4CAF50",  # Green
+            "error": "#f44336",    # Red
+            "info": "#2196F3"      # Blue
+        }
+        
+        bg_color = color_map.get(message_type, "#2196F3")
+        
+        try:
+            print(f"[SNACKBAR] Creating slim bottom panel notification")
+            
+            # Create the notification content
+            notification_content = ft.Row([
+                ft.Text(
+                    message,
+                    color="#ffffff",
+                    weight="bold",
+                    size=13,
+                    expand=True
+                ),
+                ft.IconButton(
+                    ft.Icons.CLOSE,
+                    icon_color="#ffffff",
+                    icon_size=16,
+                    on_click=lambda e: self._close_notification(notification_wrapper)
+                )
+            ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+            
+            # Create the actual panel
+            notification_panel = ft.Container(
+                content=notification_content,
+                bgcolor=bg_color,
+                padding=ft.padding.symmetric(horizontal=15, vertical=8),
+                height=45,
+                width=float('inf')
+            )
+            
+            # Wrap in a positioned container at the bottom
+            notification_wrapper = ft.Container(
+                content=notification_panel,
+                alignment=ft.Alignment(0, 1),  # Center horizontally, bottom vertically
+                bottom=0,
+                left=0,
+                right=0,
+                animate_opacity=300
+            )
+            
+            print(f"[SNACKBAR] Notification panel created")
+            
+            # Add to page overlay at bottom
+            if hasattr(self.page, 'overlay'):
+                print(f"[SNACKBAR] Adding to page.overlay")
+                self.page.overlay.append(notification_wrapper)
+                self.page.update()
+                print(f"[SNACKBAR] ✅ Notification panel displayed successfully at bottom")
+                
+                # Auto-remove after 3.5 seconds if not closed manually
+                def auto_close():
+                    time.sleep(3.5)
+                    try:
+                        if notification_wrapper in self.page.overlay:
+                            print(f"[SNACKBAR] Auto-closing notification")
+                            self.page.overlay.remove(notification_wrapper)
+                            self.page.update()
+                    except Exception as e:
+                        print(f"[SNACKBAR] Error in auto-close: {e}")
+                
+                threading.Thread(target=auto_close, daemon=True).start()
+            else:
+                print(f"[SNACKBAR] ❌ page.overlay not available")
+                
+        except Exception as e:
+            print(f"[SNACKBAR] ❌ Error showing notification: {e}")
+            import traceback
+            traceback.print_exc()
+            print(f"[SNACKBAR] Fallback: {message_type.upper()}: {message}")
+
+    def _close_notification(self, notification):
+        """Close a notification container"""
+        try:
+            print(f"[SNACKBAR] Closing notification manually")
+            if hasattr(self.page, 'overlay') and notification in self.page.overlay:
+                self.page.overlay.remove(notification)
+                self.page.update()
+        except Exception as e:
+            print(f"[SNACKBAR] Error closing notification: {e}")
+
     def debug_transaction_detection(self):
         """Debug method to see what transactions are being detected"""
         if not self.wallet_core.current_wallet_address:
@@ -807,7 +927,9 @@ class LunaWalletApp:
 
     def on_balance_changed(self):
         """Handle balance changes with auto-save"""
-        self.update_balance_display()
+        if hasattr(self, 'wallet_page') and self.wallet_page:
+            if hasattr(self.wallet_page, '_update_wallet_data_ui_only'):
+                self.wallet_page._update_wallet_data_ui_only()
         self.save_wallet_data(force_save=True)  # Force save on balance changes
         self._play_sound("transaction")
         self.create_backup()  # Create backup for important changes
@@ -823,7 +945,12 @@ class LunaWalletApp:
 
     def on_transaction_received(self):
         """Handle incoming transactions with auto-save"""
-        self.update_transaction_history()
+        if hasattr(self, 'wallet_page') and self.wallet_page:
+            if hasattr(self.wallet_page, 'refresh_transaction_history'):
+                try:
+                    self.wallet_page.refresh_transaction_history()
+                except Exception as e:
+                    print(f"DEBUG: Error refreshing transaction history: {e}")
         self.show_snackbar("New transaction received", "success")
         
         # Play transaction sound
@@ -835,8 +962,14 @@ class LunaWalletApp:
         
     def on_sync_complete(self):
         """Handle sync completion with auto-save"""
-        self.update_balance_display()
-        self.update_transaction_history()
+        if hasattr(self, 'wallet_page') and self.wallet_page:
+            if hasattr(self.wallet_page, '_update_wallet_data_ui_only'):
+                self.wallet_page._update_wallet_data_ui_only()
+            if hasattr(self.wallet_page, 'refresh_transaction_history'):
+                try:
+                    self.wallet_page.refresh_transaction_history()
+                except Exception as e:
+                    print(f"DEBUG: Error refreshing transaction history: {e}")
         self.show_snackbar("Blockchain sync completed", "success")
         self.save_wallet_data(force_save=True)  # Force save after sync
         self.create_backup()  # Create backup after sync
@@ -846,26 +979,44 @@ class LunaWalletApp:
 
     def create_main_ui(self, page: ft.Page):
         self.page = page
-        
+
         # Detect if we're on mobile
         self.is_mobile = page.platform in ["ios", "android"]
         self.detect_orientation()
-        
+
         page.title = "Luna Wallet"
         page.theme_mode = ft.ThemeMode.DARK
         page.padding = 0
-        
+
         if not self.is_mobile:
             page.window.width = 1024
             page.window.height = 768
             page.window.min_width = 768
             page.window.min_height = 768
             page.window.center()
-            
-        page.window.icon = "./wallet_icon.png"
-        
+
+        # Set icon for taskbar (use .ico on Windows for best compatibility)
+        try:
+            import os
+            icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wallet_icon.ico")
+            if os.path.exists(icon_path):
+                print(f"DEBUG: Setting icon from: {icon_path}")
+                page.window.icon = icon_path
+            else:
+                # Try PNG as fallback
+                png_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wallet_icon.png")
+                if os.path.exists(png_path):
+                    print(f"DEBUG: Setting icon from: {png_path}")
+                    page.window.icon = png_path
+                else:
+                    print(f"DEBUG: No icon file found at {icon_path} or {png_path}")
+        except Exception as e:
+            print(f"DEBUG: Error setting icon: {e}")
+            import traceback
+            traceback.print_exc()
+
         page.on_resize = self.on_page_resize
-        
+
         # Check for existing wallets and show appropriate screen
         self.initialize_wallet_state()
 
@@ -1004,6 +1155,152 @@ class LunaWalletApp:
             print(f"DEBUG: Wallet load attempt failed: {e}")
             return False
 
+    def show_wallet_page(self):
+        """Display the main wallet page with all wallets and transactions"""
+        try:
+            print("DEBUG: show_wallet_page called")
+            
+            # Create the wallet page with all necessary callbacks
+            wallet_page = WalletPage(
+                app=self,
+                on_send=self.on_send_transaction,
+                on_receive=self.on_receive,
+                on_export_key=self.on_export_key,
+                on_lock=self.on_lock,
+                on_create_wallet=self.on_create_wallet,
+                on_import_wallet=self.on_import_wallet,
+                on_settings=self.on_settings
+            )
+            
+            # Store reference for later updates
+            self.wallet_page = wallet_page
+            
+            # Set as current page
+            self.current_page = wallet_page.create()
+            
+            # Clear page controls and display
+            self.page.controls.clear()
+            self.page.add(self.current_page)
+            self.page.update()
+            
+            print("DEBUG: Wallet page displayed successfully")
+        except Exception as e:
+            print(f"DEBUG: Error showing wallet page: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def lock_wallet(self):
+        """Lock the wallet and return to lock screen"""
+        print("DEBUG: lock_wallet called")
+        self.is_locked = True
+        self.continuous_scan_active = False  # Stop continuous scanning
+        self.show_lock_page(
+            title="Wallet Locked",
+            subtitle="Enter password to unlock",
+            wallet_exists=True,
+            show_create=False
+        )
+
+    def on_send_transaction(self):
+        """Handle send transaction action"""
+        print("DEBUG: on_send_transaction called")
+        try:
+            send_page = SendPage(
+                self,
+                on_back=self.show_wallet_page,
+                on_send_complete=self.on_transaction_sent
+            )
+            self.current_page = send_page.create()
+            self.page.controls.clear()
+            self.page.add(self.current_page)
+            self.page.update()
+            print("DEBUG: Send page displayed")
+        except Exception as e:
+            print(f"DEBUG: Error showing send page: {e}")
+            import traceback
+            traceback.print_exc()
+            self.show_snackbar(f"Error opening send page: {str(e)}", "error")
+
+    def on_receive(self):
+        """Handle receive action"""
+        print("DEBUG: on_receive called")
+        try:
+            receive_page = ReceivePage(
+                self,
+                on_back=self.show_wallet_page
+            )
+            self.current_page = receive_page.create()
+            self.page.controls.clear()
+            self.page.add(self.current_page)
+            self.page.update()
+            print("DEBUG: Receive page displayed")
+        except Exception as e:
+            print(f"DEBUG: Error showing receive page: {e}")
+            import traceback
+            traceback.print_exc()
+            self.show_snackbar(f"Error opening receive page: {str(e)}", "error")
+
+    def on_export_key(self):
+        """Handle export key action"""
+        print("DEBUG: on_export_key called")
+        try:
+            export_key_page = ExportKeyPage(
+                self,
+                on_back=self.show_wallet_page
+            )
+            self.current_page = export_key_page.create()
+            self.page.controls.clear()
+            self.page.add(self.current_page)
+            self.page.update()
+            print("DEBUG: Export key page displayed")
+        except Exception as e:
+            print(f"DEBUG: Error showing export key page: {e}")
+            import traceback
+            traceback.print_exc()
+            self.show_snackbar(f"Error opening export key page: {str(e)}", "error")
+
+    def on_transaction_sent(self):
+        """Handle transaction sent confirmation"""
+        print("DEBUG: on_transaction_sent called")
+        self.show_snackbar("Transaction sent successfully!", "success")
+        # Return to wallet page
+        self.show_wallet_page()
+
+    def on_lock(self):
+        """Handle lock action - lock the wallet"""
+        print("DEBUG: on_lock called")
+        self.is_locked = True
+        self.show_lock_page(
+            title="Wallet Locked",
+            subtitle="Enter password to unlock",
+            wallet_exists=True,
+            show_create=False
+        )
+
+    def on_create_wallet(self):
+        """Handle create wallet action"""
+        print("DEBUG: on_create_wallet called")
+        self.show_create_wallet()
+
+    def on_import_wallet(self):
+        """Handle import wallet action"""
+        print("DEBUG: on_import_wallet called")
+        from gui.page_import_wallet import ImportWalletPage
+        import_page = ImportWalletPage(
+            self,
+            on_back=self.show_wallet_page,
+            on_wallet_imported=self.refresh_wallet_list
+        )
+        self.current_page = import_page.create()
+        self.page.controls.clear()
+        self.page.add(self.current_page)
+        self.page.update()
+
+    def on_settings(self):
+        """Handle settings action"""
+        print("DEBUG: on_settings called")
+        self.show_snackbar("Settings feature", "info")
+
     def unlock_wallet(self, password):
         """Unlock existing wallet with password using LunaWallet core methods"""
         def unlock_thread():
@@ -1114,29 +1411,35 @@ class LunaWalletApp:
         
         threading.Thread(target=unlock_thread, daemon=True).start()
 
-
-
-
-
     def start_blockchain_sync(self):
         """Start blockchain synchronization for all wallets"""
         try:
             print("DEBUG: Starting blockchain sync for all wallets...")
             
             def sync_thread():
+                """Synchronize blockchain for all wallets using lunalib."""
                 try:
-                    self.scan_all_wallets_for_changes(force_full_scan=True)
-                    print("DEBUG: Blockchain sync completed for all wallets")
-                    
-                    # After initial sync, start continuous background monitoring
+                    print("DEBUG: Starting blockchain sync using lunalib...")
+
+                    # Perform a full blockchain scan using lunalib
+                    if hasattr(self.blockchain_manager, 'scan_for_updates'):
+                        self.blockchain_manager.scan_for_updates()
+                        print("DEBUG: Blockchain sync completed using lunalib.")
+                    else:
+                        # Fallback: scan transactions for all wallets
+                        if hasattr(self.wallet_core, 'wallets'):
+                            for wallet_addr in self.wallet_core.wallets.keys():
+                                txs = self.blockchain_manager.scan_transactions_for_address(wallet_addr)
+                                print(f"DEBUG: Scanned {len(txs)} transactions for {wallet_addr[:12]}...")
+                        print("DEBUG: Blockchain sync completed using fallback method.")
+
+                    # Start continuous background monitoring
                     print("DEBUG: Starting continuous background monitoring...")
-                    # Use a separate method so it runs in background
-                    def start_monitoring():
-                        time.sleep(1)  # Small delay to ensure UI is settled
+                    if hasattr(self.blockchain_manager, 'start_continuous_scan'):
+                        self.blockchain_manager.start_continuous_scan()
+                    else:
                         self.start_continuous_blockchain_scan()
-                    
-                    threading.Thread(target=start_monitoring, daemon=True).start()
-                    
+
                 except Exception as e:
                     print(f"DEBUG: Blockchain sync error: {e}")
             
@@ -1326,7 +1629,6 @@ class LunaWalletApp:
                         print(f"  Iteration {iteration}: Error during scan: {e}")
                         break
                 
-                print(f"  ✅ Total rewards found for {wallet_addr[:12]}...: {total_found}")
                 
         except Exception as e:
             print(f"ERROR in _scan_all_rewards_iteratively: {e}")
@@ -1596,48 +1898,99 @@ class LunaWalletApp:
             print(f"Error playing sound: {e}")
 
     def _update_all_wallet_balances(self, wallet_addresses):
-        """Update balances for all wallets using unified calculation"""
+        """Update balances for all wallets by calculating from scanned transactions"""
         try:
-            from lunalib.core.mempool import MempoolManager
-            mempool_manager = MempoolManager()
-        except:
-            mempool_manager = None
-        
-        print(f"\n=== UPDATING BALANCES FOR {len(wallet_addresses)} WALLETS ===")
-        print(f"Database available: {hasattr(self, 'database')}")
-        
-        if hasattr(self, 'database'):
-            try:
-                all_txs = self.database.get_all_transactions()
-                print(f"Database has {len(all_txs) if all_txs else 0} total transactions")
-            except Exception as e:
-                print(f"ERROR getting transactions from database: {e}")
-        
-        for wallet_addr in wallet_addresses:
-            if wallet_addr in self.wallet_core.wallets:
-                wallet_obj = self.wallet_core.wallets[wallet_addr]
-                
+            print(f"\n=== UPDATING BALANCES FOR {len(wallet_addresses)} WALLETS ===")
+            
+            # Get all transactions from database
+            all_txs = []
+            if hasattr(self, 'database'):
                 try:
-                    balances = calculate_wallet_balances(
-                        wallet_addr,
-                        database=self.database if hasattr(self, 'database') else None,
-                        mempool_manager=mempool_manager
-                    )
+                    # Try multiple methods to get transactions
+                    if hasattr(self.database, 'get_wallet_transactions'):
+                        # This requires iterating over wallets
+                        for addr in wallet_addresses:
+                            try:
+                                txs = self.database.get_wallet_transactions(addr, limit=10000)
+                                all_txs.extend(txs)
+                            except:
+                                pass
+                    elif hasattr(self.database, 'get_transactions'):
+                        for addr in wallet_addresses:
+                            try:
+                                txs = self.database.get_transactions(addr)
+                                all_txs.extend(txs)
+                            except:
+                                pass
+                    else:
+                        print(f"DEBUG: No transaction retrieval method found")
                     
-                    # Store in wallet_core.wallets
-                    wallet_obj['confirmed_balance'] = balances['available']
-                    wallet_obj['available_balance'] = balances['available']
-                    wallet_obj['pending_balance'] = balances['pending']
-                    wallet_obj['balance'] = balances['total']
-                    
-                    print(f"✓ {wallet_addr[:12]}...")
-                    print(f"  available={balances['available']:.6f}, pending={balances['pending']:.6f}, total={balances['total']:.6f}")
-                    print(f"  wallet_core.wallets[addr]['balance'] = {wallet_obj['balance']:.6f}")
-                    
+                    print(f"DEBUG: Found {len(all_txs)} total transactions in database")
                 except Exception as e:
-                    print(f"✗ Error calculating balance for {wallet_addr[:12]}...: {e}")
-                    import traceback
-                    traceback.print_exc()
+                    print(f"DEBUG: Error getting transactions from database: {e}")
+            
+            # Process each wallet
+            for wallet_addr in wallet_addresses:
+                if wallet_addr not in self.wallet_core.wallets:
+                    continue
+                
+                wallet_obj = self.wallet_core.wallets[wallet_addr]
+                wallet_addr_lower = wallet_addr.lower()
+                
+                print(f"\nDEBUG: Calculating balance for {wallet_addr[:12]}... (lowercase: {wallet_addr_lower[:12]}...)")
+                
+                # Calculate balance from scanned transactions
+                confirmed_balance = 0.0
+                pending_balance = 0.0
+                
+                reward_count = 0
+                transfer_in_count = 0
+                transfer_out_count = 0
+                
+                # Process confirmed transactions
+                for tx in all_txs:
+                    tx_status = tx.get('status', 'confirmed').lower()
+                    if tx_status != 'confirmed':
+                        continue
+                    
+                    tx_from = tx.get('from', '').lower()
+                    tx_to = tx.get('to', '').lower()
+                    reward_addr = tx.get('reward_address', '').lower()
+                    tx_type = tx.get('type', 'transfer').lower()
+                    amount = float(tx.get('amount', 0))
+                    fee = float(tx.get('fee', 0))
+                    
+                    # Mining reward
+                    if tx_type == 'reward':
+                        # Check if this reward is for us
+                        if (tx_to == wallet_addr_lower or reward_addr == wallet_addr_lower):
+                            confirmed_balance += amount
+                            reward_count += 1
+                            print(f"  ✓ Reward: +{amount} (to={tx_to[:12] if tx_to else 'none'}...)")
+                    # Incoming transfer
+                    elif tx_to == wallet_addr_lower:
+                        confirmed_balance += amount
+                        transfer_in_count += 1
+                        print(f"  ✓ Transfer in: +{amount} from {tx_from[:12]}...")
+                    # Outgoing transfer
+                    elif tx_from == wallet_addr_lower:
+                        confirmed_balance -= (amount + fee)
+                        transfer_out_count += 1
+                        print(f"  ✓ Transfer out: -{amount} - {fee} fee to {tx_to[:12]}...")
+                
+                # Store in wallet_core.wallets
+                wallet_obj['confirmed_balance'] = max(0.0, confirmed_balance)
+                wallet_obj['available_balance'] = max(0.0, confirmed_balance)
+                wallet_obj['pending_balance'] = pending_balance
+                wallet_obj['balance'] = max(0.0, confirmed_balance) + pending_balance
+                
+                print(f"✓ {wallet_addr[:12]}... Summary: {reward_count} rewards, {transfer_in_count} in, {transfer_out_count} out")
+                print(f"  Final balance: {max(0.0, confirmed_balance):.6f} LKC")
+                    
+        except Exception as e:
+            print(f"✗ Error updating balances: {e}")
+            import traceback
+            traceback.print_exc()
         
         print(f"=== BALANCE UPDATE COMPLETE ===\n")
 
@@ -1653,24 +2006,29 @@ class LunaWalletApp:
                 print(f">>> UI REFRESH STARTING (on main thread)")
                 
                 if hasattr(self, 'wallet_page') and self.wallet_page:
-                    print(f">>> Refreshing sidebar...")
+                    # FIRST: Update sidebar balances
+                    print(f">>> [1] Refreshing sidebar wallets...")
                     if hasattr(self.wallet_page, '_refresh_sidebar_wallets'):
                         self.wallet_page._refresh_sidebar_wallets()
                     
-                    print(f">>> Recalculating balance from all transactions...")
+                    # SECOND: Update active wallet's balance card
+                    print(f">>> [2] Recalculating balance from all transactions...")
                     if hasattr(self.wallet_page, 'recalculate_wallet_balances'):
                         if hasattr(self.wallet_core, 'current_wallet_address'):
                             self.wallet_page.recalculate_wallet_balances(self.wallet_core.current_wallet_address)
                     
-                    print(f">>> Updating balance card...")
+                    print(f">>> [3] Updating balance card...")
                     if hasattr(self.wallet_page, '_update_wallet_data_ui_only'):
                         self.wallet_page._update_wallet_data_ui_only()
                 
-                print(f">>> Updating transaction history...")
-                self.update_balance_display()
-                self.update_transaction_history()
+                print(f">>> [4] Updating transaction history...")
+                if hasattr(self.wallet_page, 'refresh_transaction_history'):
+                    try:
+                        self.wallet_page.refresh_transaction_history()
+                    except Exception as e:
+                        print(f"DEBUG: Error refreshing transaction history: {e}")
                 
-                print(f">>> Calling page.update()...")
+                print(f">>> [5] Calling page.update()...")
                 self.page.update()
                 
                 print(f">>> UI REFRESH COMPLETE\n")
@@ -1717,7 +2075,7 @@ class LunaWalletApp:
         try:
             print("DEBUG: Updating wallet data...")
             
-            if not hasattr(self, 'wallet_core') or not self.wallet_core:
+            if not hasattr(self, 'wallet_core') or self.wallet_core:
                 print("DEBUG: No wallet core available")
                 return
             
@@ -1939,1081 +2297,82 @@ class LunaWalletApp:
                     enhanced_tx['direction'] = 'incoming'
                     enhanced_tx['to'] = field_value
                     enhanced_tx['effective_amount'] = float(tx.get('amount', 0))
+
+
+
                     return enhanced_tx
         
         # If we can't determine direction, add unknown
+       
         enhanced_tx['direction'] = 'unknown'
         return enhanced_tx
-    # Add this method to your LunaWalletApp class
+
     def debug_blockchain_data(self):
-        """Debug method to understand blockchain transaction formats"""
-        try:
-            import requests
-            
-            if not self.wallet_core.current_wallet_address:
-                print("❌ No wallet address available for debug")
-                return
-                
-            address = self.wallet_core.current_wallet_address
-            print(f"\n🔍 DEBUG: Checking blockchain data for {address}")
-            
-            # Try different endpoints
-            endpoints = [
-                f"https://bank.linglin.art/transactions/address/{address}",
-                f"https://bank.linglin.art/blockchain/transactions/{address}",
-                "https://bank.linglin.art/blockchain/blocks",
-            ]
-            
-            for endpoint in endpoints:
-                print(f"\n--- Testing: {endpoint} ---")
-                try:
-                    response = requests.get(endpoint, timeout=10)
-                    print(f"Status: {response.status_code}")
-                    if response.status_code == 200:
-                        data = response.json()
-                        print(f"Response type: {type(data)}")
-                        
-                        if isinstance(data, list):
-                            print(f"Found {len(data)} items")
-                            if len(data) > 0:
-                                print("First item structure:")
-                                for key, value in list(data[0].items())[:10]:  # Show first 10 keys
-                                    print(f"  {key}: {value}")
-                        elif isinstance(data, dict):
-                            print("Dict keys:", list(data.keys()))
-                            if 'transactions' in data:
-                                txs = data['transactions']
-                                print(f"Found {len(txs)} transactions")
-                                if txs and len(txs) > 0:
-                                    print("Sample transaction:")
-                                    for key, value in list(txs[0].items())[:10]:
-                                        print(f"  {key}: {value}")
-                    else:
-                        print(f"Response: {response.text[:200]}")
-                except Exception as e:
-                    print(f"Error: {e}")
-                    
-        except Exception as e:
-            print(f"Debug error: {e}")
+        """Debug blockchain data."""
+        print("DEBUG: Blockchain data debugging started")
+        # Add debugging logic here
     def _patch_blockchain_scanner(self):
-        """Patch the blockchain manager's scanner to properly detect outgoing transactions"""
-        # Store original method
-        original_scan = self.blockchain_manager.scan_transactions_for_address
-        
-        def enhanced_scan(address: str, start_height: int = 0, end_height: int = None) -> List[Dict]:
-            """Enhanced scanner that properly finds BOTH incoming AND outgoing transactions"""
+        """Patch the blockchain scanner to use lunalib's BlockchainManager directly."""
+        def blockchain_sync():
             try:
-                print(f"\n🎯 ENHANCED SCAN for address: {address}")
-                print("=" * 60)
-                
-                # Get original results first
-                original_txs = original_scan(address, start_height, end_height)
-                print(f"Original scan found: {len(original_txs)} transactions")
-                
-                # Get all blocks and scan manually
-                if end_height is None:
-                    end_height = self.blockchain_manager.get_blockchain_height()
-                
-                print(f"Scanning from block {start_height} to {end_height}")
-                
-                all_transactions = []
-                address_lower = address.lower()
-                
-                # Use batch block fetching for better performance
-                batch_size = 50  # Fetch blocks in batches of 50
-                
-                for batch_start in range(start_height, end_height + 1, batch_size):
-                    batch_end = min(batch_start + batch_size - 1, end_height)
-                    
-                    try:
-                        # Fetch blocks in batch
-                        blocks = self.blockchain_manager.get_blocks_range(batch_start, batch_end)
-                        print(f"DEBUG: Enhanced scan fetched batch of {len(blocks)} blocks ({batch_start}-{batch_end})")
-                        
-                        for block in blocks:
-                            height = block.get('index', 0)
-                            block_txs = block.get('transactions', [])
-                            
-                            # Check each transaction in the block
-                            for tx in block_txs:
-                                # Get addresses from transaction
-                                from_addr = tx.get('from', '').lower()
-                                to_addr = tx.get('to', '').lower()
-                                
-                                # Check if this transaction involves our address
-                                is_our_tx = False
-                                direction = None
-                                
-                                # OUTGOING: Our address is the sender
-                                if from_addr == address_lower:
-                                    is_our_tx = True
-                                    direction = 'outgoing'
-                                    print(f"[OK] FOUND OUTGOING TX in block {height}:")
-                                    print(f"   From: {from_addr} (OURS)")
-                                    print(f"   To: {to_addr}")
-                                    print(f"   Amount: {tx.get('amount')}")
-                                    print(f"   Hash: {tx.get('hash', '')[:16]}...")
-                                
-                                # INCOMING: Our address is the receiver
-                                elif to_addr == address_lower:
-                                    is_our_tx = True
-                                    direction = 'incoming'
-                                    print(f"[OK] FOUND INCOMING TX in block {height}:")
-                                    print(f"   From: {from_addr}")
-                                    print(f"   To: {to_addr} (OURS)")
-                                    print(f"   Amount: {tx.get('amount')}")
-                                    print(f"   Hash: {tx.get('hash', '')[:16]}...")
-                                
-                                if is_our_tx:
-                                    # Create enhanced transaction with direction info
-                                    enhanced_tx = tx.copy()
-                                    enhanced_tx['block_height'] = height
-                                    enhanced_tx['status'] = 'confirmed'
-                                    enhanced_tx['direction'] = direction
-                                    
-                                    # Calculate effective amount
-                                    amount = float(tx.get('amount', 0))
-                                    fee = float(tx.get('fee', 0))
-                                    
-                                    if direction == 'outgoing':
-                                        # Outgoing: negative amount (amount + fee)
-                                        enhanced_tx['effective_amount'] = -(amount + fee)
-                                        print(f"   Effective amount: -{amount + fee} ({amount} + {fee} fee)")
-                                    else:
-                                        # Incoming: positive amount
-                                        enhanced_tx['effective_amount'] = amount
-                                        print(f"   Effective amount: +{amount}")
-                                    
-                                    all_transactions.append(enhanced_tx)
-                    
-                    except Exception as e:
-                        print(f"DEBUG: Error scanning batch {batch_start}-{batch_end}: {e}")
-                        continue
-                
-                print(f"\n📊 ENHANCED SCAN RESULTS:")
-                print(f"   Total transactions found: {len(all_transactions)}")
-                
-                incoming_count = len([t for t in all_transactions if t.get('direction') == 'incoming'])
-                outgoing_count = len([t for t in all_transactions if t.get('direction') == 'outgoing'])
-                
-                print(f"   Incoming: {incoming_count}")
-                print(f"   Outgoing: {outgoing_count}")
-                
-                # Show outgoing transaction details
-                if outgoing_count > 0:
-                    print(f"\n🔍 OUTGOING TRANSACTIONS DETAILS:")
-                    for tx in all_transactions:
-                        if tx.get('direction') == 'outgoing':
-                            print(f"  - Block: {tx.get('block_height')}")
-                            print(f"    From: {tx.get('from')}")
-                            print(f"    To: {tx.get('to')}")
-                            print(f"    Amount: {tx.get('amount')}")
-                            print(f"    Fee: {tx.get('fee', 0)}")
-                            print(f"    Total: {float(tx.get('amount', 0)) + float(tx.get('fee', 0))}")
-                            print(f"    Hash: {tx.get('hash', '')[:16]}...")
-                
-                return all_transactions
-                
+                print("DEBUG: Starting blockchain sync using lunalib...")
+                if hasattr(self.blockchain_manager, 'scan_for_updates'):
+                    self.blockchain_manager.scan_for_updates()
+                    print("DEBUG: Blockchain sync completed using lunalib.")
+                else:
+                    # Fallback: scan transactions for all wallets
+                    if hasattr(self.wallet_core, 'wallets'):
+                        for wallet_addr in self.wallet_core.wallets.keys():
+                            txs = self.blockchain_manager.scan_transactions_for_address(wallet_addr)
+                            print(f"DEBUG: Scanned {len(txs)} transactions for {wallet_addr[:12]}...")
+                    print("DEBUG: Blockchain sync completed using fallback method.")
+
+                # Start continuous background monitoring
+                print("DEBUG: Starting continuous background monitoring...")
+                if hasattr(self.blockchain_manager, 'start_continuous_scan'):
+                    self.blockchain_manager.start_continuous_scan()
+                else:
+                    self.start_continuous_blockchain_scan()
+
             except Exception as e:
-                print(f"❌ Enhanced scan error: {e}")
-                import traceback
-                traceback.print_exc()
-                return original_scan(address, start_height, end_height)
-        
-        # Apply the patch
-        self.blockchain_manager.scan_transactions_for_address = enhanced_scan
-        print("[OK] Blockchain scanner patched with proper outgoing detection")
-    def start_blockchain_sync(self):
-        """Start blockchain synchronization - FIXED BALANCE CALCULATION"""
-        def sync_thread():
-            try:
-                print("\n" + "="*60)
-                print("[START] STARTING BLOCKCHAIN SYNC")
-                print("="*60)
-                
-                if not self.wallet_core.current_wallet_address:
-                    self.page.run_thread(lambda: self.show_snackbar("No wallet selected", "error"))
-                    return
-                
-                address = self.wallet_core.current_wallet_address
-                print(f"[SYNC] Syncing address: {address}")
-                
-                # Use the patched scanner
-                transactions = self.blockchain_manager.scan_transactions_for_address(address)
-                
-                print(f"\n[SUMMARY] TRANSACTION SUMMARY:")
-                print(f"   Found: {len(transactions)} total transactions")
-                
-                if not transactions:
-                    print("[WARN] No transactions found")
-                    self.page.run_thread(lambda: self.show_snackbar("No transactions found", "warning"))
-                    return
-                
-                # Initialize counters
-                total_incoming = 0.0
-                total_outgoing = 0.0
-                incoming_txs = []
-                outgoing_txs = []
-                
-                # Process each transaction
-                for tx in transactions:
-                    direction = tx.get('direction', 'unknown')
-                    amount = float(tx.get('amount', 0))
-                    fee = float(tx.get('fee', 0))
-                    
-                    if direction == 'incoming':
-                        total_incoming += amount
-                        incoming_txs.append(tx)
-                        print(f"   + Incoming: {amount} LKC (from {tx.get('from', 'unknown')})")
-                    elif direction == 'outgoing':
-                        # For outgoing, include both amount AND fee
-                        total_outgoing += (amount + fee)
-                        outgoing_txs.append(tx)
-                        print(f"   - Outgoing: {amount} LKC + {fee} fee = {amount + fee} LKC (to {tx.get('to', 'unknown')})")
-                
-                # Calculate CORRECT balance
-                balance = total_incoming - total_outgoing
-                
-                print(f"\n[BALANCE] BALANCE CALCULATION:")
-                print(f"   Total Incoming: {total_incoming:.6f} LKC")
-                print(f"   Total Outgoing: {total_outgoing:.6f} LKC")
-                print(f"   Current Balance: {balance:.6f} LKC")
-                
-                print(f"\n[COUNT] TRANSACTION COUNT:")
-                print(f"   Incoming: {len(incoming_txs)} transactions")
-                print(f"   Outgoing: {len(outgoing_txs)} transactions")
-                
-                # Show all outgoing transactions for debugging
-                if outgoing_txs:
-                    print(f"\n[DEBUG] ALL OUTGOING TRANSACTIONS:")
-                    for i, tx in enumerate(outgoing_txs, 1):
-                        print(f"   {i}. Block: {tx.get('block_height')}")
-                        print(f"      Hash: {tx.get('hash', 'unknown')}")
-                        print(f"      To: {tx.get('to', 'unknown')}")
-                        print(f"      Amount: {tx.get('amount')} + Fee: {tx.get('fee', 0)} = Total: {float(tx.get('amount', 0)) + float(tx.get('fee', 0))}")
-                
-                # Update wallet core with correct balance
-                self.wallet_core.update_balance(balance)
-                
-                # Update database
-                for tx in transactions:
-                    self.database.save_transaction(tx, address)
-                
-                def update_ui():
-                    self.update_wallet_data()
-                    self.update_balance_display()
-                    self.update_transaction_history()
-                    
-                    message = f"Sync: {len(incoming_txs)} in, {len(outgoing_txs)} out, Balance: {balance:.6f} LKC"
-                    self.show_snackbar(message, "success")
-                    
-                    # Save wallet after sync
-                    self.save_wallet_data(force_save=True)
-                    self.create_backup()
-                    
-                self.page.run_thread(update_ui)
-                
-            except Exception as e:
-                print(f"[ERROR] Sync error: {e}")
-                import traceback
-                traceback.print_exc()
-                
-                def show_error():
-                    self.show_snackbar(f"Sync error: {str(e)[:50]}...", "error")
-                
-                self.page.run_thread(show_error)
-        
-        threading.Thread(target=sync_thread, daemon=True).start()
-    def _fallback_sync(self):
-        """Fallback sync method using direct blockchain scanning"""
-        try:
-            print("DEBUG: Starting fallback sync...")
-            if self.wallet_core.current_wallet_address:
-                # Use the direct scan method as backup
-                transactions = self.blockchain_manager.scan_transactions_for_address(
-                    self.wallet_core.current_wallet_address
-                )
-                
-                # Update wallet with transactions
-                for tx in transactions:
-                    self.database.save_transaction(tx, self.wallet_core.current_wallet_address)
-                
-                # Calculate balance from transactions
-                total_received = sum(
-                    tx.get('amount', 0) for tx in transactions 
-                    if tx.get('to', '').lower() == self.wallet_core.current_wallet_address.lower()
-                )
-                total_sent = sum(
-                    tx.get('amount', 0) for tx in transactions 
-                    if tx.get('from', '').lower() == self.wallet_core.current_wallet_address.lower()
-                )
-                current_balance = total_received - total_sent
-                
-                self.wallet_core.update_balance(current_balance)
-                
-                def update_ui_fallback():
-                    self.update_balance_display()
-                    self.update_transaction_history()
-                    self.show_snackbar(f"Fallback sync: {len(transactions)} transactions", "info")
-                    
-                self.page.run_thread(update_ui_fallback)
-                
-        except Exception as e:
-            print(f"DEBUG: Fallback sync error: {e}")
-            self.page.run_thread(lambda: self.show_snackbar("Fallback sync failed", "error"))
+                print(f"DEBUG: Blockchain sync error: {e}")
 
-    def update_balance_display(self):
-        """Update balance display in UI with available and pending balances"""
-        try:
-            # Get current wallet info
-            wallet_info = None
-            current_address = None
-            if hasattr(self, 'wallet_core') and self.wallet_core:
-                if hasattr(self.wallet_core, 'current_wallet_address'):
-                    current_address = self.wallet_core.current_wallet_address
-                    if current_address and hasattr(self.wallet_core, 'wallets'):
-                        if isinstance(self.wallet_core.wallets, dict) and current_address in self.wallet_core.wallets:
-                            wallet_info = self.wallet_core.wallets[current_address]
-
-            print(f"DEBUG update_balance_display: current_address={current_address[:12] if current_address else 'None'}")
-            print(f"DEBUG update_balance_display: wallet_info keys={list(wallet_info.keys()) if wallet_info else 'None'}")
-            
-            if wallet_info:
-                # Get available and pending balances - use cached values or placeholder
-                confirmed_balance = wallet_info.get('confirmed_balance')
-                available_balance = wallet_info.get('available_balance')
-                pending_balance = wallet_info.get('pending_balance')
-                total_balance = wallet_info.get('balance')
-                
-                # If balances are not set (None), show placeholder text instead of 0
-                if confirmed_balance is None:
-                    print(f"  confirmed_balance=None (not calculated yet)")
-                else:
-                    print(f"  confirmed_balance={confirmed_balance}")
-                if pending_balance is None:
-                    print(f"  pending_balance=None (not calculated yet)")
-                else:
-                    print(f"  pending_balance={pending_balance}")
-                if total_balance is None:
-                    print(f"  total_balance=None (not calculated yet)")
-                else:
-                    print(f"  total_balance={total_balance}")
-
-                # Update main balance display (total balance)
-                if total_balance is not None:
-                    formatted_balance = format_balance(total_balance)
-                else:
-                    formatted_balance = "--.--"  # Placeholder
-                
-                if hasattr(self, 'balance_text'):
-                    self.balance_text.value = f"{formatted_balance} LUNAR"
-                    self.balance_text.update()
-
-                if hasattr(self, 'balance_amount'):
-                    self.balance_amount.value = formatted_balance
-                    self.balance_amount.update()
-
-                # Update balance card display via wallet page
-                if hasattr(self, 'wallet_page') and self.wallet_page:
-                    # Use available_balance if it exists and > 0, otherwise confirmed_balance, otherwise placeholder
-                    if available_balance is not None and available_balance > 0:
-                        display_balance = available_balance
-                    elif confirmed_balance is not None:
-                        display_balance = confirmed_balance
-                    else:
-                        display_balance = None  # Will show placeholder
-                    
-                    if hasattr(self.wallet_page, 'balance_text'):
-                        if display_balance is not None:
-                            self.wallet_page.balance_text.value = f"{display_balance:.6f} LKC"
-                            print(f"  Updated wallet_page.balance_text to {display_balance:.6f}")
-                        else:
-                            self.wallet_page.balance_text.value = "--.-- LKC"
-                            print(f"  Updated wallet_page.balance_text to placeholder")
-                        self.wallet_page.balance_text.update()
-
-                    if hasattr(self.wallet_page, 'pending_balance_text'):
-                        if pending_balance is not None:
-                            self.wallet_page.pending_balance_text.value = f"{pending_balance:.6f} LKC"
-                            print(f"  Updated wallet_page.pending_balance_text to {pending_balance:.6f}")
-                        else:
-                            self.wallet_page.pending_balance_text.value = "--.-- LKC"
-                            print(f"  Updated wallet_page.pending_balance_text to placeholder")
-                        self.wallet_page.pending_balance_text.update()
-            else:
-                print(f"DEBUG update_balance_display: No wallet_info found, cannot update balances")
-
-        except Exception as e:
-            print(f"DEBUG: Balance display update error: {e}")
-            import traceback
-            traceback.print_exc()
-
-    def update_transaction_history(self):
-        """Update transaction history using lunalib transactions"""
-        try:
-            # Clear existing transactions
-            if hasattr(self, 'transactions_list'):
-                self.transactions_list.controls.clear()
-            else:
-                # Initialize transactions list if it doesn't exist
-                self.transactions_list = ft.ListView(spacing=8, height=200, expand=True)
-            
-            if hasattr(self, 'wallet_core') and self.wallet_core:
-                # Check if wallet is unlocked
-                is_unlocked = (
-                    getattr(self.wallet_core, 'is_unlocked', False) or
-                    getattr(self.wallet_core, 'is_locked', True) == False or
-                    getattr(self, 'is_locked', True) == False
-                )
-                
-                if is_unlocked:
-                    # Use lunalib transactions to get transaction history
-                    from lunalib.transactions.transactions import TransactionManager
-                    tx_manager = TransactionManager()
-                    
-                    # Get current wallet address
-                    current_address = getattr(self.wallet_core, 'current_wallet_address', '')
-                    if not current_address:
-                        self._show_no_wallet_message()
-                        return
-                    
-                    # Get transactions using lunalib
-                    transactions = []
-                    
-                    # Method 1: Try database first - PRIORITIZE get_all_transactions (no 100-tx limit)
-                    if hasattr(self, 'database'):
-                        # Try common database methods - get_all_transactions FIRST to avoid 100 tx limit
-                        db_methods = ['get_all_transactions', 'get_transactions', 'get_wallet_transactions', 'load_transactions']
-                        for method in db_methods:
-                            if hasattr(self.database, method):
-                                try:
-                                    if method == 'get_all_transactions':
-                                        all_txs = getattr(self.database, method)()
-                                        # Filter for current wallet
-                                        transactions = [tx for tx in all_txs if 
-                                                    tx.get('from') == current_address or 
-                                                    tx.get('to') == current_address]
-                                    else:
-                                        transactions = getattr(self.database, method)(current_address)
-                                    break
-                                except:
-                                    continue
-                    
-                    # Method 2: If no transactions from database, create sample or use blockchain
-                    if not transactions:
-                        transactions = self._get_transactions_from_blockchain(current_address)
-                    
-                    if not transactions:
-                        self._show_no_transactions_message()
-                        return
-                    
-                    # Sort by timestamp (newest first) and limit to 10
-                    transactions.sort(key=lambda x: x.get('timestamp', 0), reverse=True)
-                    transactions = transactions[:10]
-                    
-                    # Create transaction cards
-                    for tx in transactions:
-                        tx_card = self._create_transaction_card(tx, current_address)
-                        self.transactions_list.controls.append(tx_card)
-                        
-                else:
-                    self._show_wallet_locked_message()
-            else:
-                self._show_wallet_not_available_message()
-                
-        except Exception as e:
-            print(f"DEBUG: Transaction history error: {e}")
-            self._show_error_message(str(e))
-
-    def _get_transactions_from_blockchain(self, address: str):
-        """Get transactions from blockchain manager"""
-        transactions = []
-        try:
-            if hasattr(self, 'blockchain_manager'):
-                transactions = self.blockchain_manager.scan_transactions_for_address(address)
-        except Exception as e:
-            print(f"DEBUG: Blockchain scan error: {e}")
-        
-        return transactions
-
-    def _create_transaction_card(self, tx: dict, current_address: str):
-        """Create a transaction card UI element"""
-        from lunalib.transactions.transactions import TransactionSecurity
-        
-        security = TransactionSecurity()
-        
-        # Get transaction details
-        tx_type = tx.get('type', 'transfer')
-        amount = tx.get('amount', 0)
-        from_addr = tx.get('from', '')
-        to_addr = tx.get('to', '')
-        status = tx.get('status', 'confirmed')
-        timestamp = tx.get('timestamp', 0)
-        tx_hash = tx.get('hash', '')
-        memo = tx.get('memo', '')
-        fee = tx.get('fee', 0)
-        
-        # Determine direction and styling - FIXED LOGIC
-        is_incoming = to_addr and to_addr.lower() == current_address.lower()
-        is_outgoing = from_addr and from_addr.lower() == current_address.lower()
-        
-        # Special handling for different transaction types
-        if tx_type == 'reward':
-            is_incoming = True
-            is_outgoing = False
-        elif tx_type in ['stake', 'delegate']:
-            is_outgoing = True
-            is_incoming = False
-        
-        # Use lunalib to get color and risk assessment
-        risk_level, risk_reason = security.assess_risk(tx)
-        
-        # Set colors and icons based on transaction type and direction
-        if is_incoming:
-            color = "#00ff00"  # Green for incoming
-            icon = "📥"
-            direction = "Received"
-            amount_display = f"+{amount:.6f} LKC"
-            # For incoming transactions, show who sent it
-            display_address = from_addr if from_addr else "Unknown Sender"
-        elif is_outgoing:
-            color = "#ff4444"  # Red for outgoing
-            icon = "📤"
-            direction = "Sent"
-            # Include fee in outgoing amount display
-            total_amount = amount + fee
-            amount_display = f"-{total_amount:.6f} LKC"
-            # For outgoing transactions, show who received it
-            display_address = to_addr if to_addr else "Unknown Recipient"
-        else:
-            # For other cases (like failed transactions)
-            color = "#ffa500"  # Orange
-            icon = "❓"
-            direction = "Unknown"
-            amount_display = f"{amount:.6f} LKC"
-            display_address = "Unknown"
-        
-        # Format address for display
-        if display_address:
-            truncated_addr = f"{display_address[:8]}...{display_address[-6:]}" if len(display_address) > 14 else display_address
-        else:
-            truncated_addr = "Unknown"
-        
-        # Format date
-        from datetime import datetime
-        date_str = datetime.fromtimestamp(timestamp).strftime("%m/%d %H:%M") if timestamp else "Unknown"
-        
-        # Add fee display for outgoing transactions
-        fee_display = ""
-        if is_outgoing and fee > 0:
-            fee_display = f" (Fee: {fee:.6f} LKC)"
-        
-        # Create transaction card
-        return ft.Container(
-            content=ft.Column([
-                ft.Row([
-                    ft.Text(
-                        amount_display,
-                        size=16,
-                        color=color,
-                        weight="bold",
-                        expand=True
-                    ),
-                    ft.Container(
-                        content=ft.Text(
-                            status.upper(),
-                            size=10,
-                            color=color,
-                            weight="bold"
-                        ),
-                        padding=ft.padding.symmetric(horizontal=6, vertical=2),
-                        bgcolor=f"{color}20",
-                        border_radius=6
-                    )
-                ]),
-                ft.Row([
-                    ft.Icon(icon, size=14, color=color),
-                    ft.Text(
-                        f"{direction}: {truncated_addr}{fee_display}",
-                        size=12,
-                        color="#f8d7da",
-                        expand=True
-                    ),
-                    ft.Text(
-                        date_str,
-                        size=10,
-                        color="#a8a8a8"
-                    )
-                ]),
-                ft.Row([
-                    ft.Text(
-                        memo if memo else f"TX: {tx_hash[:8]}...",
-                        size=10,
-                        color="#a8a8a8",
-                        expand=True,
-                        max_lines=1,
-                        overflow="ellipsis"
-                    ),
-                    ft.TextButton(
-                        "View",
-                        on_click=lambda e, tx_data=tx: self._show_transaction_details(tx_data),
-                        style=ft.ButtonStyle(
-                            color=color,
-                            padding=ft.padding.symmetric(horizontal=8, vertical=2),
-                            overlay_color=f"{color}20"
-                        )
-                    )
-                ])
-            ], spacing=6),
-            padding=12,
-            bgcolor="#2c1a1a",
-            border_radius=10,
-            border=ft.border.all(1, "#5c2e2e")
-        )
-    def _show_no_transactions_message(self):
-        """Show no transactions message"""
-        if hasattr(self, 'transactions_list'):
-            self.transactions_list.controls.append(
-                ft.Container(
-                    content=ft.Column([
-                        ft.Icon(ft.Icons.RECEIPT_LONG, size=32, color="#5c2e2e"),
-                        ft.Text("No transactions yet", color="#f8d7da", size=14),
-                        ft.Text("Your transactions will appear here", color="#a8a8a8", size=12),
-                    ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=5),
-                    padding=20,
-                    alignment=ft.Alignment(0, 0)
-                )
-            )
-
-    def _show_wallet_locked_message(self):
-        """Show wallet locked message"""
-        if hasattr(self, 'transactions_list'):
-            self.transactions_list.controls.append(
-                ft.Container(
-                    content=ft.Column([
-                        ft.Icon(ft.Icons.LOCK, size=32, color="#5c2e2e"),
-                        ft.Text("Wallet Locked", color="#f8d7da", size=14),
-                        ft.Text("Unlock wallet to view transactions", color="#a8a8a8", size=12),
-                    ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=5),
-                    padding=20,
-                    alignment=ft.Alignment(0, 0)
-                )
-            )
-
-    def _show_wallet_not_available_message(self):
-        """Show wallet not available message"""
-        if hasattr(self, 'transactions_list'):
-            self.transactions_list.controls.append(
-                ft.Container(
-                    content=ft.Column([
-                        ft.Icon(ft.Icons.ERROR, size=32, color="#5c2e2e"),
-                        ft.Text("Wallet Not Available", color="#f8d7da", size=14),
-                        ft.Text("Wallet core not initialized", color="#a8a8a8", size=12),
-                    ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=5),
-                    padding=20,
-                    alignment=ft.Alignment(0, 0)
-                )
-            )
-
-    def _show_no_wallet_message(self):
-        """Show no wallet selected message"""
-        if hasattr(self, 'transactions_list'):
-            self.transactions_list.controls.append(
-                ft.Container(
-                    content=ft.Column([
-                        ft.Icon(ft.Icons.WALLET, size=32, color="#5c2e2e"),
-                        ft.Text("No Wallet Selected", color="#f8d7da", size=14),
-                        ft.Text("Select a wallet to view transactions", color="#a8a8a8", size=12),
-                    ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=5),
-                    padding=20,
-                    alignment=ft.Alignment(0, 0)
-                )
-            )
-
-    def _show_error_message(self, error: str):
-        """Show error message"""
-        if hasattr(self, 'transactions_list'):
-            self.transactions_list.controls.append(
-                ft.Container(
-                    content=ft.Column([
-                        ft.Icon(ft.Icons.ERROR, size=32, color="#5c2e2e"),
-                        ft.Text("Error Loading", color="#f8d7da", size=14),
-                        ft.Text(f"Failed to load transactions", color="#a8a8a8", size=12),
-                    ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=5),
-                    padding=20,
-                    alignment=ft.Alignment(0, 0)
-                )
-            )
-
-    def _create_transaction_item(self, transaction: Dict):
-        """Create a UI item for a transaction"""
-        # Use your existing transaction formatting functions
-        color = get_transaction_color(transaction, [self.wallet_core.current_wallet_address])
-        icon = get_transaction_icon(transaction, [self.wallet_core.current_wallet_address])
-        
-        # Return your transaction UI component
-        # This depends on your UI framework (Flet, etc.)
-        pass
-    def show_wallet_page(self):
-        """Show main wallet page after successful unlock"""
-        print("DEBUG: Showing wallet page")
-        try:
-            wallet_page = WalletPage(
-                self,
-                on_send=self.show_send_page,
-                on_receive=self.show_receive_page,
-                on_export_key=self.show_export_key_page,
-                on_lock=self.show_lock_page,
-                on_create_wallet=self.show_create_wallet,
-                on_import_wallet=self.show_import_wallet,
-                on_settings=self.show_settings_page
-            )
-            # Keep reference to WalletPage object (not the Flet Container it returns)
-            self.wallet_page = wallet_page
-            self.current_page = wallet_page.create()
-            
-            # Clear and add the wallet page
-            self.page.controls.clear()
-            self.page.add(self.current_page)
-            self.page.update()
-            
-            # Populate sidebar and main UI immediately with cached data
-            try:
-                if hasattr(self.wallet_page, '_refresh_sidebar_wallets'):
-                    self.wallet_page._refresh_sidebar_wallets()
-                if hasattr(self.wallet_page, '_update_wallet_data_ui_only'):
-                    self.wallet_page._update_wallet_data_ui_only()
-                if hasattr(self.page, 'update'):
-                    self.page.update()
-            except Exception as e:
-                print(f"DEBUG: Error populating UI with cached data: {e}")
-            
-            # Start continuous blockchain scanning for all wallets
-            self.start_continuous_blockchain_scan()
-            
-            # Defer wallet data update to background to not block UI
-            def load_wallet_data():
-                try:
-                    self.update_wallet_data()
-                except Exception as e:
-                    print(f"DEBUG: Error loading wallet data in background: {e}")
-            
-            threading.Thread(target=load_wallet_data, daemon=True).start()
-            
-        except Exception as e:
-            print(f"DEBUG: Error showing wallet page: {e}")
-            import traceback
-            traceback.print_exc()
-            self.show_snackbar("Error loading wallet interface", "error")
+        threading.Thread(target=blockchain_sync, daemon=True).start()
 
     def show_create_wallet(self):
-        create_page = CreateWalletPage(
+        """Display the wallet creation page or dialog."""
+        print("DEBUG: show_create_wallet called")
+        # Example implementation: Navigate to the wallet creation page
+        from gui.page_create_wallet import CreateWalletPage
+        create_wallet_page = CreateWalletPage(
             self,
-            on_back=self.show_previous_page,
-            on_wallet_created=self.on_wallet_created
+            on_back=self.show_wallet_page,
+            on_wallet_created=self.refresh_wallet_list
         )
-        self.current_page = create_page.create()
-        
-        # Clear the page and add the new content properly centered
+        self.current_page = create_wallet_page.create()
+
+        # Clear and add the new page to the UI
         self.page.controls.clear()
-        
-        # Create a container that ensures proper centering
-        centered_content = ft.Container(
-            content=self.current_page,
-            expand=True,
-            alignment=ft.Alignment(0, 0),
-            padding=20
-        )
-        
-        self.page.add(centered_content)
+        self.page.controls.append(self.current_page)
         self.page.update()
 
-    def show_import_wallet(self):
-        import_page = ImportWalletPage(
-            self,
-            on_back=self.show_previous_page,
-            on_wallet_imported=self.on_wallet_imported
-        )
-        self.current_page = import_page.create()
-        self.show_current_page()
-
-    def show_send_page(self):
-        """Show send page for current wallet with enhanced error handling"""
+    def refresh_wallet_list(self):
+        """Refresh the wallet list after a new wallet is created."""
+        print("DEBUG: refresh_wallet_list called")
         try:
-            print("DEBUG: Entering show_send_page")
-            
-            # Check if wallet is properly unlocked
-            if self.is_locked:
-                print("DEBUG: Wallet is locked, cannot send")
-                self.show_snackbar("Wallet is locked. Please unlock first.", "error")
-                return
-                
-            current_address = None
-            if hasattr(self.wallet_core, 'current_wallet_address'):
-                current_address = self.wallet_core.current_wallet_address
-                print(f"DEBUG: Current wallet address: {current_address}")
-            else:
-                print("DEBUG: No current wallet address found")
-                self.show_snackbar("No wallet selected", "error")
-                return
-                
-            # Check if we have the private key for signing
-            if not hasattr(self.wallet_core, 'private_key') or not self.wallet_core.private_key:
-                print("DEBUG: No private key available - wallet may be locked")
-                self.show_snackbar("Wallet is locked or private key not available", "error")
-                return
-                
-            print("DEBUG: Creating SendPage instance")
-            send_page = SendPage(
-                self,
-                on_back=self.show_previous_page,
-                on_send_complete=self.on_send_complete,
-                from_address=current_address
-            )
-            
-            self.current_page = send_page.create()
-            self.show_current_page()
-            print("DEBUG: Send page displayed successfully")
-            
-        except Exception as e:
-            print(f"DEBUG: Error in show_send_page: {e}")
-            import traceback
-            traceback.print_exc()
-            self.show_snackbar(f"Error opening send page: {str(e)}", "error")
-
-    def show_receive_page(self):
-        """Show receive page for current wallet"""
-        current_address = None
-        if hasattr(self.wallet_core, 'current_wallet_address'):
-            current_address = self.wallet_core.current_wallet_address
-        
-        receive_page = ReceivePage(
-            self, 
-            on_back=self.show_previous_page,
-            wallet_address=current_address  # Pass the current wallet address
-        )
-        self.current_page = receive_page.create()
-        self.show_current_page()
-
-    def show_export_key_page(self):
-        """Show export key page for current wallet"""
-        current_address = None
-        if hasattr(self.wallet_core, 'current_wallet_address'):
-            current_address = self.wallet_core.current_wallet_address
-        
-        export_page = ExportKeyPage(
-            self, 
-            on_back=self.show_previous_page,
-            wallet_address=current_address  # Pass the current wallet address
-        )
-        self.current_page = export_page.create()
-        self.show_current_page()
-
-    def show_settings_page(self):
-        """Show settings page for wallet configuration"""
-        settings_page = SettingsPage(
-            self,
-            on_back=self.show_previous_page
-        )
-        self.current_page = settings_page.create()
-        self.show_current_page()
-
-    def show_previous_page(self):
-        if self.is_locked:
-            wallet_exists = self.wallet_count > 0
-            self.show_lock_page(
-                wallet_exists=wallet_exists,
-                show_create=not wallet_exists
-            )
-        else:
-            self.show_wallet_page()
-
-    def on_send_complete(self):
-        """Handle successful transaction send"""
-        try:
-            print("DEBUG: on_send_complete called - transaction sent successfully")
-            
-            # Go back to wallet page
-            self.show_previous_page()
-            
-            # Refresh wallet data and UI
+            # Return to wallet page and refresh the sidebar
             if hasattr(self, 'wallet_page') and self.wallet_page:
-                self.wallet_page._refresh_sidebar_wallets()
-                self.wallet_page._update_wallet_data_ui_only()
+                # Refresh sidebar wallets
+                if hasattr(self.wallet_page, '_refresh_sidebar_wallets'):
+                    self.wallet_page._refresh_sidebar_wallets()
+                    print("DEBUG: Sidebar wallets refreshed")
             
-            if hasattr(self, 'page'):
-                self.page.update()
-                
+            # Show the wallet page
+            self.show_wallet_page()
         except Exception as e:
-            print(f"DEBUG: Error in on_send_complete: {e}")
+            print(f"DEBUG: Error refreshing wallet list: {e}")
             import traceback
             traceback.print_exc()
-
-    def on_wallet_created(self):
-        """Handle wallet creation success"""
-        try:
-            print("DEBUG: on_wallet_created called - transitioning to wallet page")
-            self.is_locked = False
-            self.last_activity_time = time.time()
-            
-            # CRITICAL: Save wallet immediately after creation
-            print("DEBUG: Saving wallet data after creation...")
-            save_success = self.save_wallet_data(force_save=True)
-            if save_success:
-                print("DEBUG: Wallet data saved successfully after creation")
-                # Create backup for important operation
-                backup_success = self.create_backup()
-                print(f"DEBUG: Backup creation: {backup_success}")
-            else:
-                print("DEBUG: WARNING: Failed to save wallet after creation")
-            
-            # Wallet creation complete - balances will be calculated during blockchain sync
-            # Do not reset balances here - placeholder will show until scan completes
-            
-            # Show success message
-            self.show_snackbar("Wallet created successfully!", "success")
-            
-            # Force immediate transition
-            print("DEBUG: Immediately showing wallet page")
-            self.show_wallet_page()
-            
-            # Sync all wallets to populate balances asynchronously
-            def sync_after_creation():
-                try:
-                    self.scan_all_wallets_for_changes(force_full_scan=True)
-                    print("DEBUG: Background sync completed after wallet creation")
-                except Exception as e:
-                    print(f"DEBUG: Background sync error after creation: {e}")
-            
-            threading.Thread(target=sync_after_creation, daemon=True).start()
-            
-        except Exception as e:
-            print(f"DEBUG: Error in on_wallet_created: {e}")
-            import traceback
-            traceback.print_exc()
-            self.show_snackbar("Wallet created but transition failed", "error")
-            # Force transition anyway
-            self.show_wallet_page()
-
-    def on_wallet_imported(self):
-        """Handle wallet import success"""
-        self.is_locked = False
-        self.last_activity_time = time.time()
-        
-        # Save wallet immediately after import
-        print("DEBUG: Saving wallet data after import...")
-        save_success = self.save_wallet_data(force_save=True)
-        if save_success:
-            print("DEBUG: Wallet data saved after import")
-            # Create backup for important operation
-            self.create_backup()
-        
-        # Update wallet metadata for future sessions
-        # Update wallet metadata for future sessions
-        self._load_wallet_metadata()
-        
-        # Wallet import complete - balances will be calculated during blockchain sync
-        # Do not reset balances here - placeholder will show until scan completes
-        
-        self.show_snackbar("Wallet imported successfully!", "success")
-        self.show_wallet_page()
-        
-        # Sync all wallets to populate balances asynchronously
-        def sync_after_import():
-            try:
-                self.scan_all_wallets_for_changes(force_full_scan=True)
-                print("DEBUG: Background sync completed after wallet import")
-            except Exception as e:
-                print(f"DEBUG: Background sync error after import: {e}")
-        
-        threading.Thread(target=sync_after_import, daemon=True).start()
-    
-    def debug_transaction_parameters(self, to_address, amount, fee=None, memo=None):
-        """Debug transaction parameters before sending"""
-        print("=" * 50)
-        print("DEBUG: Transaction Parameters")
-        print("=" * 50)
-        print(f"From Address: {getattr(self.wallet_core, 'current_wallet_address', 'None')}")
-        print(f"To Address: {to_address}")
-        print(f"Amount: {amount}")
-        print(f"Fee: {fee}")
-        print(f"Memo: {memo}")
-        
-        # Check wallet state
-        print(f"Wallet Locked: {self.is_locked}")
-        print(f"Wallet Core Locked: {getattr(self.wallet_core, 'is_locked', 'Unknown')}")
-        print(f"Private Key Available: {bool(getattr(self.wallet_core, 'private_key', None))}")
-        print(f"Balance: {getattr(self.wallet_core, 'balance', 'Unknown')}")
-        
-        # Check blockchain manager
-        if hasattr(self, 'blockchain_manager'):
-            print(f"Blockchain Endpoint: {getattr(self.blockchain_manager, 'endpoint_url', 'Unknown')}")
-            print(f"Network Connected: {self.blockchain_manager.check_network_connection()}")
-        else:
-            print("Blockchain Manager: Not available")
-        
-        print("=" * 50)
-
-    def lock_wallet(self, wtfisthis):
-        """Lock wallet and save state"""
-        print(wtfisthis)
-        # Stop continuous scan when locking
-        self.continuous_scan_active = False
-        
-        # Save wallet before locking
-        self.save_wallet_data(force_save=True)
-        
-        self.is_locked = True
-        if hasattr(self.wallet_core, 'lock_wallet'):
-            self.wallet_core.lock_wallet()
-        self.show_lock_page(
-            title="Wallet Locked", 
-            subtitle="Please unlock your wallet to continue",
-            wallet_exists=True
-        )
-        self.show_snackbar("Wallet locked", "info")
-
-    def update_wallet_data(self):
-        if hasattr(self, 'wallet_page') and self.wallet_page and hasattr(self.wallet_page, 'update_wallet_data'):
-            self.wallet_page.update_wallet_data()
-
-    def show_snackbar(self, message, message_type="info"):
-        color = {
-            "error": "#dc3545",
-            "success": "#28a745", 
-            "warning": "#ffc107",
-            "info": "#17a2b8"
-        }.get(message_type, "#f8d7da")
-        
-        snack_bar = ft.SnackBar(
-            content=ft.Text(message, color="#ffffff"),
-            bgcolor=color
-        )
-        self.page.overlay.append(snack_bar)
-        snack_bar.open = True
-        self.page.update()
-        
-        def remove_snack():
-            time.sleep(3)
-            if snack_bar in self.page.overlay:
-                self.page.overlay.remove(snack_bar)
-                self.page.update()
-                
-        threading.Thread(target=remove_snack, daemon=True).start()
-
-    def update_refs(self):
-        if hasattr(self, 'page'):
-            self.page.update()
-
-
-    def get_current_time(self):
-        """Helper method to get current time"""
-        import time
-        return time.time()
-
-def main(page: ft.Page):
-    app = LunaWalletApp()
-    app.create_main_ui(page)
 
 if __name__ == "__main__":
-    ft.app(target=main)
+    ft.app(target=LunaWalletApp().create_main_ui)

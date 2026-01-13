@@ -1,5 +1,5 @@
 import flet as ft
-
+import threading
 class LockPage:
     def __init__(self, app, on_unlock, onCreate_wallet, wallet_exists=False, title="Luna Wallet", subtitle="Enter password to unlock...", show_create_option=True):
         self.app = app

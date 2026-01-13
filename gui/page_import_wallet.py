@@ -103,19 +103,32 @@ class ImportWalletPage:
         
         # Import wallet
         try:
-            # First unlock if we have existing wallets
+            # 既存ウォレットがある場合はアンロックを試みる
             if self.app.wallet_core.wallets:
-                if not self.app.wallet_core.unlock_wallet(password):
+                # 既存ウォレットのいずれかのアドレスでアンロック
+                unlocked = False
+                for addr in self.app.wallet_core.wallets:
+                    if self.app.wallet_core.unlock_wallet(addr, password):
+                        unlocked = True
+                        break
+                if not unlocked:
                     self.app.show_snackbar("Invalid password for existing wallet", "error")
                     return
-            
-            # Import the wallet
-            if self.app.wallet_core.import_wallet(private_key, wallet_name):
-                # Save the wallet
+
+            # インポート用wallet_dataを作成
+            wallet_data = {
+                'private_key': private_key,
+                'label': wallet_name,
+                # addressはKeyManager等で自動生成される場合もあるが、必要ならここで生成
+            }
+
+            # lunalibのimport_walletにpasswordを渡す
+            result = self.app.wallet_core.import_wallet(wallet_data, password)
+            if result:
                 self.app.wallet_core.save_wallet(password)
                 self.on_wallet_imported()
             else:
-                self.app.show_snackbar("Failed to import wallet - invalid private key", "error")
-                
+                self.app.show_snackbar("Failed to import wallet - invalid private key or password", "error")
+
         except Exception as ex:
             self.app.show_snackbar(f"Error importing wallet: {str(ex)}", "error")

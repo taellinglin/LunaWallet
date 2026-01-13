@@ -16,7 +16,7 @@ class SendPage:
             width=field_width
         )
         self.amount = ft.TextField(
-            label="💰 Amount (LUNA)", 
+            label="💰 Amount (LKC)", 
             hint_text="0.00", 
             width=field_width
         )
@@ -32,6 +32,13 @@ class SendPage:
             hint_text="Enter your password", 
             width=field_width
         )
+        # サウンド再生用のパス（PyInstaller対応）
+        import sys
+        import os
+        if hasattr(sys, '_MEIPASS'):
+            self.send_sound_path = os.path.join(sys._MEIPASS, "sounds", "send.wav")
+        else:
+            self.send_sound_path = os.path.join("assets", "sounds", "send.wav")
         
 
     def _prepare_wallet_for_sending(self, password):
@@ -137,7 +144,7 @@ class SendPage:
             print(f"DEBUG: {error_msg}")
             return False, error_msg
     def get_available_balance(self):
-        """Get current wallet available balance using unified calculation system"""
+        """Get current wallet available balance from wallet_core or transactions"""
         try:
             if not hasattr(self.app, 'wallet_core') or not self.app.wallet_core:
                 return 0.0
@@ -147,29 +154,63 @@ class SendPage:
             if not wallet_address:
                 return 0.0
             
-            # Use unified balance calculation system
-            try:
-                from lunalib.core.mempool import MempoolManager
-                mempool_manager = MempoolManager()
-            except:
-                mempool_manager = None
+            # First try to get from wallet_core cache
+            if hasattr(self.app.wallet_core, 'wallets') and isinstance(self.app.wallet_core.wallets, dict):
+                wallet_data = self.app.wallet_core.wallets.get(wallet_address, {})
+                confirmed_balance = wallet_data.get('confirmed_balance')
+                
+                if confirmed_balance is not None and confirmed_balance > 0:
+                    print(f"DEBUG SendPage: Using cached balance from wallet_core - {confirmed_balance:.6f} LKC")
+                    return confirmed_balance
             
-            database = self.app.database if hasattr(self.app, 'database') else None
+            # If no cache, calculate from transactions
+            print(f"DEBUG SendPage: Cache miss, calculating balance from transactions...")
+            confirmed_balance = 0.0
+            wallet_addr_lower = wallet_address.lower()
             
-            # Calculate using unified system
-            balances = calculate_wallet_balances(
-                wallet_address,
-                database=database,
-                mempool_manager=mempool_manager
-            )
-            
-            print(f"DEBUG SendPage: Available balance for {wallet_address[:12]}...")
-            print(f"  Available (confirmed): {balances['available']:.6f} LKC")
-            print(f"  Pending: {balances['pending']:.6f} LKC")
-            print(f"  Total: {balances['total']:.6f} LKC")
+            # Get transactions from database
+            if hasattr(self.app, 'database'):
+                try:
+                    # Try to get wallet transactions
+                    if hasattr(self.app.database, 'get_wallet_transactions'):
+                        all_txs = self.app.database.get_wallet_transactions(wallet_address, limit=10000)
+                    elif hasattr(self.app.database, 'get_transactions'):
+                        all_txs = self.app.database.get_transactions(wallet_address)
+                    else:
+                        all_txs = []
+                    
+                    # Calculate balance from transactions
+                    for tx in all_txs:
+                        tx_status = tx.get('status', 'confirmed').lower()
+                        if tx_status != 'confirmed':
+                            continue
+                        
+                        tx_from = tx.get('from', '').lower()
+                        tx_to = tx.get('to', '').lower()
+                        reward_addr = tx.get('reward_address', '').lower()
+                        tx_type = tx.get('type', 'transfer').lower()
+                        amount = float(tx.get('amount', 0))
+                        fee = float(tx.get('fee', 0))
+                        
+                        # Mining reward
+                        if tx_type == 'reward':
+                            if (tx_to == wallet_addr_lower or reward_addr == wallet_addr_lower):
+                                confirmed_balance += amount
+                        # Incoming transfer
+                        elif tx_to == wallet_addr_lower:
+                            confirmed_balance += amount
+                        # Outgoing transfer
+                        elif tx_from == wallet_addr_lower:
+                            confirmed_balance -= (amount + fee)
+                    
+                    confirmed_balance = max(0.0, confirmed_balance)
+                    print(f"DEBUG SendPage: Calculated balance - {confirmed_balance:.6f} LKC from {len(all_txs)} transactions")
+                    
+                except Exception as db_err:
+                    print(f"DEBUG SendPage: Error getting transactions: {db_err}")
             
             # Return available (confirmed) balance
-            return balances['available']
+            return confirmed_balance
             
         except Exception as e:
             print(f"DEBUG: Error getting available balance: {e}")
@@ -270,12 +311,12 @@ class SendPage:
             available_balance = self.get_available_balance()
             if amount > available_balance:
                 self.app.show_snackbar(
-                    f"Insufficient available balance. Available: {available_balance:.6f} LUNA", 
+                    f"Insufficient available balance. Available: {available_balance:.6f} LKC", 
                     "error"
                 )
                 return
             
-            print(f"DEBUG: Sending {amount} LUNA from {wallet.address} to {recipient}")
+            print(f"DEBUG: Sending {amount} LKC from {wallet.address} to {recipient}")
             
             # BYPASS lunalib's send_transaction to avoid _verify_wallet_integrity issues
             # Instead, use TransactionManager directly
@@ -314,13 +355,17 @@ class SendPage:
                     return
                 
                 print(f"[SEND] Transaction broadcast successful: {broadcast_message}")
+                # デバッグ: 送信直後のトランザクション履歴を表示
+                try:
+                    if hasattr(self.app, 'database') and hasattr(wallet, 'address'):
+                        txs = self.app.database.get_wallet_transactions(wallet.address, limit=20)
+                        print(f"[DEBUG] Transactions for {wallet.address} after send:")
+                        for tx in txs:
+                            print(tx)
+                except Exception as e:
+                    print(f"[DEBUG] Could not print transactions: {e}")
                 
-                # Update local balance
-                total_cost = amount + transaction.get('fee', 0)
-                wallet.available_balance -= total_cost
-                if hasattr(wallet, 'wallets') and wallet.address in wallet.wallets:
-                    wallet.wallets[wallet.address]['available_balance'] = wallet.available_balance
-                    wallet.wallets[wallet.address]['balance'] = wallet.available_balance
+                # 残高の手動減算は不要。update_all_wallet_balancesで一元管理。
                 
                 # Transaction sent successfully!
                 print("DEBUG: Transaction sent successfully!")
@@ -383,7 +428,7 @@ class SendPage:
             self.app.show_snackbar(f"Error sending transaction: {str(ex)}", "error")
             
     def create(self):
-        balance = self.get_current_balance()
+        balance = self.get_available_balance()
         
         return ft.Container(
             content=ft.Column([
@@ -399,11 +444,23 @@ class SendPage:
                 ]),
                 ft.Divider(color="#5c2e2e"),
                 
-                # Centered form container with 128px padding
+                # Centered form container - scrollable to fit content
                 ft.Container(
                     content=ft.Column([
                         ft.Text(
-                            f"💰 Available: {balance:.6f} LUNA", 
+                            "💡 Instructions:\n"
+                            "1. Enter the recipient's wallet address\n"
+                            "2. Specify the amount to send\n"
+                            "3. Add an optional memo\n"
+                            "4. Enter your password to confirm\n"
+                            "5. Click Send Transaction",
+                            size=12, 
+                            color="#f8d7da",
+                            weight="normal"
+                        ),
+                        ft.Container(height=20),
+                        ft.Text(
+                            f"💰 Available: {balance:.6f} LKC", 
                             size=16, 
                             color="#90EE90",
                             weight="bold"
@@ -429,9 +486,10 @@ class SendPage:
                         )
                     ], 
                     horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                    spacing=0
+                    spacing=0,
+                    scroll=ft.ScrollMode.AUTO
                     ),
-                    padding=128,  # 128px padding as requested
+                    padding=20,
                     margin=0,
                     bgcolor="#1a0f0f",
                     border_radius=15,

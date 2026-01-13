@@ -14,10 +14,12 @@ requires-python = ">=3.8"
 dependencies = [
     "flet>=0.10.0",
     "qrcode[pil]>=7.4.0",
-    "lunalib>=1.0.0",
+    "lunalib==1.6.6",
     "certifi",
     "pygame>=2.1.0",  # For sound support
-    "pillow>=9.0.0"   # For image processing
+    "pillow>=9.0.0",   # For image processing
+    "pyperclip",
+     "base58",         # Added base58 dependency
 ]
 
 [project.urls]
@@ -37,21 +39,17 @@ icon = "./wallet_icon.ico"
 
 # Include only the essential files
 binaries = []
-datas = []
+datas = [
+    ["assets/sounds/send.wav", "sounds"],
+]
 hiddenimports = [
-    "lunalib",
     "lunalib.core.blockchain",
     "lunalib.core.mempool",
-    "lunalib.transactions",
     "lunalib.transactions.transactions",
-    "lunalib.mining",
-    "lunalib.mining.miner",
-    "lunalib.core",
     "lunalib.core.wallet",
-    "pygame",
+    "playsound",
     "qrcode",
     "PIL",
-    "PIL._imaging",
     "certifi"
 ]
 
@@ -71,3 +69,4 @@ version-file = "version_info.txt"
 # Additional PyInstaller options
 [tool.pyinstaller.windows]
 target_arch = "x64"
+base58 = "*"

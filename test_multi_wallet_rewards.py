@@ -12,6 +12,9 @@ Tests:
 import sys
 import os
 
+# DBパスをグローバルで定義
+USER_DB_PATH = os.path.join(os.path.expanduser("~"), ".luna_wallet", "wallets.db")
+
 # Add workspace to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -24,15 +27,29 @@ def test_iterative_rewards_scanning():
     print("TEST 1: ITERATIVE REWARDS SCANNING")
     print("="*70)
     
-    db = WalletDatabase()
-    all_txs = db.get_all_transactions()
-    
+    db = WalletDatabase(db_path=USER_DB_PATH)
+    # Collect all wallet addresses
+    wallet_addresses = set()
+    # Try to load all wallets from the wallets table
+    try:
+        import sqlite3
+        conn = sqlite3.connect(db.db_path)
+        cursor = conn.cursor()
+        cursor.execute('SELECT address FROM wallets')
+        wallet_addresses = set(row[0] for row in cursor.fetchall())
+        conn.close()
+    except Exception as e:
+        print(f"Could not load wallet addresses: {e}")
+        return False
+
+    all_txs = []
+    for addr in wallet_addresses:
+        all_txs.extend(db.get_wallet_transactions(addr, limit=1000))
+
     print(f"Total transactions in database: {len(all_txs)}")
-    
     # Count rewards
     reward_txs = [tx for tx in all_txs if tx.get('type', '').lower() == 'reward']
     print(f"Total reward transactions: {len(reward_txs)}")
-    
     if len(reward_txs) > 100:
         print(f"✓ Database has {len(reward_txs)} rewards (>100) - iterative scanning is needed")
         return True
@@ -46,19 +63,32 @@ def test_multiple_wallets_rewards():
     print("TEST 2: MULTIPLE WALLETS REWARDS DETECTION")
     print("="*70)
     
-    db = WalletDatabase()
-    all_txs = db.get_all_transactions()
-    
+    db = WalletDatabase(db_path=USER_DB_PATH)
+    # Collect all wallet addresses
+    wallet_addresses = set()
+    try:
+        import sqlite3
+        conn = sqlite3.connect(db.db_path)
+        cursor = conn.cursor()
+        cursor.execute('SELECT address FROM wallets')
+        wallet_addresses = set(row[0] for row in cursor.fetchall())
+        conn.close()
+    except Exception as e:
+        print(f"Could not load wallet addresses: {e}")
+        return False
+
+    all_txs = []
+    for addr in wallet_addresses:
+        all_txs.extend(db.get_wallet_transactions(addr, limit=1000))
+
     # Group transactions by wallet
     wallet_rewards = {}
-    
     for tx in all_txs:
         if tx.get('type', '').lower() == 'reward':
             # Get reward recipients
             reward_addr = tx.get('reward_address', '').lower()
             tx_to = tx.get('to', '').lower()
             tx_from = tx.get('from', '').lower()
-            
             # Determine recipient
             recipient = None
             if reward_addr and reward_addr != '':
@@ -67,14 +97,11 @@ def test_multiple_wallets_rewards():
                 recipient = tx_to
             elif tx_to and tx_from in ['network', '']:
                 recipient = tx_to
-            
             if recipient:
                 if recipient not in wallet_rewards:
                     wallet_rewards[recipient] = []
                 wallet_rewards[recipient].append(tx)
-    
     print(f"Found {len(wallet_rewards)} wallets with reward transactions")
-    
     # Show top wallets by reward count
     sorted_wallets = sorted(wallet_rewards.items(), key=lambda x: len(x[1]), reverse=True)
     
@@ -90,22 +117,21 @@ def test_balance_calculation_consistency():
     print("TEST 3: BALANCE CALCULATION CONSISTENCY")
     print("="*70)
     
-    db = WalletDatabase()
-    all_txs = db.get_all_transactions()
-    
-    # Get unique wallet addresses
+    db = WalletDatabase(db_path=USER_DB_PATH)
+    # Collect all wallet addresses
     wallet_addresses = set()
-    for tx in all_txs:
-        wallet_addresses.add(tx.get('from', '').lower())
-        wallet_addresses.add(tx.get('to', '').lower())
-        wallet_addresses.add(tx.get('reward_address', '').lower())
-    
-    # Remove empty addresses
-    wallet_addresses.discard('')
-    wallet_addresses.discard('network')
-    
+    try:
+        import sqlite3
+        conn = sqlite3.connect(db.db_path)
+        cursor = conn.cursor()
+        cursor.execute('SELECT address FROM wallets')
+        wallet_addresses = set(row[0] for row in cursor.fetchall())
+        conn.close()
+    except Exception as e:
+        print(f"Could not load wallet addresses: {e}")
+        return False
+
     print(f"Testing {len(wallet_addresses)} unique wallets")
-    
     # Test balance calculation for top wallets
     test_count = 0
     for wallet_addr in list(wallet_addresses)[:10]:
@@ -115,13 +141,11 @@ def test_balance_calculation_consistency():
                 database=db,
                 mempool_manager=None
             )
-            
             if balances['available'] > 0:
                 test_count += 1
                 print(f"  ✓ {wallet_addr[:16]}...: {balances['available']:.6f} available + {balances['pending']:.6f} pending = {balances['total']:.6f} total")
         except Exception as e:
             print(f"  ✗ {wallet_addr[:16]}...: Error - {e}")
-    
     print(f"Successfully calculated balances for {test_count} wallets")
     return test_count > 0
 
@@ -164,27 +188,38 @@ def test_transaction_type_diversity():
     print("TEST 5: TRANSACTION TYPE DIVERSITY")
     print("="*70)
     
-    db = WalletDatabase()
-    all_txs = db.get_all_transactions()
-    
+    db = WalletDatabase(db_path=USER_DB_PATH)
+    # Collect all wallet addresses
+    wallet_addresses = set()
+    try:
+        import sqlite3
+        conn = sqlite3.connect(db.db_path)
+        cursor = conn.cursor()
+        cursor.execute('SELECT address FROM wallets')
+        wallet_addresses = set(row[0] for row in cursor.fetchall())
+        conn.close()
+    except Exception as e:
+        print(f"Could not load wallet addresses: {e}")
+        return False
+
+    all_txs = []
+    for addr in wallet_addresses:
+        all_txs.extend(db.get_wallet_transactions(addr, limit=1000))
+
     # Count transaction types
     tx_types = {}
     for tx in all_txs:
         tx_type = tx.get('type', 'unknown').lower()
         tx_types[tx_type] = tx_types.get(tx_type, 0) + 1
-    
     print(f"Found {len(tx_types)} different transaction types:")
     for tx_type, count in sorted(tx_types.items(), key=lambda x: x[1], reverse=True):
         print(f"  - {tx_type}: {count} transactions")
-    
     # Verify we support all types
     supported_types = ['reward', 'transfer', 'fee_distribution', 'stake', 'delegate', 'send', 'receive', 'gtx_genesis']
     found_types = set(tx_types.keys()) & set(supported_types)
-    
     print(f"\nSupported types found: {len(found_types)}")
     for tx_type in found_types:
         print(f"  ✓ {tx_type}")
-    
     return True
 
 def main():
