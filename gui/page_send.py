@@ -349,6 +349,14 @@ class SendPage:
                     return
                 
                 print(f"[SEND] Transaction broadcast successful: {broadcast_message}")
+                
+                # Play send sound notification
+                if hasattr(self.app, 'sound_manager') and self.app.sound_manager:
+                    print("DEBUG: Calling sound_manager.play_send_sound() from page_send")
+                    self.app.sound_manager.play_send_sound()
+                else:
+                    print("DEBUG: sound_manager not available in page_send")
+                
                 # デバッグ: 送信直後のトランザクション履歴を表示
                 try:
                     if hasattr(self.app, 'database') and hasattr(wallet, 'address'):

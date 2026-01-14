@@ -9,3 +9,4 @@ pystray
 lunalib==1.8.2
 pyperclip
 base58
+pygame

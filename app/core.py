@@ -122,6 +122,14 @@ class LunaWalletApp:
         self.wallet_core = self.wallet_service.core
         self.blockchain_manager = self.blockchain_service.manager
         self.mempool_manager = self.mempool_service.manager
+        
+        # Initialize sound manager
+        try:
+            from app.sound_manager import SoundManager
+            self.sound_manager = SoundManager()
+        except Exception as e:
+            print(f"DEBUG: Failed to initialize SoundManager: {e}")
+            self.sound_manager = None
 
         # Initialize database
         try:
@@ -900,6 +908,12 @@ class LunaWalletApp:
     def on_send_transaction(self):
         """Handle send transaction action"""
         print("DEBUG: on_send_transaction called")
+        # Play send sound notification
+        if self.sound_manager:
+            print("DEBUG: Calling sound_manager.play_send_sound()")
+            self.sound_manager.play_send_sound()
+        else:
+            print("DEBUG: sound_manager is None")
         try:
             send_page = SendPage(
                 self,
@@ -1297,6 +1311,12 @@ class LunaWalletApp:
                                     if check_wallet.lower() == tx_to:
                                         self.database.save_transaction(tx, check_wallet)
                                         print(f"  → Saved incoming transfer to: {check_wallet[:12]}...")
+                                        # Play incoming transaction sound
+                                        if self.sound_manager:
+                                            print(f"DEBUG: Playing transaction sound for incoming transfer")
+                                            self.sound_manager.play_transaction_sound()
+                                        else:
+                                            print(f"DEBUG: sound_manager is None, cannot play sound")
                                         break
                         
                     # Update balance incrementally
@@ -1379,6 +1399,12 @@ class LunaWalletApp:
                                         if check_wallet.lower() == tx_to:
                                             self.database.save_transaction(tx, check_wallet)
                                             print(f"  → Saved incoming transfer to: {check_wallet[:12]}...")
+                                            # Play incoming transaction sound
+                                            if self.sound_manager:
+                                                print(f"DEBUG: Playing transaction sound for incoming transfer")
+                                                self.sound_manager.play_transaction_sound()
+                                            else:
+                                                print(f"DEBUG: sound_manager is None, cannot play sound")
                                             break
                         
                         # Update balance incrementally
