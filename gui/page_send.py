@@ -1,5 +1,6 @@
 import flet as ft
 from utils import calculate_wallet_balances
+import requests
 
 class SendPage:
     def __init__(self, app, on_back, on_send_complete, from_address=None):
@@ -255,6 +256,68 @@ class SendPage:
         
         print("=" * 50)
         return True
+    
+    def _test_endpoint_connectivity(self, endpoint):
+        """Test if mempool endpoint is reachable and responsive"""
+        from app.core import _global_trace
+        try:
+            _global_trace(f"ENDPOINT TEST - Testing: {endpoint}", "SEND")
+            
+            # Test simple GET request to endpoint
+            response = requests.head(endpoint, timeout=5, verify=True)
+            _global_trace(f"ENDPOINT TEST - Status Code: {response.status_code}", "SEND")
+            
+            if response.status_code == 200 or response.status_code == 405:  # 405 = Method Not Allowed (OK for HEAD)
+                _global_trace(f"ENDPOINT TEST - Endpoint is reachable", "SEND")
+                return True
+            else:
+                _global_trace(f"ENDPOINT TEST - Unexpected status: {response.status_code}", "SEND_ERROR")
+                return False
+        except Exception as conn_err:
+            _global_trace(f"ENDPOINT TEST - Connection error: {str(conn_err)}", "SEND_ERROR")
+            import traceback
+            _global_trace(f"ENDPOINT TEST - Traceback: {traceback.format_exc()[:300]}", "SEND_ERROR")
+            return False
+    
+    def _test_direct_http_request(self, endpoint, tx_data):
+        """Test sending transaction data directly via HTTP to the correct mempool endpoint"""
+        from app.core import _global_trace
+        import json
+        try:
+            # Use the correct mempool/add endpoint
+            url = f"{endpoint}/mempool/add"
+            _global_trace(f"DIRECT HTTP TEST - POST to {url}", "SEND")
+            
+            headers = {'Content-Type': 'application/json'}
+            
+            # Send transaction to mempool
+            response = requests.post(
+                url,
+                json=tx_data,
+                headers=headers,
+                timeout=10,
+                verify=True
+            )
+            _global_trace(f"DIRECT HTTP TEST - Status: {response.status_code}", "SEND")
+            
+            # Check if response is JSON
+            if response.headers.get('content-type', '').startswith('application/json'):
+                try:
+                    resp_json = response.json()
+                    _global_trace(f"DIRECT HTTP TEST - Response: {json.dumps(resp_json)[:200]}", "SEND")
+                    return True, response.status_code, response.text
+                except:
+                    _global_trace(f"DIRECT HTTP TEST - Could not parse JSON: {response.text[:100]}", "SEND_ERROR")
+                    return False, response.status_code, response.text
+            else:
+                _global_trace(f"DIRECT HTTP TEST - Non-JSON response (type: {response.headers.get('content-type')})", "SEND_ERROR")
+                return False, response.status_code, response.text
+        except Exception as req_err:
+            _global_trace(f"DIRECT HTTP TEST - Failed: {str(req_err)}", "SEND_ERROR")
+            import traceback
+            _global_trace(f"DIRECT HTTP TEST - Traceback: {traceback.format_exc()[:400]}", "SEND_ERROR")
+            return False, None, str(req_err)
+    
     def send_transaction(self, e):
         """Send transaction using the updated LunaWallet system"""
         print("DEBUG: Send transaction initiated")
@@ -310,16 +373,57 @@ class SendPage:
                 )
                 return
             
+            # Validate recipient address format
+            if not recipient or len(recipient) < 20:
+                from app.core import _global_trace
+                _global_trace(f"RECIPIENT VALIDATION - INVALID: {recipient}, Length: {len(recipient) if recipient else 0}", "SEND_ERROR")
+                self.app.show_snackbar("Invalid recipient address format", "error")
+                return
+            
+            if not recipient.startswith("LUN_"):
+                from app.core import _global_trace
+                _global_trace(f"RECIPIENT VALIDATION - INVALID PREFIX: {recipient}", "SEND_ERROR")
+                self.app.show_snackbar("Recipient address must start with 'LUN_'", "error")
+                return
+            
             print(f"DEBUG: Sending {amount} LKC from {wallet.address} to {recipient}")
+            
+            # Log current wallet state before sending
+            from app.core import _global_trace
+            try:
+                # Try to get UTXO info if available
+                if hasattr(wallet, 'get_balance'):
+                    balances = wallet.get_balance()
+                    _global_trace(f"WALLET STATE - Confirmed: {balances.get('confirmed', 0)}, Pending: {balances.get('pending', 0)}", "SEND")
+                if hasattr(wallet, 'get_utxos'):
+                    utxos = wallet.get_utxos()
+                    _global_trace(f"WALLET UTXOS - Count: {len(utxos) if utxos else 0}", "SEND")
+            except Exception as state_err:
+                _global_trace(f"WALLET STATE ERROR - {str(state_err)}", "SEND")
             
             # BYPASS lunalib's send_transaction to avoid _verify_wallet_integrity issues
             # Instead, use TransactionManager directly
             try:
                 from lunalib.transactions.transactions import TransactionManager
-                tx_manager = TransactionManager(network_endpoints=["https://bank.linglin.art"])
+                
+                # Log network endpoint information
+                from app.core import _global_trace
+                # Use the base URL only - TransactionManager will append the path
+                network_endpoints = ["https://bank.linglin.art"]
+                mempool_url = "https://bank.linglin.art/mempool/add"
+                _global_trace(f"NETWORK - Using base endpoint: {network_endpoints[0]}, Mempool: {mempool_url}, Environment: {'BUILD' if hasattr(self.app, 'is_build_version') else 'DEV'}", "SEND")
+                
+                # Test endpoint connectivity before creating transaction
+                self._test_endpoint_connectivity(network_endpoints[0])
+                
+                tx_manager = TransactionManager(network_endpoints=network_endpoints)
                 
                 # Create transaction
                 print("[SEND] Creating transaction...")
+                
+                # Log detailed transaction parameters
+                _global_trace(f"SEND DETAILS - From: {wallet.address}, To: {recipient}, Amount: {amount}, Memo: {memo}", "SEND")
+                
                 transaction = tx_manager.create_transaction(
                     from_address=wallet.address,
                     to_address=recipient,
@@ -330,34 +434,110 @@ class SendPage:
                 )
                 
                 print(f"[SEND] Transaction created")
+                # Log transaction hash and type
+                tx_hash = transaction.get('hash', 'unknown')
+                tx_fee = transaction.get('fee', 0)
+                tx_type = transaction.get('type', 'transfer')
+                
+                # Log complete transaction structure for debugging
+                import json as json_module
+                try:
+                    tx_json = json_module.dumps(transaction, default=str, indent=2)
+                    _global_trace(f"TX OBJECT: {tx_json[:200]}...", "SEND")  # Log first 200 chars
+                except Exception as json_err:
+                    _global_trace(f"TX OBJECT: {str(transaction)[:200]}...", "SEND")
+                
+                _global_trace(f"TX Hash: {tx_hash}, Type: {tx_type}, Fee: {tx_fee}", "SEND")
                 
                 # Validate transaction
                 is_valid, message = tx_manager.validate_transaction(transaction)
                 if not is_valid:
                     print(f"[SEND] Validation failed: {message}")
+                    _global_trace(f"VALIDATION ERROR - {message} - TX: {tx_hash}", "SEND_ERROR")
+                    _global_trace(f"VALIDATION ERROR DETAILS - Recipient: {recipient}, From: {wallet.address}, Amount: {amount}", "SEND_ERROR")
                     self.app.show_snackbar(f"Transaction validation failed: {message}", "error")
                     return
                 
                 print("[SEND] Transaction validated")
+                _global_trace(f"VALIDATION OK - TX: {tx_hash}, Recipient: {recipient}", "SEND")
                 
-                # Broadcast transaction
+                # DIAGNOSTIC: Test direct HTTP call to verify mempool endpoint works
+                _global_trace(f"DIAGNOSTIC - Testing direct HTTP to mempool endpoint", "SEND")
+                direct_ok, direct_status, direct_resp = self._test_direct_http_request("https://bank.linglin.art", transaction)
+                _global_trace(f"DIAGNOSTIC - Direct HTTP Result: OK={direct_ok}, Status={direct_status}", "SEND")
+                
+                # Broadcast transaction - try lunalib first, fallback to direct HTTP if it fails
                 print("[SEND] Broadcasting transaction...")
                 try:
+                    # Log transaction inputs for mempool debugging
+                    _global_trace(f"PRE-BROADCAST - Wallet Balance Available: {available_balance}, TX Amount + Fee: {amount + tx_fee}", "SEND")
+                    
+                    # Try using TransactionManager's send_transaction first
+                    _global_trace(f"BROADCAST - Attempting via TransactionManager", "SEND")
                     success, broadcast_message = tx_manager.send_transaction(transaction)
-                    print(f"[SEND] Broadcast result: success={success}, message={broadcast_message}")
+                    print(f"[SEND] TransactionManager result: success={success}, message={broadcast_message}")
+                    
+                    # If TransactionManager fails, fall back to direct HTTP
+                    if not success:
+                        _global_trace(f"BROADCAST - TransactionManager failed, falling back to direct HTTP", "SEND")
+                        print("[SEND] Falling back to direct HTTP POST...")
+                        
+                        import json as json_module
+                        url = "https://bank.linglin.art/mempool/add"
+                        headers = {'Content-Type': 'application/json'}
+                        
+                        _global_trace(f"BROADCAST - Direct HTTP POST to {url}", "SEND")
+                        response = requests.post(
+                            url,
+                            json=transaction,
+                            headers=headers,
+                            timeout=10,
+                            verify=True
+                        )
+                        
+                        _global_trace(f"BROADCAST - Direct HTTP Response Status: {response.status_code}", "SEND")
+                        
+                        # Check if successful
+                        if response.status_code == 201 or response.status_code == 200:
+                            try:
+                                resp_data = response.json()
+                                if resp_data.get('success'):
+                                    success = True
+                                    broadcast_message = f"Transaction added to mempool: {resp_data.get('transaction_hash', tx_hash)[:20]}"
+                                    _global_trace(f"BROADCAST - Direct HTTP Success: {json_module.dumps(resp_data)[:200]}", "SEND")
+                                else:
+                                    broadcast_message = resp_data.get('message', 'Unknown error')
+                            except:
+                                broadcast_message = response.text
+                        else:
+                            try:
+                                resp_data = response.json()
+                                broadcast_message = resp_data.get('error', response.text)
+                            except:
+                                broadcast_message = f"HTTP {response.status_code}: {response.text[:100]}"
+                    
+                    print(f"[SEND] Final broadcast result: success={success}, message={broadcast_message}")
+                    
+                    if not success:
+                        _global_trace(f"BROADCAST FAILED - Error: {broadcast_message}", "SEND_ERROR")
+                        _global_trace(f"BROADCAST FAILED DETAILS - TX Hash: {tx_hash}, Recipient: {recipient}, Amount: {amount}, Fee: {tx_fee}", "SEND_ERROR")
+                        self.app.show_snackbar(f"Failed to broadcast: {broadcast_message}", "error")
+                        return
+                    else:
+                        _global_trace(f"BROADCAST SUCCESS - TX: {tx_hash}, Message: {broadcast_message}", "SEND")
+                    
                 except Exception as broadcast_err:
                     print(f"[SEND] Broadcast exception: {broadcast_err}")
                     import traceback
+                    tb_str = traceback.format_exc()
+                    _global_trace(f"BROADCAST EXCEPTION - {str(broadcast_err)}", "SEND_ERROR")
+                    _global_trace(f"BROADCAST TRACEBACK - {tb_str[:500]}", "SEND_ERROR")
                     traceback.print_exc()
                     self.app.show_snackbar(f"Broadcast error: {str(broadcast_err)}", "error")
                     return
                 
-                if not success:
-                    print(f"[SEND] Broadcast failed: {broadcast_message}")
-                    self.app.show_snackbar(f"Failed to broadcast: {broadcast_message}", "error")
-                    return
-                
                 print(f"[SEND] Broadcast successful")
+                _global_trace(f"BROADCAST SUCCESS - TX: {tx_hash}, Message: {broadcast_message}", "SEND")
                 
                 # デバッグ: 送信直後のトランザクション履歴を表示
                 try:
@@ -479,7 +659,7 @@ class SendPage:
                         self.password,
                         ft.Container(height=30),
                         ft.ElevatedButton(
-                            "🚀 Send Transaction", 
+                            "📨 Send Transaction", 
                             on_click=self.send_transaction,
                             style=ft.ButtonStyle(
                                 color="#ffffff", 

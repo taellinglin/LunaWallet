@@ -64,6 +64,17 @@ class WalletPage:
             import time
             time.sleep(0.5)  # Short delay to ensure wallet data is ready
             self.hide_loading()
+            
+            # After data is loaded, refresh sidebar with correct balances
+            def refresh_sidebar_after_load():
+                try:
+                    self._refresh_sidebar_wallets()
+                    if hasattr(self.app, 'page') and self.app.page:
+                        self.app.page.update()
+                except Exception as e:
+                    print(f"DEBUG: Error refreshing sidebar after load: {e}")
+            
+            threading.Thread(target=refresh_sidebar_after_load, daemon=True).start()
         
         threading.Thread(target=auto_hide_loading, daemon=True).start()
         
@@ -263,8 +274,8 @@ class WalletPage:
     def _save_wallets(self):
         """Save wallets to a JSON file."""
         try:
-            with open(self.WALLET_STORAGE_FILE, "w") as f:
-                json.dump(self.wallets, f, indent=4)
+            with open(self.WALLET_STORAGE_FILE, "w", encoding='utf-8') as f:
+                json.dump(self.wallets, f, indent=4, ensure_ascii=False)
             print("DEBUG: Wallets saved successfully.")
         except Exception as e:
             print(f"ERROR: Failed to save wallets: {e}")

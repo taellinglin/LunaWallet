@@ -96,6 +96,46 @@ def _safe_print(*args, **kwargs):
             # Last resort: just skip the print
             pass
 
+# Network diagnostics for troubleshooting build/dev environment issues
+def diagnose_network():
+    """Log network configuration and SSL settings for debugging"""
+    try:
+        import sys
+        import urllib.parse
+        
+        timestamp = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+        home = os.path.expanduser('~')
+        log_dir = os.path.join(home, 'LunaWallet_Logs')
+        os.makedirs(log_dir, exist_ok=True)
+        log_path = os.path.join(log_dir, 'unlock_trace.log')
+        
+        # Get environment info
+        is_frozen = getattr(sys, 'frozen', False)
+        env_type = "BUILD (frozen)" if is_frozen else "DEV (not frozen)"
+        
+        with open(log_path, 'a', encoding='utf-8') as f:
+            f.write(f"[{timestamp}] [NETWORK_DIAG] Environment: {env_type}\n")
+            f.write(f"[{timestamp}] [NETWORK_DIAG] Python: {sys.version}\n")
+            f.write(f"[{timestamp}] [NETWORK_DIAG] Platform: {sys.platform}\n")
+            
+            # Check SSL verification
+            try:
+                import ssl
+                f.write(f"[{timestamp}] [NETWORK_DIAG] SSL Protocol: {ssl.OPENSSL_VERSION}\n")
+            except Exception as e:
+                f.write(f"[{timestamp}] [NETWORK_DIAG] SSL Error: {e}\n")
+            
+            # Check requests session
+            try:
+                session = requests.Session()
+                f.write(f"[{timestamp}] [NETWORK_DIAG] Requests version: {requests.__version__}\n")
+                f.write(f"[{timestamp}] [NETWORK_DIAG] Requests verify SSL: True (default)\n")
+            except Exception as e:
+                f.write(f"[{timestamp}] [NETWORK_DIAG] Requests Error: {e}\n")
+    except Exception as diag_err:
+        # Silently fail
+        pass
+
 # Ensure cache directory exists
 cache_dir = Path.home() / "AppData" / "Local" / "lunalib" / "cache"
 cache_dir.mkdir(parents=True, exist_ok=True)
@@ -118,7 +158,7 @@ def setup_cache_directory():
                 
                 # Test if we can create a file in this directory
                 test_file = cache_dir / "test_write.tmp"
-                with open(test_file, 'w') as f:
+                with open(test_file, 'w', encoding='utf-8') as f:
                     f.write("test")
                 os.remove(test_file)
                 
@@ -155,6 +195,9 @@ class LunaWalletApp:
     """Luna Wallet Application with Red Theme - Responsive Mobile Support"""
 
     def __init__(self):
+        # Run network diagnostics on startup
+        diagnose_network()
+        
         # Initialize debug logger first
         try:
             from app.debug_logger import debug_log, get_logger
@@ -1164,9 +1207,7 @@ class LunaWalletApp:
                 for wallet_address in self.wallet_core.wallets.keys():
                     unlock_success = self.wallet_core.unlock_wallet(wallet_address, password)
                     if unlock_success:
-                        print(f"[UNLOCK] Successfully unlocked: {wallet_address}")
-                        
-                        # Ensure balance fields exist
+                                    # Ensure balance fields exist
                         wallet_obj = self.wallet_core.wallets.get(wallet_address)
                         if wallet_obj:
                             for field in ['available_balance', 'confirmed_balance', 'pending_balance', 'balance']:
@@ -1178,63 +1219,42 @@ class LunaWalletApp:
                         success = True
                         break
             
-            print(f"[UNLOCK] Unlock result: {success}")
-            
             # Hide loading
-            print("[UNLOCK] Hiding loading indicator")
             if hasattr(self, 'current_lock_page') and self.current_lock_page:
                 self.current_lock_page.hide_loading()
             
             if success:
-                print("[UNLOCK] Unlock successful!")
+                print("[UNLOCK] Wallet unlocked successfully")
+                _global_trace("Wallet unlocked successfully", "UNLOCK")
                 self.is_locked = False
                 
                 # Save wallet state
-                print("[UNLOCK] Saving wallet state")
                 self.save_wallet_data(force_save=True)
-                _trace("[UNLOCK] Wallet state saved to database")
+                _global_trace("Wallet state saved", "UNLOCK")
                 
                 # Show success message
-                print("[UNLOCK] Showing success snackbar")
                 self.show_snackbar("Wallet unlocked successfully", "success")
                 
                 # Clear lock page reference
-                print("[UNLOCK] Clearing lock page reference")
                 self.current_lock_page = None
                 
-                # Directly transition to wallet page on the UI thread
-                print("[UNLOCK] Transitioning to wallet page directly")
-                _trace("[UNLOCK] calling show_wallet_page directly")
+                # Transition to wallet page
                 try:
                     self.show_wallet_page()
-                    _trace("[UNLOCK] show_wallet_page returned")
+                    _global_trace("Wallet page displayed", "UNLOCK")
                 except Exception as page_error:
-                    _trace(f"[UNLOCK] show_wallet_page failed: {page_error}")
-                    print(f"[UNLOCK] CRITICAL: show_wallet_page() failed: {page_error}")
+                    print(f"[UNLOCK] show_wallet_page() failed: {page_error}")
+                    _global_trace(f"Wallet page failed: {page_error}", "UNLOCK_ERROR")
                     import traceback
                     traceback.print_exc()
                     raise
 
-                # Extra update after page add
+                # Update page
                 if hasattr(self, 'page') and self.page:
                     try:
                         self.page.update()
-                        _trace("[UNLOCK] page.update after show_wallet_page")
                     except Exception as upd_err:
-                        _trace(f"[UNLOCK] page.update failed: {upd_err}")
                         print(f"[UNLOCK] page.update failed: {upd_err}")
-                else:
-                    _trace("[UNLOCK] page missing after show_wallet_page")
-                # Start blockchain sync separately (DISABLED FOR DEBUGGING)
-                print("[UNLOCK] Skipping blockchain sync for now (testing)")
-                # def deferred_sync():
-                #     import time
-                #     time.sleep(1)
-                #     print("[UNLOCK] Starting blockchain scan...")
-                #     self.start_blockchain_sync()
-                # 
-                # import threading
-                # threading.Thread(target=deferred_sync, daemon=True).start()
             else:
                 print("[UNLOCK] Unlock failed - wrong password")
                 self.show_snackbar("Failed to unlock wallet - wrong password", "error")
@@ -1250,53 +1270,31 @@ class LunaWalletApp:
     def start_blockchain_sync(self):
         """Start blockchain synchronization for all wallets"""
         try:
-            print("DEBUG: Starting blockchain sync for all wallets...")
-            _global_trace("BLOCKCHAIN_SYNC: Starting sync for all wallets", "BLOCKCHAIN")
-
             def sync_thread():
                 """Synchronize blockchain for all wallets using lunalib."""
                 try:
-                    _global_trace("BLOCKCHAIN_SYNC: Sync thread started", "BLOCKCHAIN")
-                    print("DEBUG: Starting blockchain sync using lunalib...")
-
                     # Perform a full blockchain scan using lunalib
                     if hasattr(self.blockchain_manager, 'scan_for_updates'):
-                        _global_trace("BLOCKCHAIN_SYNC: Using scan_for_updates", "BLOCKCHAIN")
                         self.blockchain_manager.scan_for_updates()
-                        _global_trace("BLOCKCHAIN_SYNC: scan_for_updates completed", "BLOCKCHAIN")
-                        print("DEBUG: Blockchain sync completed using lunalib.")
                     else:
                         # Fallback: scan transactions for all wallets
-                        _global_trace("BLOCKCHAIN_SYNC: Using fallback scan method", "BLOCKCHAIN")
                         if hasattr(self.wallet_core, 'wallets'):
                             for wallet_addr in self.wallet_core.wallets.keys():
-                                _global_trace(f"BLOCKCHAIN_SYNC: Scanning wallet {wallet_addr[:12]}...", "BLOCKCHAIN")
-                                txs = self.blockchain_manager.scan_transactions_for_address(wallet_addr)
-                                _global_trace(f"BLOCKCHAIN_SYNC: Found {len(txs)} txs for {wallet_addr[:12]}", "BLOCKCHAIN")
-                                print(f"DEBUG: Scanned {len(txs)} transactions for {wallet_addr[:12]}...")
-                        _global_trace("BLOCKCHAIN_SYNC: Fallback scan completed", "BLOCKCHAIN")
-                        print("DEBUG: Blockchain sync completed using fallback method.")
+                                self.blockchain_manager.scan_transactions_for_address(wallet_addr)
 
                     # Start continuous background monitoring
-                    _global_trace("BLOCKCHAIN_SYNC: Starting continuous monitoring", "BLOCKCHAIN")
-                    print("DEBUG: Starting continuous background monitoring...")
                     if hasattr(self.blockchain_manager, 'start_continuous_scan'):
                         self.blockchain_manager.start_continuous_scan()
-                        _global_trace("BLOCKCHAIN_SYNC: Continuous scan started", "BLOCKCHAIN")
                     else:
                         self.start_continuous_blockchain_scan()
-                        _global_trace("BLOCKCHAIN_SYNC: Fallback continuous scan started", "BLOCKCHAIN")
 
                 except Exception as e:
-                    _global_trace(f"BLOCKCHAIN_SYNC: Error in sync thread: {e}", "BLOCKCHAIN_ERROR")
-                    print(f"DEBUG: Blockchain sync error: {e}")
+                    print(f"[BLOCKCHAIN] Sync error: {e}")
 
             threading.Thread(target=sync_thread, daemon=True).start()
-            _global_trace("BLOCKCHAIN_SYNC: Sync thread launched", "BLOCKCHAIN")
 
         except Exception as e:
-            _global_trace(f"BLOCKCHAIN_SYNC: Error starting sync: {e}", "BLOCKCHAIN_ERROR")
-            print(f"DEBUG: Error starting blockchain sync: {e}")
+            print(f"[BLOCKCHAIN] Error starting sync: {e}")
 
 
     def show_create_wallet(self):

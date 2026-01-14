@@ -1506,7 +1506,7 @@ if __name__ == "__main__":
         def enhanced_scan(address: str, start_height: int = 0, end_height: int = None) -> List[Dict]:
             """Enhanced scan that properly finds both incoming and outgoing transactions"""
             try:
-                print(f"\n🚀 ENHANCED SCAN for {address}")
+                print(f"\n[ENHANCED SCAN] for {address}")
                 print("=" * 60)
                 
                 # First get the original scan results
