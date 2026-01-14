@@ -211,31 +211,14 @@ if __name__ == "__main__":
         """Load wallet metadata using lunalib's SQLite backend (no password required)"""
         print("DEBUG: _load_wallet_metadata called")
         try:
-            print(f"DEBUG: Calling get_wallet_index on wallet_core: {self.wallet_core}")
-            wallet_index = self.wallet_core.get_wallet_index()
-            print(f"DEBUG: wallet_index result: {wallet_index}")
-            self.wallet_count = len(wallet_index)
-            self.existing_wallet_address = wallet_index[0]["address"] if wallet_index else None
-            print(f"DEBUG: Found {self.wallet_count} wallets (lunalib SQLite), first address: {self.existing_wallet_address}")
+            if hasattr(self.wallet_core, "get_wallet_index"):
+                wallet_index = self.wallet_core.get_wallet_index()
+                count = len(wallet_index) if wallet_index else 0
+                print(f"DEBUG: _load_wallet_metadata found {count} wallets")
+                return bool(wallet_index)
         except Exception as e:
-            print(f"DEBUG: Error loading wallet metadata (lunalib SQLite): {e}")
-            import traceback
-            traceback.print_exc()
-            self.wallet_count = 0
-            self.existing_wallet_address = None
-
-    def _get_wallet_file_path(self):
-        """Get the path for wallet database file (SQLite)"""
-        data_dir = self._get_data_directory()
-        wallet_file = os.path.join(data_dir, "wallets.db")
-        return wallet_file
-
-    def _get_backup_path(self, backup_id):
-        """Get path for backup file"""
-        data_dir = self._get_data_directory()
-        backup_dir = os.path.join(data_dir, "backups")
-        os.makedirs(backup_dir, exist_ok=True)
-        return os.path.join(backup_dir, f"wallet_backup_{backup_id}.json")
+            print(f"DEBUG: _load_wallet_metadata error: {e}")
+        return False
 
     def _ensure_data_directory(self):
         """Ensure data directory exists"""
@@ -584,7 +567,22 @@ if __name__ == "__main__":
         """Display the main wallet page with all wallets and transactions"""
         try:
             print("DEBUG: show_wallet_page called")
-            
+
+            # Simple file logger for builds with no console
+            def _trace(msg: str):
+                try:
+                    home = os.path.expanduser('~')
+                    log_dir = os.path.join(home, 'LunaWallet_Logs')
+                    os.makedirs(log_dir, exist_ok=True)
+                    log_path = os.path.join(log_dir, 'unlock_trace.log')
+                    with open(log_path, 'a', encoding='utf-8') as f:
+                        f.write(msg + "\n")
+                except Exception:
+                    pass
+
+            self.show_snackbar("Loading wallet page...", "info")
+            _trace("[WALLET_PAGE] begin create")
+
             # Create the wallet page with all necessary callbacks
             wallet_page = WalletPage(
                 app=self,
@@ -601,14 +599,52 @@ if __name__ == "__main__":
             self.wallet_page = wallet_page
             
             # Set as current page
-            self.current_page = wallet_page.create()
+            try:
+                self.current_page = wallet_page.create()
+                _trace("[WALLET_PAGE] create succeeded")
+                self.show_snackbar("Wallet page created", "success")
+            except Exception as create_err:
+                _trace(f"[WALLET_PAGE] create failed: {create_err}")
+                self.show_snackbar(f"Wallet page error: {create_err}", "error")
+                raise
             
             # Clear page controls and display
-            self.page.controls.clear()
-            self.page.add(self.current_page)
-            self.page.update()
+            if hasattr(self, 'page') and self.page:
+                try:
+                    _trace(f"[WALLET_PAGE] controls before clear: {len(self.page.controls)}")
+                except Exception:
+                    pass
+                # Clear both controls and overlay to avoid stale lock UI
+                try:
+                    self.page.clean()
+                    _trace("[WALLET_PAGE] page.clean() called")
+                except Exception:
+                    self.page.controls.clear()
+                    _trace("[WALLET_PAGE] page.controls.clear() fallback")
+                try:
+                    _trace(f"[WALLET_PAGE] controls after clear: {len(self.page.controls)}")
+                except Exception:
+                    _trace("[WALLET_PAGE] page controls cleared")
+            else:
+                _trace("[WALLET_PAGE] page missing; cannot clear")
+
+            if hasattr(self, 'page') and self.page:
+                try:
+                    _trace(f"[WALLET_PAGE] adding control type: {type(self.current_page)}")
+                except Exception:
+                    pass
+                self.page.add(self.current_page)
+                self.page.update()
+                try:
+                    _trace(f"[WALLET_PAGE] controls after add: {len(self.page.controls)}")
+                except Exception:
+                    pass
+                _trace("[WALLET_PAGE] page updated")
+            else:
+                _trace("[WALLET_PAGE] page missing; add/update skipped")
             
             print("DEBUG: Wallet page displayed successfully")
+            _trace("[WALLET_PAGE] displayed")
         except Exception as e:
             print(f"DEBUG: Error showing wallet page: {e}")
             import traceback
@@ -757,14 +793,29 @@ if __name__ == "__main__":
                 print(f"DEBUG: unlock_wallet result: {result}")
                 success = result.get("success", False)
                 def update_ui():
+                    # File trace for builds
+                    def _trace(msg: str):
+                        try:
+                            home = os.path.expanduser('~')
+                            log_dir = os.path.join(home, 'LunaWallet_Logs')
+                            os.makedirs(log_dir, exist_ok=True)
+                            log_path = os.path.join(log_dir, 'unlock_trace.log')
+                            with open(log_path, 'a', encoding='utf-8') as f:
+                                f.write(msg + "\n")
+                        except Exception:
+                            pass
+                    _trace("[UNLOCK] update_ui entered")
                     if success:
                         print("DEBUG: Unlock successful - transitioning to wallet page")
                         self.is_locked = False
                         self.last_activity_time = time.time()
                         self.show_snackbar("Wallet unlocked successfully", "success")
                         try:
+                            _trace("[UNLOCK] calling show_wallet_page")
                             self.show_wallet_page()
+                            _trace("[UNLOCK] show_wallet_page returned")
                         except Exception as wallet_page_error:
+                            _trace(f"[UNLOCK] show_wallet_page failed: {wallet_page_error}")
                             print(f"DEBUG: Error showing wallet page: {wallet_page_error}")
                             import traceback
                             traceback.print_exc()
@@ -772,6 +823,19 @@ if __name__ == "__main__":
                             if hasattr(self, 'current_lock_page') and self.current_lock_page:
                                 self.current_lock_page.hide_loading()
                             return
+                        try:
+                            if hasattr(self, 'page') and self.page:
+                                self.page.update()
+                                try:
+                                    _trace(f"[UNLOCK] page controls after update: {len(self.page.controls)}")
+                                except Exception:
+                                    pass
+                                _trace("[UNLOCK] page.update after show_wallet_page")
+                            else:
+                                _trace("[UNLOCK] page missing after show_wallet_page")
+                        except Exception as upd_err:
+                            _trace(f"[UNLOCK] page.update failed: {upd_err}")
+                            print(f"DEBUG: page.update failed: {upd_err}")
                         try:
                             self.start_blockchain_sync()
                         except Exception as sync_error:

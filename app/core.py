@@ -53,6 +53,49 @@ import os
 import sqlite3
 from pathlib import Path
 
+# Global trace logger for builds
+def _global_trace(msg: str, category: str = "INFO"):
+    """Global file logger for all build diagnostics"""
+    try:
+        home = os.path.expanduser('~')
+        log_dir = os.path.join(home, 'LunaWallet_Logs')
+        os.makedirs(log_dir, exist_ok=True)
+        log_path = os.path.join(log_dir, 'unlock_trace.log')
+        with open(log_path, 'a', encoding='utf-8') as f:
+            timestamp = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+            # Sanitize message to avoid encoding errors
+            try:
+                safe_msg = msg.encode('utf-8', errors='replace').decode('utf-8')
+            except Exception:
+                safe_msg = str(msg)
+            f.write(f"[{timestamp}] [{category}] {safe_msg}\n")
+    except Exception as log_err:
+        # Silently fail - don't let logging crash the app
+        try:
+            print(f"[LOG_ERROR] Failed to write trace log: {log_err}")
+        except Exception:
+            pass
+
+# Safe print wrapper to avoid encoding errors on Windows
+def _safe_print(*args, **kwargs):
+    """Print wrapper that sanitizes output to avoid encoding errors"""
+    try:
+        # Try normal print first
+        print(*args, **kwargs)
+    except UnicodeEncodeError:
+        # If encoding fails, sanitize and try again
+        try:
+            sanitized = []
+            for arg in args:
+                if isinstance(arg, str):
+                    sanitized.append(arg.encode('utf-8', errors='replace').decode('utf-8'))
+                else:
+                    sanitized.append(str(arg))
+            print(*sanitized, **kwargs)
+        except Exception:
+            # Last resort: just skip the print
+            pass
+
 # Ensure cache directory exists
 cache_dir = Path.home() / "AppData" / "Local" / "lunalib" / "cache"
 cache_dir.mkdir(parents=True, exist_ok=True)
@@ -112,6 +155,17 @@ class LunaWalletApp:
     """Luna Wallet Application with Red Theme - Responsive Mobile Support"""
 
     def __init__(self):
+        # Initialize debug logger first
+        try:
+            from app.debug_logger import debug_log, get_logger
+            self.debug_logger = get_logger()
+            debug_log("=" * 60)
+            debug_log("LunaWallet Application Starting")
+            debug_log("=" * 60)
+        except Exception as e:
+            print(f"DEBUG: Failed to initialize debug logger: {e}")
+            self.debug_logger = None
+        
         self._patch_lunalib_cache()
         # Use services instead of direct lunalib
         self.wallet_service = WalletService()
@@ -206,11 +260,18 @@ class LunaWalletApp:
             message: The message to display
             message_type: Type of message - "success" (green), "error" (red), "info" (blue)
         """
-        print(f"[SNACKBAR] show_snackbar() called - message_type: {message_type}, message: {message}")
+        try:
+            print(f"[SNACKBAR] show_snackbar() called - message_type: {message_type}, message: {message}")
+        except Exception:
+            # Silently handle encoding errors in print
+            print(f"[SNACKBAR] show_snackbar() called - message_type: {message_type}")
 
         if not hasattr(self, 'page') or not self.page:
             print(f"[SNACKBAR] No page available - printing to console")
-            print(f"Snackbar: {message_type.upper()}: {message}")
+            try:
+                print(f"Snackbar: {message_type.upper()}: {message}")
+            except Exception:
+                print(f"Snackbar: {message_type.upper()}")
             return
 
         # Color mapping for different message types
@@ -268,7 +329,7 @@ class LunaWalletApp:
                 print(f"[SNACKBAR] Adding to page.overlay")
                 self.page.overlay.append(notification_wrapper)
                 self.page.update()
-                print(f"[SNACKBAR] ✅ Notification panel displayed successfully at bottom")
+                print(f"[SNACKBAR] Notification panel displayed successfully at bottom")
 
                 # Auto-remove after 3.5 seconds if not closed manually
                 def auto_close():
@@ -283,13 +344,16 @@ class LunaWalletApp:
 
                 threading.Thread(target=auto_close, daemon=True).start()
             else:
-                print(f"[SNACKBAR] ❌ page.overlay not available")
+                print(f"[SNACKBAR] page.overlay not available")
 
         except Exception as e:
-            print(f"[SNACKBAR] ❌ Error showing notification: {e}")
+            print(f"[SNACKBAR] Error showing notification: {e}")
             import traceback
             traceback.print_exc()
-            print(f"[SNACKBAR] Fallback: {message_type.upper()}: {message}")
+            try:
+                print(f"[SNACKBAR] Fallback: {message_type.upper()}: {message}")
+            except Exception:
+                print(f"[SNACKBAR] Fallback: {message_type.upper()}")
 
     def _close_notification(self, notification):
         """Close a notification container"""
@@ -862,7 +926,7 @@ class LunaWalletApp:
     def show_wallet_page(self):
         """Display the main wallet page with all wallets and transactions"""
         try:
-            print("DEBUG: show_wallet_page called")
+            print("[WALLET_PAGE] showing wallet page...")
 
             # Create the wallet page with all necessary callbacks
             wallet_page = WalletPage(
@@ -880,18 +944,42 @@ class LunaWalletApp:
             self.wallet_page = wallet_page
 
             # Set as current page
-            self.current_page = wallet_page.create()
+            try:
+                self.current_page = wallet_page.create()
+                self.show_snackbar("Wallet loaded", "success")
+            except Exception as create_err:
+                print(f"[WALLET_PAGE] create FAILED: {create_err}")
+                import traceback
+                traceback.print_exc()
+                self.show_snackbar(f"Error loading wallet: {create_err}", "error")
+                return
 
             # Clear page controls and display
-            self.page.controls.clear()
-            self.page.add(self.current_page)
-            self.page.update()
-
-            print("DEBUG: Wallet page displayed successfully")
+            if hasattr(self, 'page') and self.page:
+                # Clear both controls and overlay
+                try:
+                    self.page.clean()
+                except Exception:
+                    self.page.controls.clear()
+                if hasattr(self.page, 'overlay'):
+                    self.page.overlay.clear()
+            
+            if hasattr(self, 'page') and self.page:
+                self.page.add(self.current_page)
+                # Force UI refresh
+                self.page.update()
+                try:
+                    self.page.update()
+                except Exception:
+                    pass
+            
+            print("[WALLET_PAGE] wallet page displayed")
+            
         except Exception as e:
-            print(f"DEBUG: Error showing wallet page: {e}")
+            print(f"[WALLET_PAGE] ERROR: {e}")
             import traceback
             traceback.print_exc()
+            raise
 
     def lock_wallet(self):
         """Lock the wallet and return to lock screen"""
@@ -908,12 +996,6 @@ class LunaWalletApp:
     def on_send_transaction(self):
         """Handle send transaction action"""
         print("DEBUG: on_send_transaction called")
-        # Play send sound notification
-        if self.sound_manager:
-            print("DEBUG: Calling sound_manager.play_send_sound()")
-            self.sound_manager.play_send_sound()
-        else:
-            print("DEBUG: sound_manager is None")
         try:
             send_page = SendPage(
                 self,
@@ -1045,163 +1127,177 @@ class LunaWalletApp:
 
     def unlock_wallet(self, password):
         """Unlock existing wallet with password using LunaWallet core methods"""
-        def unlock_thread():
-            try:
-                print("DEBUG: Starting unlock process...")
-                print(f"DEBUG: Password length: {len(password)}")
+        try:
+            print("[UNLOCK] Starting unlock process...")
 
-                success = False
+            def _trace(msg: str):
+                try:
+                    home = os.path.expanduser('~')
+                    log_dir = os.path.join(home, 'LunaWallet_Logs')
+                    os.makedirs(log_dir, exist_ok=True)
+                    log_path = os.path.join(log_dir, 'unlock_trace.log')
+                    with open(log_path, 'a', encoding='utf-8') as f:
+                        f.write(msg + "\n")
+                except Exception:
+                    pass
+            
+            # Show loading immediately
+            if hasattr(self, 'current_lock_page') and self.current_lock_page:
+                self.current_lock_page.show_loading()
+            
+            # Do the actual unlock work
+            print("[UNLOCK] Loading wallet data from database...")
+            load_success = self.load_wallet_data()
+            
+            if not load_success:
+                print("[UNLOCK] Failed to load wallet data")
+                self.show_snackbar("Failed to load wallet data", "error")
+                if hasattr(self, 'current_lock_page') and self.current_lock_page:
+                    self.current_lock_page.hide_loading()
+                return
+            
+            print("[UNLOCK] Attempting to unlock with core method...")
+            success = False
+            
+            # Try to unlock each wallet
+            if hasattr(self.wallet_core, 'wallets') and self.wallet_core.wallets:
+                for wallet_address in self.wallet_core.wallets.keys():
+                    unlock_success = self.wallet_core.unlock_wallet(wallet_address, password)
+                    if unlock_success:
+                        print(f"[UNLOCK] Successfully unlocked: {wallet_address}")
+                        
+                        # Ensure balance fields exist
+                        wallet_obj = self.wallet_core.wallets.get(wallet_address)
+                        if wallet_obj:
+                            for field in ['available_balance', 'confirmed_balance', 'pending_balance', 'balance']:
+                                if field not in wallet_obj:
+                                    wallet_obj[field] = 0.0
+                        
+                        # Switch to wallet
+                        self.wallet_core.switch_wallet(wallet_address)
+                        success = True
+                        break
+            
+            print(f"[UNLOCK] Unlock result: {success}")
+            
+            # Hide loading
+            print("[UNLOCK] Hiding loading indicator")
+            if hasattr(self, 'current_lock_page') and self.current_lock_page:
+                self.current_lock_page.hide_loading()
+            
+            if success:
+                print("[UNLOCK] Unlock successful!")
+                self.is_locked = False
+                
+                # Save wallet state
+                print("[UNLOCK] Saving wallet state")
+                self.save_wallet_data(force_save=True)
+                _trace("[UNLOCK] Wallet state saved to database")
+                
+                # Show success message
+                print("[UNLOCK] Showing success snackbar")
+                self.show_snackbar("Wallet unlocked successfully", "success")
+                
+                # Clear lock page reference
+                print("[UNLOCK] Clearing lock page reference")
+                self.current_lock_page = None
+                
+                # Directly transition to wallet page on the UI thread
+                print("[UNLOCK] Transitioning to wallet page directly")
+                _trace("[UNLOCK] calling show_wallet_page directly")
+                try:
+                    self.show_wallet_page()
+                    _trace("[UNLOCK] show_wallet_page returned")
+                except Exception as page_error:
+                    _trace(f"[UNLOCK] show_wallet_page failed: {page_error}")
+                    print(f"[UNLOCK] CRITICAL: show_wallet_page() failed: {page_error}")
+                    import traceback
+                    traceback.print_exc()
+                    raise
 
-                # Load wallet data from persistence first
-                print("DEBUG: Loading wallet data from database...")
-                load_success = self.load_wallet_data()
-                print(f"DEBUG: Wallet data load result: {load_success}")
-
-                if not load_success:
-                    print("DEBUG: Failed to load wallet data from database")
-                    def show_load_error():
-                        self.show_snackbar("Failed to load wallet data from database", "error")
-                        if hasattr(self, 'current_lock_page') and self.current_lock_page:
-                            self.current_lock_page.hide_loading()
-                    self.page.run_thread(show_load_error)
-                    return
-
-                # Check if we have wallets in the core
-                if hasattr(self.wallet_core, 'wallets') and self.wallet_core.wallets:
-                    print(f"DEBUG: Found {len(self.wallet_core.wallets)} wallets in core")
-
-                    # Try to unlock each wallet using the core's unlock_wallet method
-                    for wallet_address in self.wallet_core.wallets.keys():
-                        try:
-                            print(f"DEBUG: Attempting to unlock wallet: {wallet_address}")
-
-                            # Use LunaWallet's unlock_wallet method
-                            unlock_success = self.wallet_core.unlock_wallet(wallet_address, password)
-
-                            if unlock_success:
-                                print(f"DEBUG: SUCCESS! Unlocked wallet: {wallet_address}")
-
-                                # Ensure wallet object has balance fields before switching
-                                wallet_obj = self.wallet_core.wallets.get(wallet_address)
-                                if wallet_obj:
-                                    if 'available_balance' not in wallet_obj:
-                                        wallet_obj['available_balance'] = 0.0
-                                    if 'confirmed_balance' not in wallet_obj:
-                                        wallet_obj['confirmed_balance'] = 0.0
-                                    if 'pending_balance' not in wallet_obj:
-                                        wallet_obj['pending_balance'] = 0.0
-                                    if 'balance' not in wallet_obj:
-                                        wallet_obj['balance'] = 0.0
-                                    
-                                    # Ensure private_key is available for switch_wallet
-                                    if 'private_key' not in wallet_obj and hasattr(self.wallet_core, 'private_key'):
-                                        wallet_obj['private_key'] = self.wallet_core.private_key
-
-                                # Switch to this wallet to make it current
-                                switch_success = self.wallet_core.switch_wallet(wallet_address)
-                                if switch_success:
-                                    print(f"DEBUG: Successfully switched to wallet: {wallet_address}")
-                                else:
-                                    print(f"DEBUG: Failed to switch to wallet: {wallet_address}")
-
-                                success = True
-                                break
-                            else:
-                                print(f"DEBUG: Failed to unlock wallet: {wallet_address}")
-
-                        except Exception as wallet_error:
-                            print(f"DEBUG: Error unlocking wallet {wallet_address}: {wallet_error}")
-                            import traceback
-                            traceback.print_exc()
-                            continue
-
-                # Fallback: Try to load from file directly if core methods didn't work
-                if not success:
-                    print("DEBUG: Core unlock failed, no JSON fallback available")
-                    # JSON file support removed - only database loading supported
-
-                print(f"DEBUG: Final unlock result: {success}")
-
-                def update_ui():
-                    if success:
-                        print("DEBUG: Unlock successful - transitioning to wallet page")
-                        self.is_locked = False
-                        self.last_activity_time = time.time()
-                        self.show_snackbar("Wallet unlocked successfully", "success")
-
-                        # Verify the wallet state
-                        if hasattr(self.wallet_core, 'is_locked'):
-                            print(f"DEBUG: Core is_locked: {self.wallet_core.is_locked}")
-                        if hasattr(self.wallet_core, 'private_key') and self.wallet_core.private_key:
-                            print("DEBUG: Private key is available in core")
-                        if hasattr(self.wallet_core, 'current_wallet_address'):
-                            print(f"DEBUG: Current wallet address: {self.wallet_core.current_wallet_address}")
-
-                        # Save wallet state after successful unlock
-                        save_success = self.save_wallet_data(force_save=True)
-                        if save_success:
-                            print("DEBUG: Wallet state saved after unlock")
-
-                        self.show_wallet_page()
-                        # Start blockchain sync
-                        self.start_blockchain_sync()
-                    else:
-                        print("DEBUG: Unlock failed - showing error")
-                        self.show_snackbar("Failed to unlock wallet - wrong password", "error")
-                        if hasattr(self, 'current_lock_page') and self.current_lock_page:
-                            self.current_lock_page.hide_loading()
-                        # Keep the lock screen visible for retry
-
-                self.page.run_thread(update_ui)
-
-            except Exception as e:
-                print(f"DEBUG: Unlock error: {e}")
-                import traceback
-                traceback.print_exc()
-                def show_error():
-                    self.show_snackbar(f"Unlock error: {str(e)}", "error")
-                    if hasattr(self, 'current_lock_page') and self.current_lock_page:
-                        self.current_lock_page.hide_loading()
-                self.page.run_thread(show_error)
-
-        threading.Thread(target=unlock_thread, daemon=True).start()
+                # Extra update after page add
+                if hasattr(self, 'page') and self.page:
+                    try:
+                        self.page.update()
+                        _trace("[UNLOCK] page.update after show_wallet_page")
+                    except Exception as upd_err:
+                        _trace(f"[UNLOCK] page.update failed: {upd_err}")
+                        print(f"[UNLOCK] page.update failed: {upd_err}")
+                else:
+                    _trace("[UNLOCK] page missing after show_wallet_page")
+                # Start blockchain sync separately (DISABLED FOR DEBUGGING)
+                print("[UNLOCK] Skipping blockchain sync for now (testing)")
+                # def deferred_sync():
+                #     import time
+                #     time.sleep(1)
+                #     print("[UNLOCK] Starting blockchain scan...")
+                #     self.start_blockchain_sync()
+                # 
+                # import threading
+                # threading.Thread(target=deferred_sync, daemon=True).start()
+            else:
+                print("[UNLOCK] Unlock failed - wrong password")
+                self.show_snackbar("Failed to unlock wallet - wrong password", "error")
+        
+        except Exception as e:
+            print(f"[UNLOCK] ERROR: {e}")
+            import traceback
+            traceback.print_exc()
+            self.show_snackbar(f"Unlock error: {str(e)}", "error")
+            if hasattr(self, 'current_lock_page') and self.current_lock_page:
+                self.current_lock_page.hide_loading()
 
     def start_blockchain_sync(self):
         """Start blockchain synchronization for all wallets"""
         try:
             print("DEBUG: Starting blockchain sync for all wallets...")
+            _global_trace("BLOCKCHAIN_SYNC: Starting sync for all wallets", "BLOCKCHAIN")
 
             def sync_thread():
                 """Synchronize blockchain for all wallets using lunalib."""
                 try:
+                    _global_trace("BLOCKCHAIN_SYNC: Sync thread started", "BLOCKCHAIN")
                     print("DEBUG: Starting blockchain sync using lunalib...")
 
                     # Perform a full blockchain scan using lunalib
                     if hasattr(self.blockchain_manager, 'scan_for_updates'):
+                        _global_trace("BLOCKCHAIN_SYNC: Using scan_for_updates", "BLOCKCHAIN")
                         self.blockchain_manager.scan_for_updates()
+                        _global_trace("BLOCKCHAIN_SYNC: scan_for_updates completed", "BLOCKCHAIN")
                         print("DEBUG: Blockchain sync completed using lunalib.")
                     else:
                         # Fallback: scan transactions for all wallets
+                        _global_trace("BLOCKCHAIN_SYNC: Using fallback scan method", "BLOCKCHAIN")
                         if hasattr(self.wallet_core, 'wallets'):
                             for wallet_addr in self.wallet_core.wallets.keys():
+                                _global_trace(f"BLOCKCHAIN_SYNC: Scanning wallet {wallet_addr[:12]}...", "BLOCKCHAIN")
                                 txs = self.blockchain_manager.scan_transactions_for_address(wallet_addr)
+                                _global_trace(f"BLOCKCHAIN_SYNC: Found {len(txs)} txs for {wallet_addr[:12]}", "BLOCKCHAIN")
                                 print(f"DEBUG: Scanned {len(txs)} transactions for {wallet_addr[:12]}...")
+                        _global_trace("BLOCKCHAIN_SYNC: Fallback scan completed", "BLOCKCHAIN")
                         print("DEBUG: Blockchain sync completed using fallback method.")
 
                     # Start continuous background monitoring
+                    _global_trace("BLOCKCHAIN_SYNC: Starting continuous monitoring", "BLOCKCHAIN")
                     print("DEBUG: Starting continuous background monitoring...")
                     if hasattr(self.blockchain_manager, 'start_continuous_scan'):
                         self.blockchain_manager.start_continuous_scan()
+                        _global_trace("BLOCKCHAIN_SYNC: Continuous scan started", "BLOCKCHAIN")
                     else:
                         self.start_continuous_blockchain_scan()
+                        _global_trace("BLOCKCHAIN_SYNC: Fallback continuous scan started", "BLOCKCHAIN")
 
                 except Exception as e:
+                    _global_trace(f"BLOCKCHAIN_SYNC: Error in sync thread: {e}", "BLOCKCHAIN_ERROR")
                     print(f"DEBUG: Blockchain sync error: {e}")
 
             threading.Thread(target=sync_thread, daemon=True).start()
+            _global_trace("BLOCKCHAIN_SYNC: Sync thread launched", "BLOCKCHAIN")
 
         except Exception as e:
+            _global_trace(f"BLOCKCHAIN_SYNC: Error starting sync: {e}", "BLOCKCHAIN_ERROR")
             print(f"DEBUG: Error starting blockchain sync: {e}")
+
 
     def show_create_wallet(self):
         """Display the wallet creation page or dialog."""
@@ -1413,12 +1509,12 @@ class LunaWalletApp:
                         # Count by type
                         if tx_type == 'reward':
                             wallet_txs_count[wallet_addr]['reward'] += 1
-                            print(f"  🎁 Reward: {tx.get('amount')} LKC @ block {block_height}")
+                            _safe_print(f"  [REWARD] {tx.get('amount')} LKC @ block {block_height}")
                         elif tx_type == 'fee_distribution':
                             wallet_txs_count[wallet_addr]['other'] += 1
                         else:
                             wallet_txs_count[wallet_addr]['transfer'] += 1
-                            print(f"  Found transaction in block {block_height} for {wallet_addr[:12]}...")
+                            _safe_print(f"  [TXN] Found transaction in block {block_height} for {wallet_addr[:12]}...")
             
             # Print summary
             if new_transactions_found:

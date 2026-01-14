@@ -21,6 +21,7 @@ dependencies = [
     "pyperclip",
      "base58",         # Added base58 dependency
      "tqdm",
+     "rich"
 ]
 
 [project.urls]

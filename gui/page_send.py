@@ -319,7 +319,7 @@ class SendPage:
                 tx_manager = TransactionManager(network_endpoints=["https://bank.linglin.art"])
                 
                 # Create transaction
-                print("[SEND] Creating transaction with TransactionManager...")
+                print("[SEND] Creating transaction...")
                 transaction = tx_manager.create_transaction(
                     from_address=wallet.address,
                     to_address=recipient,
@@ -329,7 +329,7 @@ class SendPage:
                     transaction_type="transfer"
                 )
                 
-                print(f"[SEND] Transaction created: {transaction.get('hash', 'no_hash')[:16]}...")
+                print(f"[SEND] Transaction created")
                 
                 # Validate transaction
                 is_valid, message = tx_manager.validate_transaction(transaction)
@@ -338,24 +338,26 @@ class SendPage:
                     self.app.show_snackbar(f"Transaction validation failed: {message}", "error")
                     return
                 
-                print("[SEND] Transaction validated successfully")
+                print("[SEND] Transaction validated")
                 
                 # Broadcast transaction
-                success, broadcast_message = tx_manager.send_transaction(transaction)
+                print("[SEND] Broadcasting transaction...")
+                try:
+                    success, broadcast_message = tx_manager.send_transaction(transaction)
+                    print(f"[SEND] Broadcast result: success={success}, message={broadcast_message}")
+                except Exception as broadcast_err:
+                    print(f"[SEND] Broadcast exception: {broadcast_err}")
+                    import traceback
+                    traceback.print_exc()
+                    self.app.show_snackbar(f"Broadcast error: {str(broadcast_err)}", "error")
+                    return
                 
                 if not success:
                     print(f"[SEND] Broadcast failed: {broadcast_message}")
                     self.app.show_snackbar(f"Failed to broadcast: {broadcast_message}", "error")
                     return
                 
-                print(f"[SEND] Transaction broadcast successful: {broadcast_message}")
-                
-                # Play send sound notification
-                if hasattr(self.app, 'sound_manager') and self.app.sound_manager:
-                    print("DEBUG: Calling sound_manager.play_send_sound() from page_send")
-                    self.app.sound_manager.play_send_sound()
-                else:
-                    print("DEBUG: sound_manager not available in page_send")
+                print(f"[SEND] Broadcast successful")
                 
                 # デバッグ: 送信直後のトランザクション履歴を表示
                 try:

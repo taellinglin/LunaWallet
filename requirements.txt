@@ -11,3 +11,4 @@ pyperclip
 base58
 pygame
 tqdm
+rich

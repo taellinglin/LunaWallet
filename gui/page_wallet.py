@@ -9,6 +9,23 @@ from utils import calculate_wallet_balances
 import json
 import os
 
+# Safe print wrapper to handle encoding errors
+def _safe_print(*args, **kwargs):
+    """Print wrapper that sanitizes output to avoid encoding errors"""
+    try:
+        print(*args, **kwargs)
+    except UnicodeEncodeError:
+        try:
+            sanitized = []
+            for arg in args:
+                if isinstance(arg, str):
+                    sanitized.append(arg.encode('utf-8', errors='replace').decode('utf-8'))
+                else:
+                    sanitized.append(str(arg))
+            print(*sanitized, **kwargs)
+        except Exception:
+            pass
+
 class WalletPage:
     def __init__(self, app, on_send, on_receive, on_export_key, on_lock, on_create_wallet, on_import_wallet, on_settings):
         self.app = app
@@ -417,21 +434,21 @@ class WalletPage:
                 if tx_type == 'reward':
                     if (tx_to == wallet_addr_lower or reward_addr == wallet_addr_lower):
                         confirmed_balance += amount
-                        print(f"  ✓ Reward: +{amount}")
+                        _safe_print(f"  [REWARD] +{amount}")
                 # Fee distribution (mining reward variant)
                 elif tx_type == 'fee_distribution':
                     recipient_addr = tx.get('recipient', '').lower()
                     if (tx_to == wallet_addr_lower or reward_addr == wallet_addr_lower or recipient_addr == wallet_addr_lower):
                         confirmed_balance += amount
-                        print(f"  ✓ Fee distribution: +{amount}")
+                        _safe_print(f"  [FEE_DIST] +{amount}")
                 # Incoming transfer
                 elif tx_to == wallet_addr_lower:
                     confirmed_balance += amount
-                    print(f"  ✓ Transfer in: +{amount}")
+                    _safe_print(f"  [TRANSFER_IN] +{amount}")
                 # Outgoing transfer
                 elif tx_from == wallet_addr_lower:
                     confirmed_balance -= (amount + fee)
-                    print(f"  ✓ Transfer out: -{amount} - {fee} fee")
+                    _safe_print(f"  [TRANSFER_OUT] -{amount} - {fee} fee")
             
             # Calculate pending balance
             for tx in pending_txs:
