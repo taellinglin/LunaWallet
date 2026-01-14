@@ -20,6 +20,7 @@ dependencies = [
     "pillow>=9.0.0",   # For image processing
     "pyperclip",
      "base58",         # Added base58 dependency
+     "tqdm",
 ]
 
 [project.urls]
