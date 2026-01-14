@@ -1265,7 +1265,7 @@ class LunaWalletApp:
             
             # Use new batch method: scan_transactions_for_addresses(addresses: List[str])
             # Returns Dict[str, List[Dict]] where keys are addresses
-            print(f"✓ Using batch scan_transactions_for_addresses() for {len(wallet_addresses)} wallets")
+            print(f"[OK] Using batch scan_transactions_for_addresses() for {len(wallet_addresses)} wallets")
             all_transactions = self.blockchain_manager.scan_transactions_for_addresses(wallet_addresses)
                 
             # Process transactions for each wallet
