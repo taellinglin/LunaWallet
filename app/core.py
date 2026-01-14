@@ -1786,29 +1786,34 @@ class LunaWalletApp:
                 print(f">>> UI REFRESH STARTING (on main thread)")
                 
                 if hasattr(self, 'wallet_page') and self.wallet_page:
-                    # FIRST: Update sidebar balances
-                    print(f">>> [1] Refreshing sidebar wallets...")
+                    # FIRST: Update all sidebar wallet balances
+                    print(f">>> [1] Updating all sidebar wallet balances...")
+                    if hasattr(self.wallet_page, 'update_all_sidebar_wallets_after_scan'):
+                        self.wallet_page.update_all_sidebar_wallets_after_scan()
+                    
+                    # SECOND: Refresh sidebar structure
+                    print(f">>> [2] Refreshing sidebar wallets structure...")
                     if hasattr(self.wallet_page, '_refresh_sidebar_wallets'):
                         self.wallet_page._refresh_sidebar_wallets()
                     
-                    # SECOND: Update active wallet's balance card
-                    print(f">>> [2] Recalculating balance from all transactions...")
+                    # THIRD: Update active wallet's balance card
+                    print(f">>> [3] Recalculating balance from all transactions...")
                     if hasattr(self.wallet_page, 'recalculate_wallet_balances'):
                         if hasattr(self.wallet_core, 'current_wallet_address'):
                             self.wallet_page.recalculate_wallet_balances(self.wallet_core.current_wallet_address)
                     
-                    print(f">>> [3] Updating balance card...")
+                    print(f">>> [4] Updating balance card...")
                     if hasattr(self.wallet_page, '_update_wallet_data_ui_only'):
                         self.wallet_page._update_wallet_data_ui_only()
                 
-                print(f">>> [4] Updating transaction history...")
+                print(f">>> [5] Updating transaction history...")
                 if hasattr(self.wallet_page, 'refresh_transaction_history'):
                     try:
                         self.wallet_page.refresh_transaction_history()
                     except Exception as e:
                         print(f"DEBUG: Error refreshing transaction history: {e}")
                 
-                print(f">>> [5] Calling page.update()...")
+                print(f">>> [6] Calling page.update()...")
                 self.page.update()
                 
                 print(f">>> UI REFRESH COMPLETE\n")

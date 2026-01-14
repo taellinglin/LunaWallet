@@ -387,6 +387,43 @@ class WalletPage:
             import traceback
             traceback.print_exc()
     
+    def update_all_sidebar_wallets_after_scan(self):
+        """Update all sidebar wallet balances after scan (as if clicking each wallet)"""
+        try:
+            print("\n>>> Updating all sidebar wallet balances after scan...")
+            
+            if 'sidebar_wallets_list' not in self.refs:
+                print("DEBUG: sidebar_wallets_list ref not found")
+                return
+            
+            sidebar_list = self.refs['sidebar_wallets_list'].current
+            if not sidebar_list:
+                print("DEBUG: sidebar_list is None")
+                return
+            
+            # Update each wallet in sidebar with fresh balances
+            for wallet_item in sidebar_list.controls:
+                try:
+                    if hasattr(wallet_item, 'data') and isinstance(wallet_item.data, dict):
+                        wallet_address = wallet_item.data.get('address')
+                        if wallet_address:
+                            # Get fresh balances for this wallet (recalculate from transactions)
+                            confirmed_balance, pending_balance = self._get_wallet_balances(wallet_address)
+                            
+                            # Update the sidebar item display
+                            self._update_sidebar_wallet_display(wallet_item, confirmed_balance, pending_balance)
+                            
+                            print(f"✓ Updated {wallet_address[:12]}... in sidebar: {confirmed_balance:.6f} LKC")
+                except Exception as e:
+                    print(f"DEBUG: Error updating individual wallet in sidebar: {e}")
+            
+            print(">>> All sidebar wallets updated\n")
+            
+        except Exception as e:
+            print(f"DEBUG: Error in update_all_sidebar_wallets_after_scan: {e}")
+            import traceback
+            traceback.print_exc()
+    
     def _calculate_balance_from_transactions(self, wallet_address):
         """Calculate balance from loaded transaction history"""
         try:
