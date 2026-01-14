@@ -83,7 +83,7 @@ class LockPage:
                     fit="contain",
                     error_content=ft.Icon(ft.Icons.ACCOUNT_BALANCE_WALLET, size=80, color="#dc3545")
                 ),
-                margin=ft.margin.only(bottom=20)
+                margin=ft.margin.Margin.only(bottom=20)
             ),
                 
             ft.Text(self.title, size=32, weight="bold", color="#f8d7da"),

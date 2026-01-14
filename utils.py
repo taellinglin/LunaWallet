@@ -111,9 +111,10 @@ def _calculate_confirmed_balance(wallet_address: str, database) -> float:
         
         # Process each confirmed transaction
         for tx in wallet_txs:
-            tx_from = tx.get('from', '').lower()
-            tx_to = tx.get('to', '').lower()
-            tx_type = tx.get('type', 'transfer').lower()
+            # Handle both field name formats
+            tx_from = tx.get('from', tx.get('from_address', '')).lower()
+            tx_to = tx.get('to', tx.get('to_address', '')).lower()
+            tx_type = tx.get('type', tx.get('tx_type', 'transfer')).lower()
             tx_amount = float(tx.get('amount', 0))
             tx_fee = float(tx.get('fee', 0))
             tx_status = tx.get('status', 'confirmed').lower()
@@ -702,3 +703,12 @@ def register_as_peer(self, my_address: str = None, my_port: int = None) -> bool:
     except Exception as e:
         print(f"[DEBUG] Peer registration skipped: {e}")
         return False
+
+# Additional utilities
+def format_balance(amount):
+    return f"{float(amount):,.6f} LKC"
+
+def format_address(address):
+    return address[:6] + "..." + address[-6:] if address else ""
+
+# 他にも必要なフォーマット関数や共通処理をここに追加

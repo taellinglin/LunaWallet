@@ -58,6 +58,21 @@ class CreateWalletPage:
             ),
             width=200
         )
+        # Progress indicator（必ず__init__で初期化）
+        self.progress_indicator = ft.ProgressRing(
+            color="#dc3545",
+            visible=False,
+            width=20,
+            height=20
+        )
+
+    def _on_back(self):
+        # 既存ウォレットがあればwalletページへ、なければロック画面へ
+        self.app.load_wallet_data()
+        if self.app.wallet_core.wallets:
+            self.app.show_wallet_page()
+        else:
+            self.app.show_lock_page()
         
         # Progress indicator
         self.progress_indicator = ft.ProgressRing(
@@ -75,7 +90,7 @@ class CreateWalletPage:
                     content=ft.IconButton(
                         icon=ft.Icons.ARROW_BACK,
                         icon_color="#f8d7da",
-                        on_click=lambda e: self.on_back(),
+                        on_click=lambda e: self._on_back(),
                     ),
                     alignment=ft.Alignment(-1, -1),
                     padding=10
@@ -179,64 +194,54 @@ class CreateWalletPage:
         def create_and_unlock():
             try:
                 print("DEBUG: Starting wallet creation...")
-                
                 # Create the wallet
-                wallet_data = self.app.wallet_core.create_new_wallet(wallet_name, password)
+                wallet_data = self.app.wallet_core.create_wallet(wallet_name, password)
                 print(f"DEBUG: Wallet creation result: {wallet_data}")
-                
                 if wallet_data:
                     print("DEBUG: Wallet created successfully!")
+                    
+                    # Save to database for persistence
+                    try:
+                        self.app.save_wallet_data(force_save=True)
+                        print("DEBUG: Wallet saved to database")
+                    except Exception as db_save_ex:
+                        print(f"DEBUG: Failed to save wallet to database: {db_save_ex}")
                     
                     # Set app state to unlocked
                     self.app.is_locked = False
                     self.app.last_activity_time = time.time()
-                    
                     def update_ui():
                         try:
-                            # Clear loading state
                             self._show_loading_state(False)
-                            
-                            # Show success message
                             self.app.show_snackbar("Wallet created successfully!", "success")
-                            
-                            # Call the success callback
                             if self.on_wallet_created:
                                 self.on_wallet_created()
                             else:
                                 print("DEBUG: No callback found, going to wallet page directly")
                                 self.app.show_wallet_page()
-                                
                         except Exception as ui_error:
                             print(f"DEBUG: UI update error: {ui_error}")
-                            # Force transition anyway
                             if self.on_wallet_created:
                                 self.on_wallet_created()
-                    
-                    # Update UI on main thread
                     if hasattr(self.app, 'page') and self.app.page:
                         self.app.page.run_thread(update_ui)
                     else:
                         update_ui()
-                        
                 else:
                     def update_ui_fail():
                         self._show_loading_state(False)
                         self.app.show_snackbar("Failed to create wallet", "error")
-                    
                     if hasattr(self.app, 'page') and self.app.page:
                         self.app.page.run_thread(update_ui_fail)
                     else:
                         update_ui_fail()
-                        
             except Exception as ex:
                 print(f"DEBUG: Exception in wallet creation: {str(ex)}")
                 import traceback
                 traceback.print_exc()
-                
                 def show_error():
                     self._show_loading_state(False)
                     self.app.show_snackbar(f"Error creating wallet: {str(ex)}", "error")
-                
                 if hasattr(self.app, 'page') and self.app.page:
                     self.app.page.run_thread(show_error)
                 else:

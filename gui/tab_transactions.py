@@ -3,7 +3,7 @@ from datetime import datetime
 from typing import List, Dict
 import time
 
-class TransactionsTab:
+class TabTransactions:
     def __init__(self, wallet_core, is_mobile=False):
         self.wallet_core = wallet_core
         self.is_mobile = is_mobile

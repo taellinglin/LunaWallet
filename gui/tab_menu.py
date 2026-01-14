@@ -1,6 +1,6 @@
 import flet as ft
 
-class MenuTab:
+class TabMenu:
     def __init__(self, is_mobile=False, on_sync=None, on_lock=None, on_about=None, on_export_key=None, on_receive=None, on_send=None):
         self.is_mobile = is_mobile
         self.on_sync = on_sync

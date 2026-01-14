@@ -6,6 +6,6 @@ requests
 qrcode
 pillow
 pystray
-lunalib==1.6.6
+lunalib==1.8.2
 pyperclip
 base58

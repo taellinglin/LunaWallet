@@ -1,320 +1,8 @@
-import flet as ft
-import gui.page_create_wallet
-import threading
-import time
-import os
-import json
-import shutil
-from datetime import datetime
-import base64
-from typing import Dict, List
-import sqlite3
-from pathlib import Path
-import requests  # Ensure requests is imported at the top of the file
-
-# Import unified balance utilities
-from utils import (
-    calculate_wallet_balances,
-    update_all_wallet_balances,
-    format_balance_display,
-    get_balance_summary
-)
-
-# FIX: Ensure cache directory exists with proper permissions
-def setup_cache_directory():
-    """Create cache directory for lunalib with proper permissions"""
-    try:
-        # Try multiple possible cache locations
-        cache_locations = [
-            Path.home() / "AppData" / "Local" / "lunalib" / "cache",
-            Path.home() / ".lunalib" / "cache", 
-            Path("./.lunalib_cache"),
-            Path("/tmp/lunalib_cache")  # For Unix-like systems
-        ]
-        
-        for cache_dir in cache_locations:
-            try:
-                cache_dir.mkdir(parents=True, exist_ok=True)
-                
-                # Test if we can create a file in this directory
-                test_file = cache_dir / "test_write.tmp"
-                with open(test_file, 'w') as f:
-                    f.write("test")
-                os.remove(test_file)
-                
-                print(f"DEBUG: Using cache directory: {cache_dir}")
-                
-                # Set environment variable for lunalib
-                os.environ['LUNALIB_CACHE_DIR'] = str(cache_dir)
-                return str(cache_dir)
-                
-            except (PermissionError, OSError) as e:
-                print(f"DEBUG: Cache directory {cache_dir} not accessible: {e}")
-                continue
-        
-        # If all else fails, use current directory
-        fallback_dir = Path("./lunalib_cache")
-        fallback_dir.mkdir(exist_ok=True)
-        os.environ['LUNALIB_CACHE_DIR'] = str(fallback_dir)
-        print(f"DEBUG: Using fallback cache directory: {fallback_dir}")
-        return str(fallback_dir)
-        
-    except Exception as e:
-        print(f"DEBUG: Critical error setting up cache: {e}")
-        # Last resort - use temp directory
-        import tempfile
-        temp_dir = tempfile.mkdtemp(prefix="lunalib_cache_")
-        os.environ['LUNALIB_CACHE_DIR'] = temp_dir
-        print(f"DEBUG: Using temp cache directory: {temp_dir}")
-        return temp_dir
-
-# Initialize cache directory before any lunalib imports
-CACHE_DIR = setup_cache_directory()
-
-# Now import lunalib components after cache is set up
-from gui.page_create_wallet import CreateWalletPage
-from gui.page_export_key import ExportKeyPage
-from gui.page_import_wallet import ImportWalletPage
-from gui.page_lock import LockPage
-from gui.page_receive import ReceivePage
-from gui.page_send import SendPage
-from gui.page_wallet import WalletPage
-from gui.page_settings import SettingsPage
-from gui.tab_menu import MenuTab
-from gui.tab_transactions import TransactionsTab
-from gui.tab_wallets import WalletsTab
-
-# Import lunalib components
-from lunalib.core.wallet import LunaWallet
-from lunalib.core.blockchain import BlockchainManager
-from lunalib.transactions.transactions import TransactionManager
-from lunalib.storage.encryption import EncryptionManager
-from lunalib.storage.database import WalletDatabase
-
-# Import utils
-from utils import format_address, format_balance, format_timestamp, get_transaction_color, get_transaction_icon
-import os
-import sqlite3
-from pathlib import Path
-
-# Ensure cache directory exists
-cache_dir = Path.home() / "AppData" / "Local" / "lunalib" / "cache"
-cache_dir.mkdir(parents=True, exist_ok=True)
-
-class LunaWalletApp:
-    """Luna Wallet Application with Red Theme - Responsive Mobile Support"""
-    
-    def __init__(self):
-        self._patch_lunalib_cache()
-        self.wallet_core = LunaWallet()
-        self.blockchain_manager = BlockchainManager(endpoint_url="https://bank.linglin.art")
-        self.transaction_manager = TransactionManager(network_endpoints=["https://bank.linglin.art"])
-        self.encryption_manager = EncryptionManager()
-        self.database = WalletDatabase()
-        # Initialize mempool manager for pending transaction detection
-        try:
-            from lunalib.core.mempool import MempoolManager
-            self.mempool_manager = MempoolManager()
-            print("DEBUG: MempoolManager initialized successfully")
-        except Exception as e:
-            print(f"DEBUG: Error initializing MempoolManager: {e}")
-            self.mempool_manager = None
-        self._patch_blockchain_scanner()
-        self.minimized_to_tray = False
-        self.current_tab_index = 0
-        self.snack_bar = None
-        self.selected_wallet_index = 0
-        self.last_activity_time = time.time()
-        self.auto_lock_minutes = 30
-        self.is_locked = True
-        self.is_mobile = False
-        self.is_landscape = False
-        self.current_layout = "desktop"
-        self.sidebar_collapsed = False
-        self.sidebar_width = 240
-        self.sidebar_collapsed_width = 60
-
-        # Refs for UI elements
-        self.refs = {}
-
-        # Initialize page references
-        self.current_page = None
-        self.current_lock_page = None
-        self.pages = {}
-        
-        # Notification container for custom snackbar overlay
-        self.notification_container = None
-        
-        # Track last scan time per wallet to avoid redundant scans (5 minute threshold)
-        self.wallet_last_scan_times = {}  # {address: timestamp}
-        self.scan_cooldown_minutes = 5
-
-        # Wallet persistence state - ENHANCED
-        self.wallet_file_path = self._get_wallet_file_path()
-        self.last_save_time = 0
-        self.save_cooldown = 2  # seconds between saves to prevent too frequent saves
-        self.backup_count = 0
-        self.max_backups = 5
-        
-        self.sound_enabled = True
-        
-        # NEW: Initialize data directory and load any existing wallet metadata
-        self._ensure_data_directory()
-        self._load_wallet_metadata()
-        
-        # Background sync state
-        self.background_sync_active = False
-        self.last_background_sync_time = 0
-        self.background_sync_interval = 60 * 60  # 60 minutes in seconds
-        
-        # NEW: Continuous blockchain scanning state
-        self.continuous_scan_active = False
-        self.last_scanned_block = 0
-        self.wallet_balances_cache = {}  # Cache of wallet balances to detect changes
-        self.scan_interval = 30  # Scan every 30 seconds
-
-    def show_snackbar(self, message: str, message_type: str = "info"):
-        """Display a slim notification panel docked at the bottom of the window.
-        
-        Args:
-            message: The message to display
-            message_type: Type of message - "success" (green), "error" (red), "info" (blue)
-        """
-        print(f"[SNACKBAR] show_snackbar() called - message_type: {message_type}, message: {message}")
-        
-        if not hasattr(self, 'page') or not self.page:
-            print(f"[SNACKBAR] No page available - printing to console")
-            print(f"Snackbar: {message_type.upper()}: {message}")
-            return
-        
-        # Color mapping for different message types
-        color_map = {
-            "success": "#4CAF50",  # Green
-            "error": "#f44336",    # Red
-            "info": "#2196F3"      # Blue
-        }
-        
-        bg_color = color_map.get(message_type, "#2196F3")
-        
-        try:
-            print(f"[SNACKBAR] Creating slim bottom panel notification")
-            
-            # Create the notification content
-            notification_content = ft.Row([
-                ft.Text(
-                    message,
-                    color="#ffffff",
-                    weight="bold",
-                    size=13,
-                    expand=True
-                ),
-                ft.IconButton(
-                    ft.Icons.CLOSE,
-                    icon_color="#ffffff",
-                    icon_size=16,
-                    on_click=lambda e: self._close_notification(notification_wrapper)
-                )
-            ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER)
-            
-            # Create the actual panel
-            notification_panel = ft.Container(
-                content=notification_content,
-                bgcolor=bg_color,
-                padding=ft.padding.symmetric(horizontal=15, vertical=8),
-                height=45,
-                width=float('inf')
-            )
-            
-            # Wrap in a positioned container at the bottom
-            notification_wrapper = ft.Container(
-                content=notification_panel,
-                alignment=ft.Alignment(0, 1),  # Center horizontally, bottom vertically
-                bottom=0,
-                left=0,
-                right=0,
-                animate_opacity=300
-            )
-            
-            print(f"[SNACKBAR] Notification panel created")
-            
-            # Add to page overlay at bottom
-            if hasattr(self.page, 'overlay'):
-                print(f"[SNACKBAR] Adding to page.overlay")
-                self.page.overlay.append(notification_wrapper)
-                self.page.update()
-                print(f"[SNACKBAR] ✅ Notification panel displayed successfully at bottom")
-                
-                # Auto-remove after 3.5 seconds if not closed manually
-                def auto_close():
-                    time.sleep(3.5)
-                    try:
-                        if notification_wrapper in self.page.overlay:
-                            print(f"[SNACKBAR] Auto-closing notification")
-                            self.page.overlay.remove(notification_wrapper)
-                            self.page.update()
-                    except Exception as e:
-                        print(f"[SNACKBAR] Error in auto-close: {e}")
-                
-                threading.Thread(target=auto_close, daemon=True).start()
-            else:
-                print(f"[SNACKBAR] ❌ page.overlay not available")
-                
-        except Exception as e:
-            print(f"[SNACKBAR] ❌ Error showing notification: {e}")
-            import traceback
-            traceback.print_exc()
-            print(f"[SNACKBAR] Fallback: {message_type.upper()}: {message}")
-
-    def _close_notification(self, notification):
-        """Close a notification container"""
-        try:
-            print(f"[SNACKBAR] Closing notification manually")
-            if hasattr(self.page, 'overlay') and notification in self.page.overlay:
-                self.page.overlay.remove(notification)
-                self.page.update()
-        except Exception as e:
-            print(f"[SNACKBAR] Error closing notification: {e}")
-
-    def debug_transaction_detection(self):
-        """Debug method to see what transactions are being detected"""
-        if not self.wallet_core.current_wallet_address:
-            print("❌ No wallet address")
-            return
-        
-        address = self.wallet_core.current_wallet_address
-        print(f"\n🔍 DEBUG TRANSACTION DETECTION for {address}")
-        print("=" * 60)
-        
-        # Get latest block
-        latest_block = self.blockchain_manager.get_latest_block()
-        if latest_block:
-            print(f"Latest block: #{latest_block.get('index')}")
-            print(f"Transactions in block: {len(latest_block.get('transactions', []))}")
-            
-            # Show all transactions in latest block
-            for i, tx in enumerate(latest_block.get('transactions', [])):
-                print(f"\nTX {i}:")
-                for key, value in tx.items():
-                    if isinstance(value, str) and len(value) > 20:  # Likely an address
-                        print(f"  {key}: {value[:20]}...")
-                    else:
-                        print(f"  {key}: {value}")
-        
-        # Try to scan
-        try:
-            print(f"\n📡 Scanning for transactions...")
-            transactions = self.blockchain_manager.scan_transactions_for_address(address)
-            print(f"Found {len(transactions)} transactions")
-            
-            for tx in transactions:
-                direction = tx.get('direction', 'unknown')
-                print(f"\n{direction.upper()}: {tx.get('hash', '')[:16]}...")
-                print(f"  From: {tx.get('from', 'unknown')}")
-                print(f"  To: {tx.get('to', 'unknown')}")
-                print(f"  Amount: {tx.get('amount', 0)}")
-                print(f"  Fee: {tx.get('fee', 0)}")
-        except Exception as e:
-            print(f"❌ Scan error: {e}")
+from app.core import LunaWalletApp
+from typing import List, Dict
+if __name__ == "__main__":
+    import flet as ft
+    ft.app(target=LunaWalletApp().create_main_ui)
     def _create_enhanced_blockchain_manager(self):
         """Create an enhanced BlockchainManager with proper outgoing transaction detection"""
         # Create the blockchain manager
@@ -520,77 +208,26 @@ class LunaWalletApp:
         except Exception as e:
             print(f"Sound error: {e}")
     def _load_wallet_metadata(self):
-        """Load basic wallet metadata without requiring password"""
+        """Load wallet metadata using lunalib's SQLite backend (no password required)"""
+        print("DEBUG: _load_wallet_metadata called")
         try:
-            if os.path.exists(self.wallet_file_path):
-                print(f"DEBUG: Wallet file exists at: {self.wallet_file_path}")
-                
-                # Check file size first
-                file_size = os.path.getsize(self.wallet_file_path)
-                print(f"DEBUG: Wallet file size: {file_size} bytes")
-                
-                if file_size == 0:
-                    print("DEBUG: Wallet file is empty")
-                    self.wallet_count = 0
-                    self.existing_wallet_address = None
-                    return
-                
-                with open(self.wallet_file_path, 'r', encoding='utf-8') as f:
-                    wallet_data = json.load(f)
-                
-                # Store basic info for UI display
-                if 'wallets' in wallet_data:
-                    # Handle both dict and list formats
-                    wallets = wallet_data['wallets']
-                    if isinstance(wallets, dict):
-                        self.wallet_count = len(wallets)
-                        if self.wallet_count > 0:
-                            # Get first wallet address from dict keys
-                            first_address = list(wallets.keys())[0]
-                            self.existing_wallet_address = first_address
-                            print(f"DEBUG: Found {self.wallet_count} wallets (dict format), first address: {self.existing_wallet_address}")
-                        else:
-                            self.wallet_count = 0
-                            self.existing_wallet_address = None
-                            print("DEBUG: Wallet file exists but has 0 wallets (dict)")
-                    elif isinstance(wallets, list):
-                        self.wallet_count = len(wallets)
-                        if self.wallet_count > 0:
-                            # Get first wallet address from list
-                            first_wallet = wallets[0]
-                            if isinstance(first_wallet, dict):
-                                self.existing_wallet_address = first_wallet.get('address', '')
-                            else:
-                                self.existing_wallet_address = str(first_wallet)
-                            print(f"DEBUG: Found {self.wallet_count} wallets (list format), first address: {self.existing_wallet_address}")
-                        else:
-                            self.wallet_count = 0
-                            self.existing_wallet_address = None
-                            print("DEBUG: Wallet file exists but has 0 wallets (list)")
-                    else:
-                        self.wallet_count = 0
-                        self.existing_wallet_address = None
-                        print(f"DEBUG: Unexpected wallets format: {type(wallets)}")
-                else:
-                    self.wallet_count = 0
-                    self.existing_wallet_address = None
-                    print("DEBUG: Wallet file exists but no 'wallets' key found")
-                    
-            else:
-                self.wallet_count = 0
-                self.existing_wallet_address = None
-                print(f"DEBUG: No wallet file found at: {self.wallet_file_path}")
+            print(f"DEBUG: Calling get_wallet_index on wallet_core: {self.wallet_core}")
+            wallet_index = self.wallet_core.get_wallet_index()
+            print(f"DEBUG: wallet_index result: {wallet_index}")
+            self.wallet_count = len(wallet_index)
+            self.existing_wallet_address = wallet_index[0]["address"] if wallet_index else None
+            print(f"DEBUG: Found {self.wallet_count} wallets (lunalib SQLite), first address: {self.existing_wallet_address}")
         except Exception as e:
-            print(f"DEBUG: Error loading wallet metadata: {e}")
+            print(f"DEBUG: Error loading wallet metadata (lunalib SQLite): {e}")
             import traceback
             traceback.print_exc()
             self.wallet_count = 0
             self.existing_wallet_address = None
 
     def _get_wallet_file_path(self):
-        """Get the path for wallet data file"""
+        """Get the path for wallet database file (SQLite)"""
         data_dir = self._get_data_directory()
-        wallet_file = os.path.join(data_dir, "wallet_data.json")
+        wallet_file = os.path.join(data_dir, "wallets.db")
         return wallet_file
 
     def _get_backup_path(self, backup_id):
@@ -612,7 +249,7 @@ class LunaWalletApp:
         """Get the application data directory"""
         try:
             # Try to get data directory from database or wallet core
-            if hasattr(self.database, 'data_dir') and self.database.data_dir:
+            if hasattr(self, 'database') and hasattr(self.database, 'data_dir') and self.database.data_dir:
                 return self.database.data_dir
             elif hasattr(self.wallet_core, 'data_dir') and self.wallet_core.data_dir:
                 return self.wallet_core.data_dir
@@ -636,174 +273,6 @@ class LunaWalletApp:
             os.makedirs(fallback_dir, exist_ok=True)
             return fallback_dir
 
-    def save_wallet_data(self, force_save=False, is_backup=False):
-        """Save wallet data to persistent storage"""
-        try:
-            current_time = time.time()
-            
-            # Rate limiting for normal saves
-            if not force_save and not is_backup:
-                if current_time - self.last_save_time < self.save_cooldown:
-                    return True
-            
-            if self.is_locked:
-                print("DEBUG: Wallet is locked, skipping save")
-                return False
-            
-            # Ensure data directory exists
-            self._ensure_data_directory()
-            
-            # Prepare wallet data for saving
-            wallet_data = self._prepare_wallet_data()
-            if not wallet_data:
-                print("DEBUG: No wallet data to save")
-                return False
-            
-            # Determine file path
-            if is_backup:
-                self.backup_count = (self.backup_count % self.max_backups) + 1
-                save_path = self._get_backup_path(self.backup_count)
-            else:
-                save_path = self.wallet_file_path
-            
-            # Create temporary file first for atomic write
-            temp_path = save_path + ".tmp"
-            
-            try:
-                # Save to temporary file
-                with open(temp_path, 'w', encoding='utf-8') as f:
-                    json.dump(wallet_data, f, indent=2, ensure_ascii=False)
-                
-                # Atomic replace
-                if os.path.exists(save_path):
-                    os.replace(temp_path, save_path)
-                else:
-                    os.rename(temp_path, save_path)
-                
-                self.last_save_time = current_time
-                
-                if not is_backup:
-                    print(f"DEBUG: Wallet data saved successfully to {save_path}")
-                else:
-                    print(f"DEBUG: Wallet backup created: {save_path}")
-                
-                return True
-                
-            except Exception as e:
-                # Clean up temporary file on error
-                if os.path.exists(temp_path):
-                    os.remove(temp_path)
-                raise e
-                
-        except Exception as e:
-            print(f"DEBUG: Error saving wallet data: {e}")
-            return False
-
-    def _prepare_wallet_data(self):
-        """Prepare wallet data for saving - compatible with LunaWallet structure"""
-        try:
-            wallet_data = {
-                'version': '1.0',
-                'timestamp': datetime.now().isoformat(),
-                'last_sync': getattr(self, 'last_sync_time', None),
-                'wallets': {},
-                'current_wallet_address': None,
-                'settings': {
-                    'auto_lock_minutes': self.auto_lock_minutes,
-                    'selected_wallet_index': self.selected_wallet_index
-                }
-            }
-            
-            # Get wallet information from LunaWallet
-            if hasattr(self.wallet_core, 'wallets') and self.wallet_core.wallets:
-                # LunaWallet stores wallets as dict: {address: wallet_data}
-                for address, wallet_info in self.wallet_core.wallets.items():
-                    # Convert wallet info to serializable format
-                    serializable_wallet = wallet_info.copy()
-                    
-                    # Handle encrypted_private_key - ensure it's bytes for LunaWallet
-                    encrypted_key = serializable_wallet.get('encrypted_private_key')
-                    if encrypted_key and isinstance(encrypted_key, bytes):
-                        # Keep as bytes for LunaWallet compatibility
-                        serializable_wallet['encrypted_private_key'] = base64.b64encode(encrypted_key).decode('utf-8')
-                    
-                    wallet_data['wallets'][address] = serializable_wallet
-                
-                print(f"DEBUG: Prepared {len(wallet_data['wallets'])} wallets for saving")
-            
-            # Get current wallet address
-            if hasattr(self.wallet_core, 'current_wallet_address') and self.wallet_core.current_wallet_address:
-                wallet_data['current_wallet_address'] = self.wallet_core.current_wallet_address
-            
-            return wallet_data
-            
-        except Exception as e:
-            print(f"DEBUG: Error preparing wallet data: {e}")
-            import traceback
-            traceback.print_exc()
-            return None
-
-    def load_wallet_data(self):
-        """Load wallet data from persistent storage - compatible with LunaWallet"""
-        try:
-            if not os.path.exists(self.wallet_file_path):
-                print("DEBUG: No wallet data file found")
-                return False
-            
-            print(f"DEBUG: Loading wallet data from: {self.wallet_file_path}")
-            
-            with open(self.wallet_file_path, 'r', encoding='utf-8') as f:
-                wallet_data = json.load(f)
-            
-            print("DEBUG: Wallet data loaded from file")
-            
-            # Restore wallet information to LunaWallet
-            if 'wallets' in wallet_data and wallet_data['wallets']:
-                # Clear existing wallets
-                if hasattr(self.wallet_core, 'wallets'):
-                    self.wallet_core.wallets = {}
-                
-                # Load each wallet
-                for address, wallet_info in wallet_data['wallets'].items():
-                    # Convert back to proper format for LunaWallet
-                    restored_wallet = wallet_info.copy()
-                    
-                    # Keep cached balances from saved wallet data - DO NOT RESET TO 0
-                    # (Placeholder or previous cached value will show until recalculated)
-                    
-                    # Handle encrypted_private_key - convert back to bytes
-                    encrypted_key = restored_wallet.get('encrypted_private_key')
-                    if encrypted_key and isinstance(encrypted_key, str):
-                        try:
-                            restored_wallet['encrypted_private_key'] = base64.b64decode(encrypted_key)
-                        except:
-                            # If it's already bytes or in different format, keep as is
-                            pass
-                    
-                    self.wallet_core.wallets[address] = restored_wallet
-                
-                print(f"DEBUG: Restored {len(wallet_data['wallets'])} wallets to LunaWallet")
-                
-                # Restore current wallet address
-                if 'current_wallet_address' in wallet_data and wallet_data['current_wallet_address']:
-                    current_address = wallet_data['current_wallet_address']
-                    self.wallet_core.current_wallet_address = current_address
-                    
-                    # Set current wallet data if it exists
-                    if current_address in self.wallet_core.wallets:
-                        self.wallet_core._set_current_wallet(self.wallet_core.wallets[current_address])
-                        print(f"DEBUG: Restored current wallet: {current_address}")
-                
-                return True
-            
-            print("DEBUG: No wallets found in loaded data")
-            return False
-            
-        except Exception as e:
-            print(f"DEBUG: Error loading wallet data: {e}")
-            import traceback
-            traceback.print_exc()
-            return False
     def _load_from_backup(self):
         """Try to load wallet data from backup files"""
         try:
@@ -846,71 +315,26 @@ class LunaWalletApp:
             print(f"DEBUG: Error loading from backups: {e}")
             return False
 
-    def create_backup(self):
-        """Create a backup of wallet data"""
-        return self.save_wallet_data(force_save=True, is_backup=True)
-
-    def auto_save_wallet(self):
-        """Auto-save wallet data with rate limiting"""
         try:
-            if not self.is_locked:
-                self.save_wallet_data(force_save=False)
-        except Exception as e:
-            print(f"DEBUG: Auto-save error: {e}")
-
-    def check_existing_wallets(self):
-        """Check if there's an actual primary wallet created"""
-        try:
-            print("DEBUG: Checking for primary wallet...")
-            
-            # First try to load from persistent storage
-            if self.load_wallet_data():
-                print("DEBUG: Wallet data loaded from persistent storage")
-                return True
-            
-            # Method 1: Check if wallet core has a primary wallet with address
-            if hasattr(self.wallet_core, 'wallets') and self.wallet_core.wallets:
-                if len(self.wallet_core.wallets) > 0:
-                    first_wallet = self.wallet_core.wallets[0]
-                    if first_wallet.get('address'):
-                        print("DEBUG: Found primary wallet in memory")
-                        # Save the loaded wallet data
-                        self.save_wallet_data(force_save=True)
-                        return True
-            
-            # Method 2: Try to get the current wallet address from core
-            if hasattr(self.wallet_core, 'current_wallet_address'):
-                if self.wallet_core.current_wallet_address:
-                    print("DEBUG: Found current wallet address")
+            # Try to load from database instead of JSON file
+            if hasattr(self, 'database') and self.database:
+                wallet_addresses = self.database.get_all_wallet_addresses()
+                if wallet_addresses:
+                    self.wallet_count = len(wallet_addresses)
+                    self.existing_wallet_address = wallet_addresses[0]
+                    print(f"DEBUG: Found {self.wallet_count} wallets in database, first address: {self.existing_wallet_address}")
                     return True
             
-            # Method 3: Check if we can detect any wallet creation
-            if hasattr(self.wallet_core, 'is_wallet_created'):
-                if self.wallet_core.is_wallet_created():
-                    print("DEBUG: Wallet core indicates wallet is created")
-                    return True
-            
-            print("DEBUG: No primary wallet found")
+            self.wallet_count = 0
+            self.existing_wallet_address = None
+            print("DEBUG: No wallets found in database")
             return False
-            
         except Exception as e:
-            print(f"DEBUG: Error checking wallets: {e}")
-            return False
-
-    def _is_database_initialized_but_empty(self):
-        """Check if database exists but has no actual wallet data"""
-        try:
-            data_dir = self._get_data_directory()
-            db_path = os.path.join(data_dir, "wallets.db")
-            wallet_json_path = os.path.join(data_dir, "wallet_data.json")
-            
-            # Check if we have JSON wallet data
-            if os.path.exists(wallet_json_path) and os.path.getsize(wallet_json_path) > 100:
-                return False
-                
-            if not os.path.exists(db_path):
-                return False
-                
+            print(f"DEBUG: Error loading wallet metadata (lunalib): {e}")
+            import traceback
+            traceback.print_exc()
+            self.wallet_count = 0
+            self.existing_wallet_address = None
             # Check file size - very small files are likely empty
             if os.path.getsize(db_path) < 1024:  # Less than 1KB
                 return True
@@ -1017,7 +441,8 @@ class LunaWalletApp:
 
         page.on_resize = self.on_page_resize
 
-        # Check for existing wallets and show appropriate screen
+        # --- UI描画はここで初めて呼ぶ ---
+        self.initialize_wallet_state()  # Shows unlock or create screen as appropriate
         self.initialize_wallet_state()
 
     def initialize_wallet_state(self):
@@ -1276,6 +701,18 @@ class LunaWalletApp:
             wallet_exists=True,
             show_create=False
         )
+    def on_lock(self):
+        """Handle lock action - lock the wallet using lunalib 1.7.3 API"""
+        print("DEBUG: on_lock called")
+        if self.wallet_core and self.wallet_core.current_wallet_address:
+            self.wallet_core.lock_wallet(self.wallet_core.current_wallet_address)
+        self.is_locked = True
+        self.show_lock_page(
+            title="Wallet Locked",
+            subtitle="Enter password to unlock",
+            wallet_exists=True,
+            show_create=False
+        )
 
     def on_create_wallet(self):
         """Handle create wallet action"""
@@ -1302,103 +739,49 @@ class LunaWalletApp:
         self.show_snackbar("Settings feature", "info")
 
     def unlock_wallet(self, password):
-        """Unlock existing wallet with password using LunaWallet core methods"""
+        """Unlock the first wallet in the database using lunalib's SQLite backend"""
         def unlock_thread():
             try:
-                print("DEBUG: Starting unlock process...")
-                print(f"DEBUG: Password length: {len(password)}")
-                
-                success = False
-                
-                # Load wallet data from persistence first
-                print("DEBUG: Loading wallet data from file...")
-                load_success = self.load_wallet_data()
-                print(f"DEBUG: Wallet data load result: {load_success}")
-                
-                if not load_success:
-                    print("DEBUG: Failed to load wallet data")
-                    def show_load_error():
-                        self.show_snackbar("Failed to load wallet data", "error")
-                        if hasattr(self, 'current_lock_page') and self.current_lock_page:
-                            self.current_lock_page.hide_loading()
-                    self.page.run_thread(show_load_error)
+                print("DEBUG: Starting unlock process (SQLite backend)...")
+                print(f"DEBUG: wallet_core instance: {self.wallet_core}")
+                print(f"DEBUG: wallet_core.db: {getattr(self.wallet_core, 'db', None)}")
+                wallet_index = self.wallet_core.get_wallet_index()
+                print(f"DEBUG: wallet_index: {wallet_index}")
+                if not wallet_index:
+                    print("DEBUG: No wallets found in database")
+                    self.page.run_thread(lambda: self.show_snackbar("No wallets found to unlock", "error"))
                     return
-                
-                # Check if we have wallets in the core
-                if hasattr(self.wallet_core, 'wallets') and self.wallet_core.wallets:
-                    print(f"DEBUG: Found {len(self.wallet_core.wallets)} wallets in core")
-                    
-                    # Try to unlock each wallet using the core's unlock_wallet method
-                    for wallet_address in self.wallet_core.wallets.keys():
-                        try:
-                            print(f"DEBUG: Attempting to unlock wallet: {wallet_address}")
-                            
-                            # Use LunaWallet's unlock_wallet method
-                            unlock_success = self.wallet_core.unlock_wallet(wallet_address, password)
-                            
-                            if unlock_success:
-                                print(f"DEBUG: SUCCESS! Unlocked wallet: {wallet_address}")
-                                
-                                # Switch to this wallet to make it current
-                                switch_success = self.wallet_core.switch_wallet(wallet_address)
-                                if switch_success:
-                                    print(f"DEBUG: Successfully switched to wallet: {wallet_address}")
-                                else:
-                                    print(f"DEBUG: Failed to switch to wallet: {wallet_address}")
-                                
-                                success = True
-                                break
-                            else:
-                                print(f"DEBUG: Failed to unlock wallet: {wallet_address}")
-                                
-                        except Exception as wallet_error:
-                            print(f"DEBUG: Error unlocking wallet {wallet_address}: {wallet_error}")
-                            continue
-                
-                # Fallback: Try to load from file directly if core methods didn't work
-                if not success:
-                    print("DEBUG: Core unlock failed, trying load_from_file...")
-                    try:
-                        if hasattr(self.wallet_core, 'load_from_file'):
-                            success = self.wallet_core.load_from_file("wallet_data.json", password)
-                            print(f"DEBUG: load_from_file result: {success}")
-                    except Exception as load_error:
-                        print(f"DEBUG: load_from_file failed: {load_error}")
-
-                print(f"DEBUG: Final unlock result: {success}")
-                
+                address = wallet_index[0]["address"]
+                print(f"DEBUG: Attempting to unlock wallet address: {address}")
+                result = self.wallet_core.unlock_wallet(address, password)
+                print(f"DEBUG: unlock_wallet result: {result}")
+                success = result.get("success", False)
                 def update_ui():
                     if success:
                         print("DEBUG: Unlock successful - transitioning to wallet page")
                         self.is_locked = False
                         self.last_activity_time = time.time()
                         self.show_snackbar("Wallet unlocked successfully", "success")
-                        
-                        # Verify the wallet state
-                        if hasattr(self.wallet_core, 'is_locked'):
-                            print(f"DEBUG: Core is_locked: {self.wallet_core.is_locked}")
-                        if hasattr(self.wallet_core, 'private_key') and self.wallet_core.private_key:
-                            print("DEBUG: Private key is available in core")
-                        if hasattr(self.wallet_core, 'current_wallet_address'):
-                            print(f"DEBUG: Current wallet address: {self.wallet_core.current_wallet_address}")
-                        
-                        # Save wallet state after successful unlock
-                        save_success = self.save_wallet_data(force_save=True)
-                        if save_success:
-                            print("DEBUG: Wallet state saved after unlock")
-                        
-                        self.show_wallet_page()
-                        # Start blockchain sync
-                        self.start_blockchain_sync()
+                        try:
+                            self.show_wallet_page()
+                        except Exception as wallet_page_error:
+                            print(f"DEBUG: Error showing wallet page: {wallet_page_error}")
+                            import traceback
+                            traceback.print_exc()
+                            self.show_snackbar(f"Error showing wallet: {str(wallet_page_error)}", "error")
+                            if hasattr(self, 'current_lock_page') and self.current_lock_page:
+                                self.current_lock_page.hide_loading()
+                            return
+                        try:
+                            self.start_blockchain_sync()
+                        except Exception as sync_error:
+                            print(f"DEBUG: Error starting blockchain sync: {sync_error}")
                     else:
-                        print("DEBUG: Unlock failed - showing error")
-                        self.show_snackbar("Failed to unlock wallet - wrong password", "error")
+                        print(f"DEBUG: Unlock failed - {result.get('error')}")
+                        self.show_snackbar(f"Failed to unlock wallet: {result.get('error', 'Unknown error')}", "error")
                         if hasattr(self, 'current_lock_page') and self.current_lock_page:
                             self.current_lock_page.hide_loading()
-                        # Keep the lock screen visible for retry
-                    
                 self.page.run_thread(update_ui)
-                
             except Exception as e:
                 print(f"DEBUG: Unlock error: {e}")
                 import traceback
@@ -1408,7 +791,6 @@ class LunaWalletApp:
                     if hasattr(self, 'current_lock_page') and self.current_lock_page:
                         self.current_lock_page.hide_loading()
                 self.page.run_thread(show_error)
-        
         threading.Thread(target=unlock_thread, daemon=True).start()
 
     def start_blockchain_sync(self):
@@ -1502,53 +884,42 @@ class LunaWalletApp:
             
             # Use new batch method: scan_transactions_for_addresses(addresses: List[str])
             # Returns Dict[str, List[Dict]] where keys are addresses
-            if hasattr(self.blockchain_manager, 'scan_transactions_for_addresses'):
-                print(f"✓ Using batch scan_transactions_for_addresses() for {len(wallet_addresses)} wallets")
-                all_transactions = self.blockchain_manager.scan_transactions_for_addresses(wallet_addresses)
+            print(f"✓ Using batch scan_transactions_for_addresses() for {len(wallet_addresses)} wallets")
+            all_transactions = self.blockchain_manager.scan_transactions_for_addresses(wallet_addresses)
+            
+            # Process transactions for each wallet
+            wallet_txs_count = {addr: {'reward': 0, 'transfer': 0, 'other': 0} for addr in wallet_addresses}
+            
+            for wallet_addr in wallet_addresses:
+                wallet_addr_lower = wallet_addr.lower()
+                wallet_txs = all_transactions.get(wallet_addr_lower, []) or all_transactions.get(wallet_addr, [])
                 
-                # Process transactions for each wallet
-                wallet_txs_count = {addr: {'reward': 0, 'transfer': 0, 'other': 0} for addr in wallet_addresses}
+                print(f"\n📨 Processing {len(wallet_txs)} transactions for {wallet_addr[:12]}...")
                 
-                for wallet_addr in wallet_addresses:
-                    wallet_addr_lower = wallet_addr.lower()
-                    wallet_txs = all_transactions.get(wallet_addr_lower, []) or all_transactions.get(wallet_addr, [])
+                for tx in wallet_txs:
+                    tx_type = tx.get('type', 'transfer').lower()
+                    block_height = tx.get('block_height', 0)
                     
-                    print(f"\n📨 Processing {len(wallet_txs)} transactions for {wallet_addr[:12]}...")
+                    # Save transaction with proper status
+                    tx['status'] = 'confirmed'
+                    if hasattr(self, 'database'):
+                        self.database.save_transaction(tx, wallet_addr)
                     
-                    for tx in wallet_txs:
-                        tx_type = tx.get('type', 'transfer').lower()
-                        block_height = tx.get('block_height', 0)
-                        
-                        # Save transaction with proper status
-                        tx['status'] = 'confirmed'
-                        if hasattr(self, 'database'):
-                            self.database.save_transaction(tx, wallet_addr)
-                        
-                        # Count by type
-                        if tx_type == 'reward':
-                            wallet_txs_count[wallet_addr]['reward'] += 1
-                            print(f"  ✓ Reward: {tx.get('amount')} LKC @ block {block_height}")
-                        elif tx_type == 'fee_distribution':
-                            wallet_txs_count[wallet_addr]['other'] += 1
-                        else:
-                            wallet_txs_count[wallet_addr]['transfer'] += 1
-                
-                # Print summary
-                print(f"\n📊 BLOCKCHAIN SCAN SUMMARY:")
-                for wallet_addr in wallet_addresses:
-                    counts = wallet_txs_count[wallet_addr]
-                    total = counts['reward'] + counts['transfer'] + counts['other']
-                    print(f"  {wallet_addr[:12]}...: {counts['reward']} rewards, {counts['transfer']} transfers, {counts['other']} other = {total} total")
-            else:
-                # Fallback to legacy single-address method
-                print(f"⚠ Batch scan not available, falling back to single-address scan")
-                for wallet_addr in wallet_addresses:
-                    txs = self.blockchain_manager.scan_transactions_for_address(wallet_addr)
-                    print(f"  {wallet_addr[:12]}...: {len(txs)} transactions")
-                    for tx in txs:
-                        tx['status'] = 'confirmed'
-                        if hasattr(self, 'database'):
-                            self.database.save_transaction(tx, wallet_addr)
+                    # Count by type
+                    if tx_type == 'reward':
+                        wallet_txs_count[wallet_addr]['reward'] += 1
+                        print(f"  ✓ Reward: {tx.get('amount')} LKC @ block {block_height}")
+                    elif tx_type == 'fee_distribution':
+                        wallet_txs_count[wallet_addr]['other'] += 1
+                    else:
+                        wallet_txs_count[wallet_addr]['transfer'] += 1
+            
+            # Print summary
+            print(f"\n📊 BLOCKCHAIN SCAN SUMMARY:")
+            for wallet_addr in wallet_addresses:
+                counts = wallet_txs_count[wallet_addr]
+                total = counts['reward'] + counts['transfer'] + counts['other']
+                print(f"  {wallet_addr[:12]}...: {counts['reward']} rewards, {counts['transfer']} transfers, {counts['other']} other = {total} total")
             
             # Check mempool for ALL pending transactions at once
             self._check_mempool_for_pending(wallet_addresses)
@@ -1644,59 +1015,37 @@ class LunaWalletApp:
             wallet_txs_count = {addr: {'reward': 0, 'transfer': 0, 'other': 0} for addr in wallet_addresses}
             
             # Use new batch method to scan all wallets at once
-            if hasattr(self.blockchain_manager, 'scan_transactions_for_addresses'):
-                print(f"✓ Using batch scan_transactions_for_addresses() for new blocks {start_height}-{latest_height}")
-                all_transactions = self.blockchain_manager.scan_transactions_for_addresses(
-                    wallet_addresses, 
-                    start_height=start_height, 
-                    end_height=latest_height
-                )
-                
-                for wallet_addr in wallet_addresses:
-                    wallet_addr_lower = wallet_addr.lower()
-                    wallet_txs = all_transactions.get(wallet_addr_lower, []) or all_transactions.get(wallet_addr, [])
-                    
-                    if wallet_txs:
-                        new_transactions_found = True
-                        print(f"\n📨 Processing {len(wallet_txs)} transactions for {wallet_addr[:12]}...")
-                        
-                        for tx in wallet_txs:
-                            tx_type = tx.get('type', 'transfer').lower()
-                            block_height = tx.get('block_height', 0)
-                            
-                            # Save transaction with proper status
-                            tx['status'] = 'confirmed'
-                            if hasattr(self, 'database'):
-                                self.database.save_transaction(tx, wallet_addr)
-                            
-                            # Count by type
-                            if tx_type == 'reward':
-                                wallet_txs_count[wallet_addr]['reward'] += 1
-                                print(f"  🎁 Reward: {tx.get('amount')} LKC @ block {block_height}")
-                            elif tx_type == 'fee_distribution':
-                                wallet_txs_count[wallet_addr]['other'] += 1
-                            else:
-                                wallet_txs_count[wallet_addr]['transfer'] += 1
-                                print(f"  Found transaction in block {block_height} for {wallet_addr[:12]}...")
-            else:
-                # Fallback to legacy single-address method (shouldn't happen with 1.5.1)
-                print(f"⚠ Batch scan not available, falling back to legacy method")
-                for wallet_addr in wallet_addresses:
-                    txs = self.blockchain_manager.scan_transactions_for_address(wallet_addr)
-                    relevant_txs = [tx for tx in txs if start_height <= tx.get('block_height', 0) <= latest_height]
-                    
-                    if relevant_txs:
-                        new_transactions_found = True
-                        for tx in relevant_txs:
-                            tx['status'] = 'confirmed'
-                            if hasattr(self, 'database'):
-                                self.database.save_transaction(tx, wallet_addr)
-                            tx_type = tx.get('type', 'transfer').lower()
-                            if tx_type == 'reward':
-                                wallet_txs_count[wallet_addr]['reward'] += 1
-                            else:
-                                wallet_txs_count[wallet_addr]['transfer'] += 1
+            print(f"✓ Using batch scan_transactions_for_addresses() for new blocks {start_height}-{latest_height}")
+            all_transactions = self.blockchain_manager.scan_transactions_for_addresses(
+                wallet_addresses, 
+                start_height=start_height, 
+                end_height=latest_height
+            )
             
+            for wallet_addr in wallet_addresses:
+                wallet_addr_lower = wallet_addr.lower()
+                wallet_txs = all_transactions.get(wallet_addr_lower, []) or all_transactions.get(wallet_addr, [])
+                
+                if wallet_txs:
+                    new_transactions_found = True
+                    print(f"\n📨 Processing {len(wallet_txs)} transactions for {wallet_addr[:12]}...")
+                    
+                    for tx in wallet_txs:
+                        tx_type = tx.get('type', 'transfer').lower()
+                        block_height = tx.get('block_height', 0)
+                        
+                        # Save transaction with proper status
+                        tx['status'] = 'confirmed'
+                        if hasattr(self, 'database'):
+                            self.database.save_transaction(tx, wallet_addr)
+                        
+                        # Count by type
+                        if tx_type == 'reward':
+                            wallet_txs_count[wallet_addr]['reward'] += 1
+                            print(f"  🎁 Reward: {tx.get('amount')} LKC @ block {block_height}")
+                        else:
+                            wallet_txs_count[wallet_addr]['transfer'] += 1
+                            print(f"  Found transaction in block {block_height} for {wallet_addr[:12]}...")
             # Print summary
             if new_transactions_found:
                 print(f"\n📊 INCREMENTAL SCAN SUMMARY:")
@@ -1733,62 +1082,31 @@ class LunaWalletApp:
             
             # Use new batch method: get_pending_transactions_for_addresses(addresses: List[str])
             # Returns Dict[str, List[Dict]] where keys are addresses
-            if hasattr(mempool_manager, 'get_pending_transactions_for_addresses'):
-                print(f"✓ Using batch get_pending_transactions_for_addresses()")
-                all_pending = mempool_manager.get_pending_transactions_for_addresses(wallet_addresses, fetch_remote=True)
+            print(f"✓ Using batch get_pending_transactions_for_addresses()")
+            all_pending = mempool_manager.get_pending_transactions_for_addresses(wallet_addresses, fetch_remote=True)
+            
+            for wallet_addr in wallet_addresses:
+                wallet_addr_lower = wallet_addr.lower()
+                pending_txs = all_pending.get(wallet_addr_lower, []) or all_pending.get(wallet_addr, [])
                 
-                for wallet_addr in wallet_addresses:
-                    wallet_addr_lower = wallet_addr.lower()
-                    pending_txs = all_pending.get(wallet_addr_lower, []) or all_pending.get(wallet_addr, [])
-                    
-                    if pending_txs:
-                        print(f"✓ Found {len(pending_txs)} pending transactions for {wallet_addr[:12]}...")
-                        for i, tx in enumerate(pending_txs):
-                            tx_hash = tx.get('hash', 'unknown')
-                            tx_from = tx.get('from', 'unknown')
-                            tx_to = tx.get('to', 'unknown')
-                            tx_amount = tx.get('amount', 0)
-                            print(f"  [{i+1}] hash={tx_hash[:8] if isinstance(tx_hash, str) else tx_hash}...")
-                            print(f"      from={tx_from[:8] if isinstance(tx_from, str) else tx_from}... → to={tx_to[:8] if isinstance(tx_to, str) else tx_to}...")
-                            print(f"      amount={tx_amount}")
-                            
-                            # Mark as pending and save to database
-                            tx['status'] = 'pending'
-                            if hasattr(self, 'database'):
-                                self.database.save_pending_transaction(tx, wallet_addr)
-                                print(f"      Saved to database")
-                    else:
-                        print(f"✓ No pending transactions for {wallet_addr[:12]}...")
-            else:
-                # Fallback to single-address method
-                print(f"⚠ Batch mempool not available, falling back to single-address method")
-                for wallet_addr in wallet_addresses:
-                    try:
-                        pending_txs = mempool_manager.get_pending_transactions(wallet_addr)
+                if pending_txs:
+                    print(f"✓ Found {len(pending_txs)} pending transactions for {wallet_addr[:12]}...")
+                    for i, tx in enumerate(pending_txs):
+                        tx_hash = tx.get('hash', 'unknown')
+                        tx_from = tx.get('from', 'unknown')
+                        tx_to = tx.get('to', 'unknown')
+                        tx_amount = tx.get('amount', 0)
+                        print(f"  [{i+1}] hash={tx_hash[:8] if isinstance(tx_hash, str) else tx_hash}...")
+                        print(f"      from={tx_from[:8] if isinstance(tx_from, str) else tx_from}... → to={tx_to[:8] if isinstance(tx_to, str) else tx_to}...")
+                        print(f"      amount={tx_amount}")
                         
-                        if pending_txs:
-                            print(f"✓ Found {len(pending_txs)} pending transactions for {wallet_addr[:12]}...")
-                            for i, tx in enumerate(pending_txs):
-                                tx_hash = tx.get('hash', 'unknown')
-                                tx_from = tx.get('from', 'unknown')
-                                tx_to = tx.get('to', 'unknown')
-                                tx_amount = tx.get('amount', 0)
-                                print(f"  [{i+1}] hash={tx_hash[:8] if isinstance(tx_hash, str) else tx_hash}...")
-                                print(f"      from={tx_from[:8] if isinstance(tx_from, str) else tx_from}... → to={tx_to[:8] if isinstance(tx_to, str) else tx_to}...")
-                                print(f"      amount={tx_amount}")
-                                
-                                # Mark as pending and save to database
-                                tx['status'] = 'pending'
-                                if hasattr(self, 'database'):
-                                    self.database.save_pending_transaction(tx, wallet_addr)
-                                    print(f"      Saved to database")
-                        else:
-                            print(f"✓ No pending transactions for {wallet_addr[:12]}...")
-                            
-                    except Exception as e:
-                        print(f"✗ Mempool check error for {wallet_addr[:12]}...: {e}")
-                        import traceback
-                        traceback.print_exc()
+                        # Mark as pending and save to database
+                        tx['status'] = 'pending'
+                        if hasattr(self, 'database'):
+                            self.database.save_pending_transaction(tx, wallet_addr)
+                            print(f"      Saved to database")
+                else:
+                    print(f"✓ No pending transactions for {wallet_addr[:12]}...")
             
             print(f"=== MEMPOOL CHECK COMPLETE ===\n")
                     
@@ -1953,10 +1271,11 @@ class LunaWalletApp:
                     if tx_status != 'confirmed':
                         continue
                     
-                    tx_from = tx.get('from', '').lower()
-                    tx_to = tx.get('to', '').lower()
+                    # Handle both field name formats
+                    tx_from = tx.get('from', tx.get('from_address', '')).lower()
+                    tx_to = tx.get('to', tx.get('to_address', '')).lower()
                     reward_addr = tx.get('reward_address', '').lower()
-                    tx_type = tx.get('type', 'transfer').lower()
+                    tx_type = tx.get('type', tx.get('tx_type', 'transfer')).lower()
                     amount = float(tx.get('amount', 0))
                     fee = float(tx.get('fee', 0))
                     
@@ -1967,6 +1286,14 @@ class LunaWalletApp:
                             confirmed_balance += amount
                             reward_count += 1
                             print(f"  ✓ Reward: +{amount} (to={tx_to[:12] if tx_to else 'none'}...)")
+                    # Fee distribution (mining reward variant)
+                    elif tx_type == 'fee_distribution':
+                        # Check if this fee distribution is for us
+                        recipient_addr = tx.get('recipient', '').lower()
+                        if (tx_to == wallet_addr_lower or reward_addr == wallet_addr_lower or recipient_addr == wallet_addr_lower):
+                            confirmed_balance += amount
+                            reward_count += 1  # Count as reward for summary
+                            print(f"  ✓ Fee distribution: +{amount} (to={tx_to[:12] if tx_to else 'none'}...)")
                     # Incoming transfer
                     elif tx_to == wallet_addr_lower:
                         confirmed_balance += amount
@@ -2191,6 +1518,8 @@ class LunaWalletApp:
                 print(f"   Incoming: {incoming}")
                 print(f"   Outgoing: {outgoing}")
                 
+               
+                
                 # Debug: Show outgoing transactions
                 if outgoing > 0:
                     print(f"\n🔍 OUTGOING TRANSACTIONS:")
@@ -2297,9 +1626,6 @@ class LunaWalletApp:
                     enhanced_tx['direction'] = 'incoming'
                     enhanced_tx['to'] = field_value
                     enhanced_tx['effective_amount'] = float(tx.get('amount', 0))
-
-
-
                     return enhanced_tx
         
         # If we can't determine direction, add unknown
@@ -2342,19 +1668,28 @@ class LunaWalletApp:
     def show_create_wallet(self):
         """Display the wallet creation page or dialog."""
         print("DEBUG: show_create_wallet called")
-        # Example implementation: Navigate to the wallet creation page
-        from gui.page_create_wallet import CreateWalletPage
-        create_wallet_page = CreateWalletPage(
-            self,
-            on_back=self.show_wallet_page,
-            on_wallet_created=self.refresh_wallet_list
-        )
-        self.current_page = create_wallet_page.create()
+        try:
+            # Example implementation: Navigate to the wallet creation page
+            from gui.page_create_wallet import CreateWalletPage
+            create_wallet_page = CreateWalletPage(
+                self,
+                on_back=self.show_lock_page,
+                on_wallet_created=self.refresh_wallet_list
+            )
+            # Store page as instance variable to prevent garbage collection
+            self.create_wallet_page = create_wallet_page
+            self.current_page = create_wallet_page.create()
 
-        # Clear and add the new page to the UI
-        self.page.controls.clear()
-        self.page.controls.append(self.current_page)
-        self.page.update()
+            # Clear and add the new page to the UI
+            self.page.controls.clear()
+            self.page.controls.append(self.current_page)
+            self.page.update()
+            print("DEBUG: Create wallet page displayed successfully")
+        except Exception as e:
+            print(f"DEBUG: Error showing create wallet page: {e}")
+            import traceback
+            traceback.print_exc()
+            self.show_snackbar(f"Error: {str(e)}", "error")
 
     def refresh_wallet_list(self):
         """Refresh the wallet list after a new wallet is created."""
@@ -2373,6 +1708,3 @@ class LunaWalletApp:
             print(f"DEBUG: Error refreshing wallet list: {e}")
             import traceback
             traceback.print_exc()
-
-if __name__ == "__main__":
-    ft.app(target=LunaWalletApp().create_main_ui)

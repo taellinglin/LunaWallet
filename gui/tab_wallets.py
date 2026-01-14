@@ -3,7 +3,7 @@ from typing import List, Dict
 from utils import calculate_wallet_balances
 from lunalib.core.mempool import MempoolManager
 
-class WalletsTab:
+class TabWallets:
     def __init__(self, wallet_core, is_mobile=False, selected_wallet_index=0, on_wallet_select=None, on_create_wallet=None, on_import_wallet=None, page=None):
         self.wallet_core = wallet_core
         self.is_mobile = is_mobile

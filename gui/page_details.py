@@ -353,20 +353,21 @@ class TransactionDetailsPage:
                 show_snack()
     
     def _view_in_explorer(self, tx_hash):
-        """View transaction in blockchain explorer"""
+        """View transaction in blockchain explorer (transactions/verify endpoint)"""
         if hasattr(self.app, 'show_snackbar'):
             self.app.show_snackbar("Opening blockchain explorer...", "info")
         
-        # Construct the URL to your transaction detail page
-        base_url = "https://bank.linglin.art/"  # Adjust this to your actual domain
-        explorer_url = f"{base_url}/transaction-viewer/{tx_hash}"
+        # Check transaction type to use appropriate endpoint
+        tx_type = self.transaction_data.get('type', 'transfer')
+        base_url = "https://bank.linglin.art"
         
-        # Open in default web browser
+        if tx_type in ['reward', 'fee_distribution']:
+            explorer_url = f"{base_url}/transactions/verify_reward/{tx_hash}"
+        else:
+            explorer_url = f"{base_url}/transactions/verify/{tx_hash}"
+        
         import webbrowser
         webbrowser.open(explorer_url)
-        
-        # Alternative: If you want to open in an embedded browser in your app
-        # you would need to implement that based on your GUI framework
     
     def _share_details(self):
         """Share transaction details"""

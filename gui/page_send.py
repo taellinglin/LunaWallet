@@ -144,27 +144,15 @@ class SendPage:
             print(f"DEBUG: {error_msg}")
             return False, error_msg
     def get_available_balance(self):
-        """Get current wallet available balance from wallet_core or transactions"""
+        """Get current wallet available balance from transactions (bypassing LunaLib WalletManager)"""
         try:
             if not hasattr(self.app, 'wallet_core') or not self.app.wallet_core:
                 return 0.0
-            
-            # Determine which address to use
             wallet_address = self.from_address or getattr(self.app.wallet_core, 'current_wallet_address', None)
             if not wallet_address:
                 return 0.0
             
-            # First try to get from wallet_core cache
-            if hasattr(self.app.wallet_core, 'wallets') and isinstance(self.app.wallet_core.wallets, dict):
-                wallet_data = self.app.wallet_core.wallets.get(wallet_address, {})
-                confirmed_balance = wallet_data.get('confirmed_balance')
-                
-                if confirmed_balance is not None and confirmed_balance > 0:
-                    print(f"DEBUG SendPage: Using cached balance from wallet_core - {confirmed_balance:.6f} LKC")
-                    return confirmed_balance
-            
-            # If no cache, calculate from transactions
-            print(f"DEBUG SendPage: Cache miss, calculating balance from transactions...")
+            # Calculate balance from transactions directly (avoid LunaLib WalletManager issues)
             confirmed_balance = 0.0
             wallet_addr_lower = wallet_address.lower()
             
@@ -185,16 +173,22 @@ class SendPage:
                         if tx_status != 'confirmed':
                             continue
                         
-                        tx_from = tx.get('from', '').lower()
-                        tx_to = tx.get('to', '').lower()
+                        # Handle both field name formats
+                        tx_from = tx.get('from', tx.get('from_address', '')).lower()
+                        tx_to = tx.get('to', tx.get('to_address', '')).lower()
                         reward_addr = tx.get('reward_address', '').lower()
-                        tx_type = tx.get('type', 'transfer').lower()
+                        recipient_addr = tx.get('recipient', '').lower()
+                        tx_type = tx.get('type', tx.get('tx_type', 'transfer')).lower()
                         amount = float(tx.get('amount', 0))
                         fee = float(tx.get('fee', 0))
                         
                         # Mining reward
                         if tx_type == 'reward':
                             if (tx_to == wallet_addr_lower or reward_addr == wallet_addr_lower):
+                                confirmed_balance += amount
+                        # Fee distribution (additional reward type)
+                        elif tx_type == 'fee_distribution':
+                            if (tx_to == wallet_addr_lower or reward_addr == wallet_addr_lower or recipient_addr == wallet_addr_lower):
                                 confirmed_balance += amount
                         # Incoming transfer
                         elif tx_to == wallet_addr_lower:
@@ -213,7 +207,7 @@ class SendPage:
             return confirmed_balance
             
         except Exception as e:
-            print(f"DEBUG: Error getting available balance: {e}")
+            print(f"DEBUG: Error calculating available balance: {e}")
             import traceback
             traceback.print_exc()
             return 0.0

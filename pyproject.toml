@@ -50,7 +50,8 @@ hiddenimports = [
     "playsound",
     "qrcode",
     "PIL",
-    "certifi"
+    "certifi",
+    "base58",
 ]
 
 # Exclude unnecessary packages to reduce size
@@ -69,4 +70,3 @@ version-file = "version_info.txt"
 # Additional PyInstaller options
 [tool.pyinstaller.windows]
 target_arch = "x64"
-base58 = "*"
