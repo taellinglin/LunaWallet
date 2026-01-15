@@ -7,13 +7,6 @@ import sys
 # Try multiple audio backends based on platform
 AUDIO_BACKEND = None
 
-# Try pygame first (cross-platform)
-try:
-    import pygame
-    AUDIO_BACKEND = 'pygame'
-except ImportError:
-    pass
-
 # On Windows, try winsound as fallback
 if not AUDIO_BACKEND and platform.system() == 'Windows':
     try:
@@ -41,17 +34,7 @@ class SoundManager:
         self.is_mobile = self._detect_mobile()
         
         # Initialize the appropriate backend
-        if self.backend == 'pygame':
-            try:
-                pygame.mixer.init()
-                # Allocate enough channels for simultaneous sound plays
-                pygame.mixer.set_num_channels(8)
-                self.initialized = True
-                print(f"DEBUG: SoundManager initialized with pygame backend (cross-platform)")
-            except Exception as e:
-                print(f"DEBUG: Failed to initialize pygame mixer: {e}")
-                self.backend = None
-        elif self.backend == 'winsound':
+        if self.backend == 'winsound':
             self.initialized = True
             print(f"DEBUG: SoundManager initialized with winsound backend (Windows only)")
         elif self.is_mobile and FLET_AVAILABLE:
@@ -101,9 +84,7 @@ class SoundManager:
             
             print(f"DEBUG: Playing sound: {sound_path} (backend: {self.backend}, mobile: {self.is_mobile})")
             
-            if self.backend == 'pygame':
-                return self._play_with_pygame(sound_path, async_play)
-            elif self.backend == 'winsound':
+            if self.backend == 'winsound':
                 return self._play_with_winsound(sound_path, async_play)
             elif self.is_mobile and FLET_AVAILABLE:
                 return self._play_with_flet(sound_path, async_play)
@@ -112,44 +93,6 @@ class SoundManager:
                 return False
         except Exception as e:
             print(f"DEBUG: Error playing sound {sound_name}: {e}")
-            import traceback
-            traceback.print_exc()
-            return False
-    
-    def _play_with_pygame(self, sound_path, async_play=True):
-        """Play sound using pygame mixer - Works on Windows, macOS, Linux
-        
-        This is the recommended backend for desktop platforms and has the widest compatibility.
-        """
-        try:
-            # Always load fresh sound to allow rapid successive plays
-            # Don't use cache for pygame as it prevents rapid replays
-            sound = pygame.mixer.Sound(sound_path)
-            
-            # Play sound using a dedicated channel to avoid conflicts
-            # Find an available channel or allocate a new one
-            try:
-                # Use a specific channel (e.g., channel 0) to allow multiple simultaneous plays
-                channel = pygame.mixer.find_channel()
-                if channel:
-                    channel.play(sound)
-                else:
-                    # If no channel available, allocate more channels and retry
-                    pygame.mixer.set_num_channels(pygame.mixer.get_num_channels() + 1)
-                    channel = pygame.mixer.find_channel()
-                    if channel:
-                        channel.play(sound)
-                    else:
-                        # Fallback to direct play
-                        sound.play()
-            except:
-                # Fallback if channel approach fails
-                sound.play()
-            
-            print(f"DEBUG: Sound played successfully with pygame (fresh load)")
-            return True
-        except Exception as e:
-            print(f"DEBUG: Error playing with pygame: {e}")
             import traceback
             traceback.print_exc()
             return False
@@ -197,10 +140,6 @@ class SoundManager:
             print(f"DEBUG: Flet audio playback not directly supported from background thread")
             print(f"DEBUG: Consider using platform-specific audio APIs or embedding audio control in Flet app")
             
-            # Try using pygame as fallback on mobile
-            if self.backend == 'pygame':
-                return self._play_with_pygame(sound_path, async_play)
-            
             return False
         except Exception as e:
             print(f"DEBUG: Error playing with Flet: {e}")
@@ -218,12 +157,8 @@ class SoundManager:
     
     def stop_all(self):
         """Stop all currently playing sounds"""
-        if self.backend == 'pygame':
-            try:
-                pygame.mixer.stop()
-                print("DEBUG: Stopped all sounds (pygame)")
-            except Exception as e:
-                print(f"DEBUG: Error stopping sounds: {e}")
+        # No-op for winsound/flet backends
+        return
     
     def cleanup(self):
         """Clean up resources"""

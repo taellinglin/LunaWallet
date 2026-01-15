@@ -23,7 +23,7 @@ a = Analysis(
         'base64',
         'typing'
     ],
-    hookspath=[],
+    hookspath=['hooks'],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[

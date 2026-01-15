@@ -11,28 +11,56 @@ class SendPage:
         self.from_address = from_address
         
         # Form fields
-        field_width = 400 if not app.is_mobile else 300
+        field_width = 420 if not app.is_mobile else 320
         self.recipient = ft.TextField(
-            label="👤 Recipient Address", 
-            hint_text="Enter Luna address", 
-            width=field_width
+            label="Recipient Address",
+            hint_text="Enter Luna address",
+            width=field_width,
+            bgcolor="#1a0f0f",
+            border_color="#5c2e2e",
+            focused_border_color="#dc3545",
+            color="#f8d7da",
+            label_style=ft.TextStyle(color="#f8d7da"),
+            text_style=ft.TextStyle(color="#f8d7da"),
+            prefix_icon=ft.Icons.PERSON,
         )
         self.amount = ft.TextField(
-            label="💰 Amount (LKC)", 
-            hint_text="0.00", 
-            width=field_width
+            label="Amount (LKC)",
+            hint_text="0.00",
+            width=field_width,
+            bgcolor="#1a0f0f",
+            border_color="#5c2e2e",
+            focused_border_color="#dc3545",
+            color="#f8d7da",
+            label_style=ft.TextStyle(color="#f8d7da"),
+            text_style=ft.TextStyle(color="#f8d7da"),
+            prefix_icon=ft.Icons.ATTACH_MONEY,
         )
         self.memo = ft.TextField(
-            label="📝 Memo (Optional)", 
-            hint_text="Add a note", 
-            width=field_width
+            label="Memo (Optional)",
+            hint_text="Add a note",
+            width=field_width,
+            bgcolor="#1a0f0f",
+            border_color="#5c2e2e",
+            focused_border_color="#dc3545",
+            color="#f8d7da",
+            label_style=ft.TextStyle(color="#f8d7da"),
+            text_style=ft.TextStyle(color="#f8d7da"),
+            prefix_icon=ft.Icons.NOTE_ALT,
         )
         self.password = ft.TextField(
-            label="🔒 Confirm Password", 
-            password=True, 
+            label="Password",
+            password=True,
             can_reveal_password=True,
-            hint_text="Enter your password", 
-            width=field_width
+            hint_text="Enter your password",
+            width=field_width,
+            bgcolor="#1a0f0f",
+            border_color="#5c2e2e",
+            focused_border_color="#dc3545",
+            color="#f8d7da",
+            label_style=ft.TextStyle(color="#f8d7da"),
+            text_style=ft.TextStyle(color="#f8d7da"),
+            prefix_icon=ft.Icons.LOCK,
         )
         # サウンド再生用のパス（PyInstaller対応）
         import sys
@@ -43,14 +71,15 @@ class SendPage:
             self.send_sound_path = os.path.join("assets", "sounds", "send.wav")
         self.loading_ring = ft.ProgressRing(visible=False, width=20, height=20)
         self.send_button = ft.ElevatedButton(
-            "📨 Send Transaction",
+            "Send",
             on_click=self._send_transaction_thread,
             style=ft.ButtonStyle(
                 color="#ffffff",
                 bgcolor="#dc3545",
-                padding=20
+                padding=ft.padding.symmetric(horizontal=18, vertical=12),
+                shape=ft.RoundedRectangleBorder(radius=8)
             ),
-            width=200
+            width=160
         )
 
     def _prepare_wallet_for_sending(self, password):
@@ -167,6 +196,18 @@ class SendPage:
             # Calculate balance from transactions directly (avoid LunaLib WalletManager issues)
             confirmed_balance = 0.0
             wallet_addr_lower = wallet_address.lower()
+            min_confirmations = 6
+            latest_height = None
+            try:
+                if hasattr(self.app, 'blockchain_manager') and self.app.blockchain_manager:
+                    if hasattr(self.app.blockchain_manager, 'get_latest_block'):
+                        block = self.app.blockchain_manager.get_latest_block()
+                        if block and isinstance(block, dict):
+                            latest_height = int(block.get('index', 0) or 0)
+                    if latest_height is None and hasattr(self.app.blockchain_manager, 'get_blockchain_height'):
+                        latest_height = int(self.app.blockchain_manager.get_blockchain_height() or 0)
+            except Exception:
+                latest_height = None
             
             # Get transactions from database
             if hasattr(self.app, 'database'):
@@ -182,7 +223,14 @@ class SendPage:
                     # Calculate balance from transactions
                     for tx in all_txs:
                         tx_status = tx.get('status', 'confirmed').lower()
-                        if tx_status != 'confirmed':
+                        block_height = tx.get('block_height', None)
+                        confirmations = None
+                        if block_height is not None and latest_height is not None:
+                            try:
+                                confirmations = max(0, int(latest_height) - int(block_height) + 1)
+                            except Exception:
+                                confirmations = None
+                        if tx_status != 'confirmed' or (confirmations is not None and confirmations < min_confirmations):
                             continue
                         
                         # Handle both field name formats
@@ -664,7 +712,10 @@ class SendPage:
                         icon_color="#f8d7da", 
                         on_click=lambda e: self.on_back()
                     ),
-                    ft.Text("📤 Send Luna", size=24, weight="bold", color="#f8d7da"),
+                    ft.Column([
+                        ft.Text("Send", size=22, weight="bold", color="#f8d7da"),
+                        ft.Text("Transfer funds to another address", size=12, color="#a8a8a8"),
+                    ], spacing=2),
                     ft.Container(expand=True)
                 ]),
                 ft.Divider(color="#5c2e2e"),
@@ -672,25 +723,9 @@ class SendPage:
                 # Centered form container - scrollable to fit content
                 ft.Container(
                     content=ft.Column([
-                        ft.Text(
-                            "💡 Instructions:\n"
-                            "1. Enter the recipient's wallet address\n"
-                            "2. Specify the amount to send\n"
-                            "3. Add an optional memo\n"
-                            "4. Enter your password to confirm\n"
-                            "5. Click Send Transaction",
-                            size=12, 
-                            color="#f8d7da",
-                            weight="normal"
-                        ),
-                        ft.Container(height=20),
-                        ft.Text(
-                            f"💰 Available: {balance:.6f} LKC", 
-                            size=16, 
-                            color="#90EE90",
-                            weight="bold"
-                        ),
-                        ft.Container(height=20),
+                        ft.Text(f"Available: {balance:.6f} LKC", size=12, color="#f0c2c2"),
+                        ft.Text("Minimum confirmations: 6", size=10, color="#8d6e6e"),
+                        ft.Container(height=12),
                         self.recipient,
                         ft.Container(height=10),
                         self.amount,
@@ -698,7 +733,7 @@ class SendPage:
                         self.memo,
                         ft.Container(height=10),
                         self.password,
-                        ft.Container(height=30),
+                        ft.Container(height=16),
                         ft.Row(
                             [
                                 self.send_button,
@@ -712,15 +747,16 @@ class SendPage:
                     scroll=ft.ScrollMode.AUTO
                     ),
                     padding=20,
-                    margin=0,
+                    margin=ft.margin.symmetric(vertical=6),
                     bgcolor="#1a0f0f",
-                    border_radius=15,
+                    border_radius=12,
+                    border=ft.border.all(1, "#5c2e2e"),
                     alignment=ft.Alignment(0, 0),
                     expand=True
                 )
             ]),
             expand=True,
-            padding=0,
+            padding=10,
             bgcolor="#2c1a1a",
             alignment=ft.Alignment(0, 0)
         )

@@ -13,15 +13,14 @@ readme = "README.md"
 requires-python = ">=3.8"
 dependencies = [
     "flet>=0.10.0",
-    "qrcode[pil]>=7.4.0",
-    "lunalib==1.6.6",
-    "certifi",
-    "pygame>=2.1.0",  # For sound support
-    "pillow>=9.0.0",   # For image processing
+    "qrcode>=7.4.0",
+    "lunalib==1.8.6",
+    "requests",
+    "cryptography==43.0.1; sys_platform != \"android\"",
     "pyperclip",
-     "base58",         # Added base58 dependency
-     "tqdm",
-     "rich"
+    "base58",         # Added base58 dependency
+    "tqdm",
+    "rich"
 ]
 
 [project.urls]

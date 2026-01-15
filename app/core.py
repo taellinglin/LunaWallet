@@ -136,21 +136,27 @@ def diagnose_network():
         # Silently fail
         pass
 
-# Ensure cache directory exists
-cache_dir = Path.home() / "AppData" / "Local" / "lunalib" / "cache"
-cache_dir.mkdir(parents=True, exist_ok=True)
-
 # FIX: Ensure cache directory exists with proper permissions
 def setup_cache_directory():
     """Create cache directory for lunalib with proper permissions"""
     try:
         # Try multiple possible cache locations
-        cache_locations = [
-            Path.home() / "AppData" / "Local" / "lunalib" / "cache",
-            Path.home() / ".lunalib" / "cache", 
+        cache_locations = []
+        flet_storage = os.getenv("FLET_APP_STORAGE")
+        if flet_storage:
+            cache_locations.append(Path(flet_storage) / "lunalib" / "cache")
+
+        home_dir = Path(os.path.expanduser("~"))
+        if str(home_dir) not in ("", "/"):
+            cache_locations.extend([
+                home_dir / ".lunalib" / "cache",
+                home_dir / "lunalib" / "cache",
+            ])
+
+        cache_locations.extend([
             Path("./.lunalib_cache"),
-            Path("/tmp/lunalib_cache")  # For Unix-like systems
-        ]
+            Path("/tmp/lunalib_cache"),  # For Unix-like systems
+        ])
         
         for cache_dir in cache_locations:
             try:
@@ -190,6 +196,7 @@ def setup_cache_directory():
 
 # Initialize cache directory before any lunalib imports
 CACHE_DIR = setup_cache_directory()
+cache_dir = Path(CACHE_DIR)
 
 class LunaWalletApp:
     """Luna Wallet Application with Red Theme - Responsive Mobile Support"""
@@ -245,7 +252,7 @@ class LunaWalletApp:
         self.snack_bar = None
         self.selected_wallet_index = 0
         self.last_activity_time = time.time()
-        self.auto_lock_minutes = 30
+        self.auto_lock_minutes = 15
         self.is_locked = True
         self.is_mobile = False
         self.is_landscape = False
@@ -296,6 +303,41 @@ class LunaWalletApp:
         self.last_scanned_block = 0
         self.wallet_balances_cache = {}  # Cache of wallet balances to detect changes
         self.scan_interval = 30  # Scan every 30 seconds
+        self._inactivity_monitor_started = False
+
+    def _register_activity(self, *_args, **_kwargs):
+        """Update last activity time for inactivity auto-lock."""
+        self.last_activity_time = time.time()
+
+    def _start_inactivity_monitor(self):
+        """Start background monitor to auto-lock after inactivity."""
+        if self._inactivity_monitor_started:
+            return
+        self._inactivity_monitor_started = True
+
+        def _monitor():
+            while True:
+                try:
+                    time.sleep(15)
+                    if self.is_locked:
+                        continue
+                    idle_seconds = time.time() - self.last_activity_time
+                    if idle_seconds >= self.auto_lock_minutes * 60:
+                        def _do_lock():
+                            try:
+                                self.show_snackbar("Wallet locked due to inactivity", "info")
+                                self.lock_wallet()
+                            except Exception as e:
+                                print(f"DEBUG: Auto-lock error: {e}")
+                        if hasattr(self, 'page') and self.page and hasattr(self.page, 'run_thread'):
+                            self.page.run_thread(_do_lock)
+                        else:
+                            _do_lock()
+                        self.last_activity_time = time.time()
+                except Exception as e:
+                    print(f"DEBUG: Inactivity monitor error: {e}")
+
+        threading.Thread(target=_monitor, daemon=True).start()
 
     def show_snackbar(self, message: str, message_type: str = "info"):
         """Display a slim notification panel docked at the bottom of the window.
@@ -441,26 +483,43 @@ class LunaWalletApp:
             return
 
         try:
-            sound_path = os.path.abspath(
-                os.path.join(os.path.dirname(__file__), "..", "assets", "sounds", f"{sound_type}.wav")
+            base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+            sounds_dir = os.path.join(base_dir, "assets", "sounds")
+            fallback_map = {
+                "transfer": "transaction",
+                "reward": "transaction",
+                "lock": "transaction",
+                "unlock": "transaction",
+            }
+            sound_name = sound_type
+            sound_path = os.path.join(sounds_dir, f"{sound_name}.wav")
+
+            if not os.path.exists(sound_path) and sound_name in fallback_map:
+                sound_name = fallback_map[sound_name]
+                sound_path = os.path.join(sounds_dir, f"{sound_name}.wav")
+
+            if not os.path.exists(sound_path):
+                print(f"Sound file missing: {sound_path}")
+                return
+
+            # Prefer SoundManager if available (Windows winsound / platform-specific)
+            if hasattr(self, 'sound_manager') and self.sound_manager:
+                try:
+                    if self.sound_manager.play_sound(sound_name):
+                        return
+                except Exception as sm_err:
+                    print(f"SoundManager error: {sm_err}")
+
+            # Fallback to Flet audio
+            if not hasattr(self, 'page') or not self.page:
+                return
+
+            audio = ft.Audio(
+                src=os.path.join("assets", "sounds", f"{sound_name}.wav"),
+                autoplay=True,
             )
-            # Use Flet audio for mobile compatibility
-            if sound_type == "transaction":
-                audio = ft.Audio(
-                    src=sound_path,
-                    autoplay=True,
-                )
-                self.page.overlay.append(audio)
-                print("play transaction sound")
-                self.page.update()
-            elif sound_type == "send":
-                audio = ft.Audio(
-                    src=sound_path,
-                    autoplay=True,
-                )
-                self.page.overlay.append(audio)
-                print("play send sound")
-                self.page.update()
+            self.page.overlay.append(audio)
+            self.page.update()
         except Exception as e:
             print(f"Sound error: {e}")
 
@@ -795,6 +854,17 @@ class LunaWalletApp:
 
         page.on_resize = self.on_page_resize
 
+        # Track user activity for auto-lock
+        try:
+            if hasattr(page, "on_keyboard_event"):
+                page.on_keyboard_event = self._register_activity
+            if hasattr(page, "on_pointer_event"):
+                page.on_pointer_event = self._register_activity
+        except Exception as e:
+            print(f"DEBUG: Failed to attach activity handlers: {e}")
+
+        self._start_inactivity_monitor()
+
         # Check for existing wallets and show appropriate screen
         self.initialize_wallet_state()
 
@@ -1032,6 +1102,7 @@ class LunaWalletApp:
         print("DEBUG: lock_wallet called")
         self.is_locked = True
         self.continuous_scan_active = False  # Stop continuous scanning
+        self._play_sound("lock")
         self.show_lock_page(
             title="Wallet Locked",
             subtitle="Enter password to unlock",
@@ -1083,6 +1154,7 @@ class LunaWalletApp:
         """Handle transaction sent confirmation"""
         print("DEBUG: on_transaction_sent called")
         self.show_snackbar("Transaction sent successfully!", "success")
+        self._play_sound("send")
         # Return to wallet page
         self.show_wallet_page()
 
@@ -1090,6 +1162,7 @@ class LunaWalletApp:
         """Handle lock action - lock the wallet"""
         print("DEBUG: on_lock called")
         self.is_locked = True
+        self._play_sound("lock")
         self.show_lock_page(
             title="Wallet Locked",
             subtitle="Enter password to unlock",
@@ -1212,6 +1285,7 @@ class LunaWalletApp:
                 print("[UNLOCK] Wallet unlocked successfully")
                 _global_trace("Wallet unlocked successfully", "UNLOCK")
                 self.is_locked = False
+                self._play_sound("unlock")
                 
                 # Save wallet state
                 self.save_wallet_data(force_save=True)
@@ -1276,10 +1350,13 @@ class LunaWalletApp:
                 # Perform the full scan
                 wallet_addresses = list(self.wallet_core.wallets.keys())
                 if wallet_addresses:
+                    self._update_scan_loading("Connecting to node...")
                     latest_block = self.blockchain_manager.get_latest_block()
                     latest_height = latest_block.get('index', 0) if latest_block else 0
+                    self._update_scan_loading(f"Scanning Transactions (0-{latest_height})...")
                     self._perform_full_blockchain_scan(wallet_addresses, latest_height)
                     self.last_scanned_block = latest_height
+                    self._update_scan_loading("Processing results...")
                 
                 self.initial_scan_complete = True
                 print("DEBUG: Initial blockchain scan COMPLETED.")
@@ -1302,6 +1379,18 @@ class LunaWalletApp:
                         self.page.run_thread(self.wallet_page.hide_loading)
 
         threading.Thread(target=initial_scan_thread, daemon=True).start()
+
+    def _update_scan_loading(self, text):
+        """Update scan overlay text without toggling visibility."""
+        try:
+            if hasattr(self, 'wallet_page') and self.wallet_page:
+                if hasattr(self.wallet_page, 'show_loading'):
+                    if hasattr(self, 'page') and self.page and hasattr(self.page, 'run_thread'):
+                        self.page.run_thread(self.wallet_page.show_loading, text)
+                    else:
+                        self.wallet_page.show_loading(text)
+        except Exception as e:
+            print(f"DEBUG: Error updating scan loading text: {e}")
 
     def show_create_wallet(self):
         """Display the wallet creation page or dialog."""
@@ -1331,7 +1420,41 @@ class LunaWalletApp:
         - If force_full_scan=True: Do complete blockchain scan from start, cache results, then update all balances
         - Otherwise: Only check for NEW transactions since last scan, update balances when new found
         """
+        show_ready = threading.Event()
+
+        def _show_scan_loading():
+            try:
+                if hasattr(self, 'wallet_page') and self.wallet_page:
+                    def _do_show():
+                        try:
+                            self.wallet_page.show_loading("Scanning Transactions...")
+                        finally:
+                            show_ready.set()
+
+                    if hasattr(self, 'page') and self.page and hasattr(self.page, 'run_thread'):
+                        self.page.run_thread(_do_show)
+                    else:
+                        _do_show()
+                else:
+                    show_ready.set()
+            except Exception as e:
+                print(f"DEBUG: Error showing scan loading: {e}")
+                show_ready.set()
+
+        def _hide_scan_loading():
+            try:
+                if hasattr(self, 'wallet_page') and self.wallet_page:
+                    self.wallet_page.hide_loading()
+            except Exception as e:
+                print(f"DEBUG: Error hiding scan loading: {e}")
+
+        start_time = time.time()
         try:
+            _show_scan_loading()
+            try:
+                show_ready.wait(timeout=0.3)
+            except Exception:
+                pass
             if not hasattr(self, 'wallet_core') or not self.wallet_core or not hasattr(self.wallet_core, 'wallets'):
                 return
             
@@ -1371,16 +1494,27 @@ class LunaWalletApp:
             print(f"DEBUG: Error in scan_all_wallets_for_changes: {e}")
             import traceback
             traceback.print_exc()
+        finally:
+            try:
+                elapsed = time.time() - start_time
+                min_visible = 0.5
+                if elapsed < min_visible:
+                    time.sleep(min_visible - elapsed)
+            except Exception:
+                pass
+            _hide_scan_loading()
 
     def _perform_full_blockchain_scan(self, wallet_addresses, latest_height):
         """Perform complete blockchain scan from genesis using batch API"""
         try:
             print(f"DEBUG: Starting full blockchain scan using batch API (0 to {latest_height})")
+            self._update_scan_loading(f"Scanning Transactions (multi-scan 0-{latest_height})...")
             
             # Use new batch method: scan_transactions_for_addresses(addresses: List[str])
             # Returns Dict[str, List[Dict]] where keys are addresses
             print(f"[OK] Using batch scan_transactions_for_addresses() for {len(wallet_addresses)} wallets")
             all_transactions = self.blockchain_manager.scan_transactions_for_addresses(wallet_addresses)
+            self._update_scan_loading("Processing scanned transactions...")
             
             # ALSO get sent transactions for each wallet, as scan_transactions_for_addresses might only get incoming
             for wallet_addr in wallet_addresses:
@@ -1728,7 +1862,12 @@ class LunaWalletApp:
                         if is_incoming:
                             print(f"    ✨ NEW incoming {tx_type}: {amount} LKC")
                             # Play sound for new incoming transaction
-                            self._play_transaction_sound()
+                            if tx_type == 'reward' or tx_type == 'fee_distribution':
+                                self._play_sound("reward")
+                            elif tx_type == 'transfer':
+                                self._play_sound("transfer")
+                            else:
+                                self._play_transaction_sound()
                         else:
                             tx['tx_age'] = 'old'  # Mark outgoing as old
                     else:
@@ -1745,37 +1884,8 @@ class LunaWalletApp:
     def _play_transaction_sound(self):
         """Play transaction notification sound"""
         try:
-            import os
-            sound_file = os.path.abspath(
-                os.path.join(os.path.dirname(__file__), "..", "assets", "sounds", "transaction.wav")
-            )
-            
-            if os.path.exists(sound_file):
-                print(f"Playing transaction sound: {sound_file}")
-                # Try to play using platform-specific methods
-                try:
-                    import platform
-                    system = platform.system()
-                    
-                    if system == 'Windows':
-                        import winsound
-                        winsound.PlaySound(sound_file, winsound.SND_FILENAME)
-                    elif system == 'Darwin':  # macOS
-                        os.system(f'afplay "{sound_file}"')
-                    elif system == 'Linux':
-                        os.system(f'paplay "{sound_file}"')
-                except Exception as play_error:
-                    print(f"Could not play sound with platform method: {play_error}")
-                    # Fallback: try with pygame if available
-                    try:
-                        import pygame
-                        pygame.mixer.init()
-                        pygame.mixer.music.load(sound_file)
-                        pygame.mixer.music.play()
-                    except:
-                        print("Could not play sound with pygame either")
-            else:
-                print(f"Sound file not found: {sound_file}")
+            # Use Flet audio for mobile/Desktop compatibility
+            self._play_sound("transaction")
         except Exception as e:
             print(f"Error playing sound: {e}")
 

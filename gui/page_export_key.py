@@ -5,20 +5,48 @@ class ExportKeyPage:
         self.app = app
         self.on_back = on_back
         self.wallet_address = wallet_address
+        self._field_width = 420 if not app.is_mobile else 320
         
         # Form fields
-        field_width = 400 if not app.is_mobile else 300
         self.password = ft.TextField(
-            label="🔒 Enter Password", password=True, can_reveal_password=True,
-            hint_text="Enter your wallet password", width=field_width
+            label="Password",
+            password=True,
+            can_reveal_password=True,
+            hint_text="Enter your wallet password",
+            width=self._field_width,
+            bgcolor="#1a0f0f",
+            border_color="#5c2e2e",
+            focused_border_color="#dc3545",
+            color="#f8d7da",
+            label_style=ft.TextStyle(color="#f8d7da"),
+            text_style=ft.TextStyle(color="#f8d7da"),
+            prefix_icon=ft.Icons.LOCK,
         )
         self.private_key_display = ft.TextField(
-            label="🔑 Your Private Key", multiline=True, read_only=True,
-            width=field_width, height=100, visible=False
+            label="Private Key",
+            multiline=True,
+            read_only=True,
+            width=self._field_width,
+            height=120,
+            visible=False,
+            bgcolor="#140b0b",
+            border_color="#5c2e2e",
+            focused_border_color="#dc3545",
+            color="#f8d7da",
+            label_style=ft.TextStyle(color="#f8d7da"),
+            text_style=ft.TextStyle(color="#f8d7da", font_family="monospace"),
+            prefix_icon=ft.Icons.KEY,
         )
         self.copy_button = ft.ElevatedButton(
-            "📋 Copy to Clipboard", icon=ft.Icons.COPY, on_click=self.copy_private_key,
-            style=ft.ButtonStyle(color="#ffffff", bgcolor="#dc3545", padding=15),
+            "Copy to Clipboard",
+            icon=ft.Icons.COPY,
+            on_click=self.copy_private_key,
+            style=ft.ButtonStyle(
+                color="#ffffff",
+                bgcolor="#dc3545",
+                padding=ft.padding.symmetric(horizontal=18, vertical=12),
+                shape=ft.RoundedRectangleBorder(radius=8)
+            ),
             visible=False
         )
         
@@ -28,42 +56,76 @@ class ExportKeyPage:
                 # Header
                 ft.Row([
                     ft.IconButton(ft.Icons.ARROW_BACK, icon_color="#f8d7da", on_click=lambda e: self.on_back()),
-                    ft.Text("🔑 Export Private Key", size=24, weight="bold", color="#f8d7da"),
+                    ft.Column([
+                        ft.Text("Export Private Key", size=22, weight="bold", color="#f8d7da"),
+                        ft.Text("For advanced users only", size=12, color="#a8a8a8"),
+                    ], spacing=2),
                     ft.Container(expand=True)
                 ]),
                 ft.Divider(color="#5c2e2e"),
                 
                 # Warning
                 ft.Container(
-                    content=ft.Column([
-                        ft.Icon(ft.Icons.WARNING, color="#FF6B6B", size=40),
-                        ft.Text("⚠️ Security Warning", size=18, color="#FF6B6B", weight="bold"),
-                        ft.Text(
-                            "🚫 Never share your private key with anyone! "
-                            "Anyone with this key can access your funds.",
-                            color="#FF6B6B", text_align="center"
-                        )
-                    ], horizontal_alignment=ft.CrossAxisAlignment.CENTER),
-                    padding=20, margin=10, bgcolor="#2a1e1e", border_radius=10,
-                    expand=True
+                    content=ft.Row([
+                        ft.Container(
+                            width=4,
+                            bgcolor="#ff6b6b",
+                            border_radius=4
+                        ),
+                        ft.Column([
+                            ft.Text("Security Warning", size=16, color="#ff6b6b", weight="bold"),
+                            ft.Text(
+                                "Never share your private key. Anyone with this key can access your funds.",
+                                color="#f0b4b4",
+                                size=11
+                            ),
+                        ], spacing=4, expand=True)
+                    ], spacing=12),
+                    padding=16,
+                    margin=ft.margin.symmetric(vertical=8),
+                    bgcolor="#2a1e1e",
+                    border_radius=10,
+                    border=ft.border.all(1, "#5c2e2e"),
+                    expand=False
                 ),
                 
                 # Centered form container
                 ft.Container(
                     content=ft.Column([
+                        ft.Text("Verify Password", size=14, color="#f8d7da", weight="bold", text_align="center"),
+                        ft.Text(
+                            "Enter your wallet password to reveal the private key.",
+                            size=11,
+                            color="#a8a8a8",
+                            text_align="center"
+                        ),
+                        ft.Container(height=10),
                         self.password,
+                        ft.Container(height=10),
                         self.private_key_display,
-                        ft.Container(height=20),
+                        ft.Container(height=12),
                         ft.Row([
                             ft.ElevatedButton(
-                                "👁️ Show Private Key", on_click=self.show_private_key,
-                                style=ft.ButtonStyle(color="#ffffff", bgcolor="#dc3545", padding=15)
+                                "Show Private Key",
+                                on_click=self.show_private_key,
+                                icon=ft.Icons.VISIBILITY,
+                                style=ft.ButtonStyle(
+                                    color="#ffffff",
+                                    bgcolor="#dc3545",
+                                    padding=ft.padding.symmetric(horizontal=18, vertical=12),
+                                    shape=ft.RoundedRectangleBorder(radius=8)
+                                )
                             ),
                             self.copy_button
-                        ], alignment=ft.MainAxisAlignment.CENTER)
-                    ], horizontal_alignment=ft.CrossAxisAlignment.CENTER),
-                    padding=20, margin=15, bgcolor="#1a0f0f", border_radius=15,
-                    alignment=ft.Alignment(0, 0), expand=True
+                        ], alignment=ft.MainAxisAlignment.CENTER, spacing=10)
+                    ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=0),
+                    padding=20,
+                    margin=ft.margin.symmetric(vertical=8),
+                    bgcolor="#1a0f0f",
+                    border_radius=12,
+                    border=ft.border.all(1, "#5c2e2e"),
+                    alignment=ft.Alignment(0, 0),
+                    expand=True
                 )
             ]),
             expand=True, padding=10, bgcolor="#2c1a1a", alignment=ft.Alignment(0, 0)

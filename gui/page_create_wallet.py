@@ -6,45 +6,49 @@ class CreateWalletPage:
         self.app = app
         self.on_back = on_back
         self.on_wallet_created = on_wallet_created
+        self._field_width = 420 if not app.is_mobile else 320
         
         # Form fields
         self.wallet_name = ft.TextField(
             label="Wallet Name",
             hint_text="My Wallet",
             value="My Wallet",  # Default value
-            width=300,
+            width=self._field_width,
             border_color="#5c2e2e",
             focused_border_color="#dc3545",
             text_size=14,
             color="#f8d7da",
             cursor_color="#dc3545",
             label_style=ft.TextStyle(color="#f8d7da"),
+            bgcolor="#1a0f0f",
         )
         self.password = ft.TextField(
             label="Password", 
             password=True,
             can_reveal_password=True,
             hint_text="Password to encrypt wallet",
-            width=300,
+            width=self._field_width,
             border_color="#5c2e2e",
             focused_border_color="#dc3545",
             text_size=14,
             color="#f8d7da",
             cursor_color="#dc3545",
             label_style=ft.TextStyle(color="#f8d7da"),
+            bgcolor="#1a0f0f",
         )
         self.confirm_password = ft.TextField(
             label="Confirm Password",
             password=True,
             can_reveal_password=True, 
             hint_text="Confirm password",
-            width=300,
+            width=self._field_width,
             border_color="#5c2e2e",
             focused_border_color="#dc3545",
             text_size=14,
             color="#f8d7da",
             cursor_color="#dc3545",
             label_style=ft.TextStyle(color="#f8d7da"),
+            bgcolor="#1a0f0f",
         )
         
         # Create button reference for updating state
@@ -54,9 +58,10 @@ class CreateWalletPage:
             style=ft.ButtonStyle(
                 color="#ffffff",
                 bgcolor="#dc3545",
-                padding=ft.Padding.symmetric(horizontal=30, vertical=15),
+                padding=ft.Padding.symmetric(horizontal=18, vertical=12),
+                shape=ft.RoundedRectangleBorder(radius=8)
             ),
-            width=200
+            width=160
         )
         # Progress indicator（必ず__init__で初期化）
         self.progress_indicator = ft.ProgressRing(
@@ -85,42 +90,35 @@ class CreateWalletPage:
     def create(self):
         return ft.Container(
             content=ft.Column([
-                # Back button at top left
-                ft.Container(
-                    content=ft.IconButton(
+                # Header
+                ft.Row([
+                    ft.IconButton(
                         icon=ft.Icons.ARROW_BACK,
                         icon_color="#f8d7da",
                         on_click=lambda e: self._on_back(),
                     ),
-                    alignment=ft.Alignment(-1, -1),
-                    padding=10
-                ),
+                    ft.Column([
+                        ft.Text("Create Wallet", size=22, weight="bold", color="#f8d7da"),
+                        ft.Text("Set up a new wallet", size=12, color="#a8a8a8"),
+                    ], spacing=2),
+                    ft.Container(expand=True)
+                ]),
+                ft.Divider(color="#5c2e2e"),
                 
                 # Centered form content
                 ft.Container(
                     content=ft.Column([
-                        # Wallet Icon
-                        ft.Container(
-                            content=ft.Icon(
-                                ft.Icons.ACCOUNT_BALANCE_WALLET, 
-                                size=60, 
-                                color="#dc3545"
-                            ),
-                            margin=ft.margin.only(bottom=20)
-                        ),
-                        
-                        ft.Text("Create New Wallet", size=24, weight="bold", color="#f8d7da"),
-                        ft.Container(height=10),
-                        ft.Text("Set up your first Luna wallet", size=16, color="#f8d7da"),
-                        ft.Container(height=30),
+                        ft.Text("Wallet Details", size=14, color="#f8d7da", weight="bold", text_align="center"),
+                        ft.Text("Use a strong password to protect your keys", size=11, color="#a8a8a8", text_align="center"),
+                        ft.Container(height=12),
                         
                         # Form fields
                         self.wallet_name,
-                        ft.Container(height=15),
+                        ft.Container(height=10),
                         self.password,
-                        ft.Container(height=15),
+                        ft.Container(height=10),
                         self.confirm_password,
-                        ft.Container(height=30),
+                        ft.Container(height=16),
                         
                         # Create button with progress indicator
                         ft.Row([
@@ -128,12 +126,17 @@ class CreateWalletPage:
                             self.progress_indicator
                         ], alignment=ft.MainAxisAlignment.CENTER, spacing=10)
                     ], horizontal_alignment=ft.CrossAxisAlignment.CENTER),
-                    padding=30,
-                    alignment=ft.Alignment(0, 0)
+                    padding=20,
+                    margin=ft.margin.symmetric(vertical=6),
+                    bgcolor="#1a0f0f",
+                    border_radius=12,
+                    border=ft.border.all(1, "#5c2e2e"),
+                    alignment=ft.Alignment(0, 0),
+                    expand=True
                 ),
             ]),
             expand=True,
-            padding=20,
+            padding=10,
             bgcolor="#2c1a1a",
             alignment=ft.Alignment(0, 0)
         )

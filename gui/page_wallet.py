@@ -39,7 +39,7 @@ class WalletPage:
         # Sidebar state
         self.sidebar_collapsed = False
         self.sidebar_width = 280
-        self.sidebar_collapsed_width = 60
+        self.sidebar_collapsed_width = 72
         # Refs for UI elements
         self.refs = {}
         # Transaction history state
@@ -60,25 +60,41 @@ class WalletPage:
         self.is_loading = False
         self.preloader = self.create_preloader()
         self.main_content = None
+        self._loading_hold = False
+        self._loading_refcount = 0
         # Threading lock for sidebar updates to prevent duplicates
         self.sidebar_update_lock = threading.Lock()
 
         self.sidebar = self._create_sidebar()
         self.main_area = self._create_wallet_content()
 
-        self.loading_overlay = ft.Container(
-            content=ft.Column(
-                [
-                    ft.ProgressRing(width=48, height=48, stroke_width=5, color="#dc3545"),
-                    ft.Text("Loading...", size=16, weight="bold", color="#f8d7da"),
-                ],
-                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                alignment=ft.MainAxisAlignment.CENTER,
-                spacing=20,
-            ),
-            alignment=ft.Alignment(0, 0),
+        self.loading_overlay = ft.Stack(
+            controls=[
+                ft.Container(
+                    expand=True,
+                    bgcolor="#000000",
+                    opacity=0.0,
+                    animate_opacity=ft.Animation(250, "easeOut"),
+                    data="dimmer",
+                ),
+                ft.Container(
+                    content=ft.Column(
+                        [
+                            ft.ProgressRing(width=48, height=48, stroke_width=5, color="#dc3545"),
+                            ft.Text("Loading...", size=16, weight="bold", color="#f8d7da"),
+                        ],
+                        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                        alignment=ft.MainAxisAlignment.CENTER,
+                        spacing=20,
+                    ),
+                    alignment=ft.Alignment(0, 0),
+                    expand=True,
+                    opacity=0.0,
+                    animate_opacity=ft.Animation(250, "easeOut"),
+                    data="overlay",
+                ),
+            ],
             expand=True,
-            bgcolor="rgba(26, 15, 15, 0.7)",
             visible=False,
         )
 
@@ -103,6 +119,8 @@ class WalletPage:
         def auto_hide_loading():
             import time
             time.sleep(0.5)  # Short delay to ensure wallet data is ready
+            if getattr(self, "_loading_refcount", 0) > 0 or getattr(self, "_loading_hold", False):
+                return
             self.hide_loading()
             
             # After data is loaded, refresh sidebar with correct balances
@@ -165,9 +183,8 @@ class WalletPage:
                 is_selected = control.data.get('address') == selected_address
 
             if self.sidebar_collapsed:
-                if hasattr(control.content, 'controls') and len(control.content.controls) > 0:
-                    icon_container = control.content.controls[0]
-                    icon_container.bgcolor = "#dc3545" if is_selected else "#5c2e2e"
+                if hasattr(control, 'content') and hasattr(control.content, 'bgcolor'):
+                    control.content.bgcolor = "#dc3545" if is_selected else "#5c2e2e"
             else:
                 control.bgcolor = "#2c1a1a" if is_selected else "transparent"
                 control.border = ft.border.all(2, "#dc3545" if is_selected else "transparent")
@@ -191,6 +208,45 @@ class WalletPage:
             bgcolor="#2c1a1a",
             visible=self.is_loading
         )
+
+    def _create_loading_overlay(self):
+        return ft.Stack(
+            controls=[
+                ft.Container(
+                    expand=True,
+                    bgcolor="#000000",
+                    opacity=0.0,
+                    animate_opacity=ft.Animation(250, "easeOut"),
+                    data="dimmer",
+                ),
+                ft.Container(
+                    content=ft.Column(
+                        [
+                            ft.ProgressRing(width=48, height=48, stroke_width=5, color="#dc3545"),
+                            ft.Text("Loading...", size=16, weight="bold", color="#f8d7da"),
+                        ],
+                        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                        alignment=ft.MainAxisAlignment.CENTER,
+                        spacing=20,
+                    ),
+                    alignment=ft.Alignment(0, 0),
+                    expand=True,
+                    opacity=0.0,
+                    animate_opacity=ft.Animation(250, "easeOut"),
+                    data="overlay",
+                ),
+            ],
+            expand=True,
+            visible=False,
+        )
+
+    def _ensure_loading_overlay(self):
+        if hasattr(self, "loading_overlay") and self.loading_overlay:
+            return
+        self.loading_overlay = self._create_loading_overlay()
+        if hasattr(self, "main_content_stack") and self.main_content_stack:
+            if self.loading_overlay not in self.main_content_stack.controls:
+                self.main_content_stack.controls.append(self.loading_overlay)
     
     def create_main_content(self):
         # Create sidebar
@@ -235,38 +291,60 @@ class WalletPage:
         wallets_list = ft.Column([], ref=self.refs['sidebar_wallets_list'])
         
         # Action buttons
-        action_buttons = ft.Column([
-            # Create Wallet button
-            ft.Container(
-                content=ft.Row([
-                    ft.Icon(ft.Icons.ADD, size=20, color="#ffffff"),
-                    ft.Text("Create Wallet", 
-                           size=14, 
-                           color="#ffffff",
-                           visible=not self.sidebar_collapsed)
-                ], spacing=12),
-                padding=ft.padding.symmetric(vertical=12, horizontal=15),
-                bgcolor="#dc3545",
-                border_radius=8,
-                on_click=lambda e: self.app.show_create_wallet(),
-                tooltip="Create New Wallet" if self.sidebar_collapsed else None
-            ),
-            # Import Wallet button
-            ft.Container(
-                content=ft.Row([
-                    ft.Icon(ft.Icons.IMPORT_EXPORT, size=20, color="#ffffff"),
-                    ft.Text("Import Wallet", 
-                           size=14, 
-                           color="#ffffff",
-                           visible=not self.sidebar_collapsed)
-                ], spacing=12),
-                padding=ft.padding.symmetric(vertical=12, horizontal=15),
-                bgcolor="#28a745",
-                border_radius=8,
-                on_click=lambda e: self.on_import_wallet(),
-                tooltip="Import Wallet" if self.sidebar_collapsed else None
-            ),
-        ], spacing=10)
+        if self.sidebar_collapsed:
+            action_buttons = ft.Column([
+                ft.Container(
+                    content=ft.Icon(ft.Icons.ADD, size=20, color="#ffffff"),
+                    width=40,
+                    height=40,
+                    bgcolor="#dc3545",
+                    border_radius=8,
+                    alignment=ft.Alignment(0, 0),
+                    on_click=lambda e: self.app.show_create_wallet(),
+                    tooltip="Create New Wallet"
+                ),
+                ft.Container(
+                    content=ft.Icon(ft.Icons.IMPORT_EXPORT, size=20, color="#ffffff"),
+                    width=40,
+                    height=40,
+                    bgcolor="#28a745",
+                    border_radius=8,
+                    alignment=ft.Alignment(0, 0),
+                    on_click=lambda e: self.on_import_wallet(),
+                    tooltip="Import Wallet"
+                ),
+            ], spacing=10, horizontal_alignment=ft.CrossAxisAlignment.CENTER)
+        else:
+            action_buttons = ft.Column([
+                # Create Wallet button
+                ft.Container(
+                    content=ft.Row([
+                        ft.Icon(ft.Icons.ADD, size=20, color="#ffffff"),
+                        ft.Text("Create Wallet", 
+                               size=14, 
+                               color="#ffffff",
+                               visible=not self.sidebar_collapsed)
+                    ], spacing=12),
+                    padding=ft.padding.symmetric(vertical=12, horizontal=15),
+                    bgcolor="#dc3545",
+                    border_radius=8,
+                    on_click=lambda e: self.app.show_create_wallet(),
+                ),
+                # Import Wallet button
+                ft.Container(
+                    content=ft.Row([
+                        ft.Icon(ft.Icons.IMPORT_EXPORT, size=20, color="#ffffff"),
+                        ft.Text("Import Wallet", 
+                               size=14, 
+                               color="#ffffff",
+                               visible=not self.sidebar_collapsed)
+                    ], spacing=12),
+                    padding=ft.padding.symmetric(vertical=12, horizontal=15),
+                    bgcolor="#28a745",
+                    border_radius=8,
+                    on_click=lambda e: self.on_import_wallet(),
+                ),
+            ], spacing=10)
         
         sidebar_content = ft.Column([
             sidebar_header,
@@ -313,13 +391,6 @@ class WalletPage:
             bgcolor="#2c1a1a"
         )
     
-    def _toggle_sidebar(self, e):
-        """Toggle sidebar collapsed state"""
-        self.sidebar_collapsed = not self.sidebar_collapsed
-        self._refresh_sidebar_wallets()
-        if hasattr(self.app, 'page'):
-            self.app.page.update()
-    
     def _populate_sidebar_wallets(self):
         """Populate the sidebar with wallets using direct transaction tally for balances"""
         try:
@@ -361,7 +432,17 @@ class WalletPage:
     def _toggle_sidebar(self, e):
         """Toggle sidebar collapsed state"""
         self.sidebar_collapsed = not self.sidebar_collapsed
+
+        # Rebuild sidebar to apply collapsed layout changes
+        self.sidebar = self._create_sidebar()
+        if hasattr(self, "main_content_stack") and self.main_content_stack.controls:
+            row = self.main_content_stack.controls[0]
+            if hasattr(row, "controls") and len(row.controls) > 0:
+                row.controls[0] = self.sidebar
+
         self._refresh_sidebar_wallets()
+        self._apply_sidebar_selection_highlight()
+
         if hasattr(self.app, 'page'):
             self.app.page.update()
     
@@ -525,18 +606,47 @@ class WalletPage:
             confirmed_balance = 0.0
             pending_balance = 0.0
             wallet_addr_lower = wallet_address.lower()
+            min_confirmations = 6
+
+            def _get_latest_height():
+                try:
+                    if hasattr(self.app, 'blockchain_manager') and self.app.blockchain_manager:
+                        if hasattr(self.app.blockchain_manager, 'get_latest_block'):
+                            block = self.app.blockchain_manager.get_latest_block()
+                            if block and isinstance(block, dict):
+                                return int(block.get('index', 0) or 0)
+                        if hasattr(self.app.blockchain_manager, 'get_blockchain_height'):
+                            return int(self.app.blockchain_manager.get_blockchain_height() or 0)
+                except Exception:
+                    pass
+                return None
+
+            latest_height = _get_latest_height()
             
             # Get all transactions for this wallet from database
             all_txs = []
             if hasattr(self.app, 'database'):
                 try:
-                    # Try multiple methods to get transactions
-                    if hasattr(self.app.database, 'get_wallet_transactions'):
-                        all_txs = self.app.database.get_wallet_transactions(wallet_address, limit=10000)
-                    elif hasattr(self.app.database, 'get_transactions'):
-                        all_txs = self.app.database.get_transactions(wallet_address)
-                    else:
-                        print(f"DEBUG: No transaction retrieval method found on database")
+                    # IMPORTANT: Prefer get_all_transactions to avoid 100-tx limit
+                    db_methods = ['get_all_transactions', 'get_transactions', 'get_wallet_transactions']
+                    for method in db_methods:
+                        if hasattr(self.app.database, method):
+                            try:
+                                if method == 'get_all_transactions':
+                                    all_txs = getattr(self.app.database, method)()
+                                    print(f"DEBUG: Database returned {len(all_txs)} total transactions (NO LIMIT)")
+                                elif method == 'get_wallet_transactions':
+                                    all_txs = getattr(self.app.database, method)(wallet_address, limit=10000)
+                                else:
+                                    all_txs = getattr(self.app.database, method)(wallet_address)
+                                if all_txs:
+                                    break
+                            except Exception as e:
+                                print(f"DEBUG: Error with database method {method}: {e}")
+                                continue
+                    if all_txs and hasattr(self, '_transaction_involves_wallet'):
+                        # Filter down to this wallet (needed for get_all_transactions)
+                        all_txs = [tx for tx in all_txs if self._transaction_involves_wallet(tx, wallet_address)]
                 except Exception as db_err:
                     print(f"DEBUG: Error getting transactions from database: {db_err}")
             
@@ -561,8 +671,36 @@ class WalletPage:
             
             # Calculate confirmed balance
             for tx in all_txs:
-                tx_status = tx.get('status', 'confirmed').lower()
-                if tx_status != 'confirmed':
+                status_raw = tx.get('status', None)
+                tx_status = str(status_raw).lower() if status_raw is not None else 'confirmed'
+                block_height = tx.get('block_height', None)
+                confirmations = None
+                if block_height is not None and latest_height is not None:
+                    try:
+                        confirmations = max(0, int(latest_height) - int(block_height) + 1)
+                    except Exception:
+                        confirmations = None
+                is_low_confirm = confirmations is not None and confirmations < min_confirmations
+                if tx_status in ('pending', 'unconfirmed', 'mempool') or is_low_confirm:
+                    # Treat as pending until min confirmations reached
+                    tx_from = tx.get('from', tx.get('from_address', '')).lower()
+                    tx_to = tx.get('to', tx.get('to_address', '')).lower()
+                    reward_addr = tx.get('reward_address', '').lower()
+                    recipient_addr = tx.get('recipient', '').lower()
+                    tx_type = tx.get('type', tx.get('tx_type', 'transfer')).lower()
+                    amount = float(tx.get('amount', 0))
+                    fee = float(tx.get('fee', 0))
+
+                    if tx_type == 'reward':
+                        if (tx_to == wallet_addr_lower or reward_addr == wallet_addr_lower):
+                            pending_balance += amount
+                    elif tx_type == 'fee_distribution':
+                        if (tx_to == wallet_addr_lower or reward_addr == wallet_addr_lower or recipient_addr == wallet_addr_lower):
+                            pending_balance += amount
+                    elif tx_from == wallet_addr_lower:
+                        pending_balance -= (amount + fee)
+                    elif tx_to == wallet_addr_lower:
+                        pending_balance += amount
                     continue
                 
                 # Handle both field name formats
@@ -634,8 +772,12 @@ class WalletPage:
     
     def _get_wallet_balances(self, wallet_address):
         """Get balance by directly tallying from all transactions (DB+pending)."""
-        confirmed, pending = self._calculate_balance_from_transactions(wallet_address)
-        return confirmed or 0.0, pending or 0.0
+        self._begin_loading_hold("Scanning Transactions...")
+        try:
+            confirmed, pending = self._calculate_balance_from_transactions(wallet_address)
+            return confirmed or 0.0, pending or 0.0
+        finally:
+            self._end_loading_hold()
     
     def _create_sidebar_wallet_item(self, wallet, index):
         """Create wallet item for sidebar"""
@@ -671,28 +813,20 @@ class WalletPage:
             pending_color = "#00ff00" if pending > 0 else ("#ff4444" if pending < 0 else "#ffd700")
         
         if self.sidebar_collapsed:
-            # Collapsed view - just icon and first letter
+            # Collapsed view - icon only
             return ft.Container(
-                content=ft.Column([
-                    ft.Container(
-                        content=ft.Text(wallet['label'][0].upper(), 
-                                    size=12, 
-                                    color="#ffffff",
-                                    weight="bold"),
-                        width=30,
-                        height=30,
-                        bgcolor="#dc3545" if is_selected else "#5c2e2e",
-                        border_radius=15,
-                        alignment=ft.Alignment(0, 0)
-                    ),
-                    ft.Text(wallet['label'], 
-                        size=10, 
-                        color="#f8d7da",
-                        text_align="center",
-                        max_lines=1,
-                        overflow="ellipsis")
-                ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=5),
-                padding=10,
+                content=ft.Container(
+                    content=ft.Text(wallet['label'][0].upper(), 
+                                size=12, 
+                                color="#ffffff",
+                                weight="bold"),
+                    width=36,
+                    height=36,
+                    bgcolor="#dc3545" if is_selected else "#5c2e2e",
+                    border_radius=18,
+                    alignment=ft.Alignment(0, 0)
+                ),
+                padding=4,
                 on_click=lambda e, idx=index: self._on_wallet_select(idx),
                 tooltip=f"{wallet['label']}\nBalance: {balance_display} LKC\nPending: {pending_display} LKC",
                 data=wallet  # Store the wallet dict for proper duplicate detection
@@ -1077,6 +1211,7 @@ class WalletPage:
     def refresh_transaction_history(self):
         """Load and display transaction history for CURRENT wallet only"""
         def load_transactions():
+            overlay_was_visible = bool(getattr(getattr(self, "loading_overlay", None), "visible", False))
             try:
                 # Get current wallet address
                 current_address = None
@@ -1091,6 +1226,9 @@ class WalletPage:
                     if hasattr(self.app, 'page'):
                         self.app.page.run_thread(show_no_wallet)
                     return
+
+                if not overlay_was_visible:
+                    self._begin_loading_hold("Scanning Transactions...")
                 
                 print(f"\n=== LOADING TRANSACTIONS FOR {current_address[:12]}... ===")
                 
@@ -1199,6 +1337,30 @@ class WalletPage:
                     print(f"DEBUG: mempool_manager not available")
                 
                 print(f"DEBUG: Total transactions (confirmed + pending): {len(filtered_transactions)}")
+
+                # Mark low-confirmation transactions as pending in UI
+                try:
+                    latest_height = None
+                    if hasattr(self.app, 'blockchain_manager') and self.app.blockchain_manager:
+                        if hasattr(self.app.blockchain_manager, 'get_latest_block'):
+                            block = self.app.blockchain_manager.get_latest_block()
+                            if block and isinstance(block, dict):
+                                latest_height = int(block.get('index', 0) or 0)
+                        if latest_height is None and hasattr(self.app.blockchain_manager, 'get_blockchain_height'):
+                            latest_height = int(self.app.blockchain_manager.get_blockchain_height() or 0)
+                    if latest_height is not None:
+                        for tx in filtered_transactions:
+                            block_height = tx.get('block_height', None)
+                            if block_height is None:
+                                continue
+                            try:
+                                confirmations = max(0, int(latest_height) - int(block_height) + 1)
+                                if confirmations < 6:
+                                    tx['status'] = 'pending'
+                            except Exception:
+                                continue
+                except Exception as e:
+                    print(f"DEBUG: Error marking low-confirmation txs: {e}")
                 
                 # Sort by timestamp (newest first) and show ALL transactions (no limit)
                 filtered_transactions.sort(key=lambda x: x.get('timestamp', 0), reverse=True)
@@ -1227,6 +1389,11 @@ class WalletPage:
                         
             except Exception as e:
                 print(f"Error in load_transactions: {e}")
+            finally:
+                if not overlay_was_visible and hasattr(self.app, 'page'):
+                    self.app.page.run_thread(self.hide_loading)
+                if not overlay_was_visible:
+                    self._end_loading_hold()
         
         threading.Thread(target=load_transactions, daemon=True).start()
     
@@ -1236,7 +1403,10 @@ class WalletPage:
         This is called after blockchain scans to update the display with fresh data.
         サイドバーとカードの残高計算を一元化。
         """
+        overlay_was_visible = bool(getattr(getattr(self, "loading_overlay", None), "visible", False))
         try:
+            if not overlay_was_visible:
+                self._begin_loading_hold("Scanning Transactions...")
             # すべてのウォレットの残高を一括計算
             if hasattr(self.app.wallet_core, 'wallets') and isinstance(self.app.wallet_core.wallets, dict):
                 for addr in self.app.wallet_core.wallets.keys():
@@ -1263,6 +1433,27 @@ class WalletPage:
             print(f"ERROR in recalculate_wallet_balances: {e}")
             import traceback
             traceback.print_exc()
+        finally:
+            if not overlay_was_visible:
+                self._end_loading_hold()
+
+    def _begin_loading_hold(self, text="Scanning Transactions..."):
+        self._loading_refcount = max(0, getattr(self, "_loading_refcount", 0)) + 1
+        if self._loading_refcount == 1:
+            self._loading_hold = True
+            if hasattr(self.app, "page") and self.app.page:
+                self.app.page.run_thread(lambda: self.show_loading(text))
+            else:
+                self.show_loading(text)
+
+    def _end_loading_hold(self):
+        self._loading_refcount = max(0, getattr(self, "_loading_refcount", 1) - 1)
+        if self._loading_refcount == 0:
+            self._loading_hold = False
+            if hasattr(self.app, "page") and self.app.page:
+                self.app.page.run_thread(self.hide_loading)
+            else:
+                self.hide_loading()
     
     def _refresh_all_wallet_balances(self):
         """
@@ -1859,16 +2050,36 @@ class WalletPage:
     
     def show_loading(self, text="Loading..."):
         """Show the loading overlay."""
-        self.loading_overlay.content.controls[1].value = text
+        self._ensure_loading_overlay()
+        # Update text
+        overlay_container = self.loading_overlay.controls[1]
+        overlay_container.content.controls[1].value = text
+        # Show and fade in
         self.loading_overlay.visible = True
+        self.loading_overlay.controls[0].opacity = 0.65  # dimmer
+        self.loading_overlay.controls[1].opacity = 1.0  # content
         if hasattr(self.app, "page") and self.app.page:
             self.app.page.update()
 
     def hide_loading(self):
         """Hide the loading overlay."""
-        self.loading_overlay.visible = False
+        if not hasattr(self, "loading_overlay") or not self.loading_overlay:
+            return
+        self.loading_overlay.controls[0].opacity = 0.0  # dimmer
+        self.loading_overlay.controls[1].opacity = 0.0  # content
         if hasattr(self.app, "page") and self.app.page:
             self.app.page.update()
+
+        def _hide_after_fade():
+            try:
+                time.sleep(0.3)
+                self.loading_overlay.visible = False
+                if hasattr(self.app, "page") and self.app.page:
+                    self.app.page.update()
+            except Exception as e:
+                print(f"DEBUG: Error hiding loading overlay: {e}")
+
+        threading.Thread(target=_hide_after_fade, daemon=True).start()
 
     def update_wallet_data(self):
         try:
@@ -1911,6 +2122,18 @@ class WalletPage:
                             wallet_info = self.app.wallet_core.wallets[0]
                     
                     if wallet_info:
+                        # Recalculate balances to avoid stale cached values
+                        try:
+                            current_address = wallet_info.get('address') or getattr(self.app.wallet_core, 'current_wallet_address', None)
+                            if current_address:
+                                confirmed_balance, pending_balance = self._get_wallet_balances(current_address)
+                                wallet_info['confirmed_balance'] = confirmed_balance
+                                wallet_info['pending_balance'] = pending_balance
+                                wallet_info['available_balance'] = confirmed_balance
+                                wallet_info['balance'] = confirmed_balance + pending_balance
+                        except Exception as e:
+                            print(f"DEBUG: Balance recalculation failed in update_wallet_data: {e}")
+
                         # Use cached balance from wallet_info (don't hardcode to 0)
                         balance = wallet_info.get('balance', wallet_info.get('confirmed_balance', None))
                         pending_balance = wallet_info.get('pending_balance', 0)

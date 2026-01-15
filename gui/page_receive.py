@@ -17,7 +17,10 @@ class ReceivePage:
                 # Header
                 ft.Row([
                     ft.IconButton(ft.Icons.ARROW_BACK, icon_color="#f8d7da", on_click=lambda e: self.on_back()),
-                    ft.Text("📥 Receive Luna", size=24, weight="bold", color="#f8d7da"),
+                    ft.Column([
+                        ft.Text("Receive", size=22, weight="bold", color="#f8d7da"),
+                        ft.Text("Share your address or QR code", size=12, color="#a8a8a8"),
+                    ], spacing=2),
                     ft.Container(expand=True)
                 ]),
                 ft.Divider(color="#5c2e2e"),
@@ -26,15 +29,16 @@ class ReceivePage:
                 ft.Container(
                     content=ft.Column([
                         self._create_address_section(address),
-                        ft.Container(height=20),
+                        ft.Container(height=16),
                         self._create_qr_section(address),
-                        ft.Container(height=20),
+                        ft.Container(height=16),
                         self._create_instructions_section()
                     ], horizontal_alignment=ft.CrossAxisAlignment.CENTER),
                     padding=20,
-                    margin=15,  # Small margin around the entire content
+                    margin=ft.margin.symmetric(vertical=6),
                     bgcolor="#1a0f0f",
-                    border_radius=15,
+                    border_radius=12,
+                    border=ft.border.all(1, "#5c2e2e"),
                     alignment=ft.Alignment(0, 0),
                     expand=True  # Expand to fill available space
                 )
@@ -48,41 +52,46 @@ class ReceivePage:
     def _create_address_section(self, address):
         return ft.Container(
             content=ft.Column([
-                ft.Text("👛 Your Wallet Address", size=18, color="#f8d7da"),
-                ft.Container(height=15),
-                ft.Text(address, size=14, color="#ffffff", selectable=True, text_align="center"),
+                ft.Text("Wallet Address", size=14, color="#f8d7da", weight="bold"),
                 ft.Container(height=10),
+                ft.Text(address, size=13, color="#ffffff", selectable=True, text_align="center"),
+                ft.Container(height=8),
                 ft.ElevatedButton(
-                    "📋 Copy Address", icon=ft.Icons.COPY,
+                    "Copy Address",
+                    icon=ft.Icons.COPY,
                     on_click=lambda e: self.copy_address(address),
-                    style=ft.ButtonStyle(color="#ffffff", bgcolor="#dc3545")
+                    style=ft.ButtonStyle(
+                        color="#ffffff",
+                        bgcolor="#dc3545",
+                        padding=ft.padding.symmetric(horizontal=18, vertical=12),
+                        shape=ft.RoundedRectangleBorder(radius=8)
+                    )
                 )
             ], horizontal_alignment=ft.CrossAxisAlignment.CENTER),
-            padding=20, bgcolor="#1a0f0f", border_radius=10,
+            padding=16, bgcolor="#1a0f0f", border_radius=10,
             width=400 if not self.app.is_mobile else 300
         )
     
     def _create_qr_section(self, address):
         return ft.Container(
             content=ft.Column([
-                ft.Text("📱 QR Code", size=16, color="#f8d7da"),
-                ft.Container(height=10),
+                ft.Text("QR Code", size=13, color="#f8d7da", weight="bold"),
+                ft.Container(height=8),
                 self._generate_qr_code(address),
                 ft.Container(height=5),
-                ft.Text("Scan to receive Luna", color="#f8d7da", size=12)
+                ft.Text("Scan to receive", color="#a8a8a8", size=11)
             ], horizontal_alignment=ft.CrossAxisAlignment.CENTER)
         )
     
     def _create_instructions_section(self):
         return ft.Container(
             content=ft.Column([
-                ft.Text("💡 How to receive funds:", size=14, color="#f8d7da", weight="bold"),
-                ft.Container(height=8),
-                ft.Text("1. Share your address or QR code", size=12, color="#f8d7da"),
-                ft.Text("2. Wait for sender to complete transaction", size=12, color="#f8d7da"),
-                ft.Text("3. Funds will appear in your wallet", size=12, color="#f8d7da"),
+                ft.Text("How it works", size=13, color="#f8d7da", weight="bold"),
+                ft.Container(height=6),
+                ft.Text("Share your address or QR code", size=11, color="#a8a8a8"),
+                ft.Text("Funds appear after network confirmation", size=11, color="#a8a8a8"),
             ]),
-            padding=15, bgcolor="#1a0f0f", border_radius=10,
+            padding=12, bgcolor="#1a0f0f", border_radius=10,
             expand=True
         )
     
@@ -114,12 +123,19 @@ class ReceivePage:
             qr.add_data(address)
             qr.make(fit=True)
             
-            buffer = io.BytesIO()
-            qr.make_image(fill_color="black", back_color="white").save(buffer, format="PNG")
-            img_base64 = base64.b64encode(buffer.getvalue()).decode()
-            
+            from qrcode.image.svg import SvgImage
+            svg_img = qr.make_image(image_factory=SvgImage)
+            svg_bytes = svg_img.to_string()
+            svg_base64 = base64.b64encode(svg_bytes).decode()
+            svg_src = f"data:image/svg+xml;base64,{svg_base64}"
+
+            if hasattr(ft, "Svg"):
+                qr_control = ft.Svg(src=svg_src, width=180, height=180)
+            else:
+                qr_control = ft.Image(src=svg_src, width=180, height=180, fit="contain")
+
             return ft.Container(
-                content=ft.Image(src=f"data:image/png;base64,{img_base64}", width=180, height=180, fit="contain"),
+                content=qr_control,
                 width=200, height=200, bgcolor="#ffffff", border_radius=10, padding=10,
                 alignment=ft.Alignment(0, 0)
             )

@@ -3,7 +3,6 @@ import io
 import time
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
-from PIL import Image
 import requests
 import socket
 
@@ -51,10 +50,22 @@ def calculate_wallet_balances(wallet_address: str) -> Dict[str, float]:
     print(f"DEBUG: calculate_wallet_balances called for {wallet_address[:8]}")
 
     # Get confirmed balance from blockchain transactions
-    confirmed_balance = _calculate_confirmed_balance(wallet_address, client.database if hasattr(client, 'database') else None)
+    database = None
+    if client is not None and hasattr(client, 'database'):
+        database = client.database
+    if database is None:
+        try:
+            from lunalib.storage.database import WalletDatabase
+            database = WalletDatabase()
+        except Exception as e:
+            print(f"WARNING: Could not initialize WalletDatabase fallback: {e}")
+            database = None
+
+    confirmed_balance = _calculate_confirmed_balance(wallet_address, database)
     
-    # Get pending balance from mempool
+    # Get pending balance from mempool + low-confirmation mined txs
     pending_balance = _calculate_pending_balance(wallet_address)
+    pending_balance += _calculate_pending_from_db(wallet_address, database, min_confirmations=6)
 
     total_balance = confirmed_balance + pending_balance
 
@@ -87,28 +98,77 @@ def _calculate_confirmed_balance(wallet_address: str, database) -> float:
     
     wallet_address_lower = wallet_address.lower()
     
+    def _tx_involves_wallet(tx: dict, wallet_lower: str) -> bool:
+        try:
+            address_fields = ['from', 'to', 'reward_address', 'recipient', 'sender', 'receiver']
+            for field in address_fields:
+                value = tx.get(field, '')
+                if isinstance(value, str) and value.lower() == wallet_lower:
+                    return True
+            # Special handling for reward transactions
+            if str(tx.get('type', '')).lower() == 'reward':
+                reward_address = tx.get('reward_address', '')
+                if isinstance(reward_address, str) and reward_address.lower() == wallet_lower:
+                    return True
+            return False
+        except Exception:
+            return False
+
     try:
         # Check if database is None
         if database is None:
             print(f"WARNING: database is None, cannot calculate balance")
             return 0.0
         
-        # Get wallet transactions from database - use get_wallet_transactions() which takes wallet address
+        # Get wallet transactions from database - avoid 100-tx limit by preferring get_all_transactions
+        wallet_txs = []
         try:
-            # Note: get_wallet_transactions returns transactions for a specific wallet
-            # Use the original address case as database expects it
-            wallet_txs = database.get_wallet_transactions(wallet_address, limit=1000)  # Get up to 1000 transactions
+            db_methods = ['get_all_transactions', 'get_transactions', 'get_wallet_transactions']
+            for method in db_methods:
+                if hasattr(database, method):
+                    try:
+                        if method == 'get_all_transactions':
+                            wallet_txs = getattr(database, method)()
+                            print(f"DEBUG BALANCE: Database returned {len(wallet_txs)} total transactions (NO LIMIT)")
+                        elif method == 'get_wallet_transactions':
+                            wallet_txs = getattr(database, method)(wallet_address, limit=10000)
+                        else:
+                            wallet_txs = getattr(database, method)(wallet_address)
+                        if wallet_txs:
+                            break
+                    except Exception as e:
+                        print(f"WARNING: database.{method} failed: {e}")
+                        continue
         except AttributeError as e:
-            print(f"WARNING: database.get_wallet_transactions() not available: {e}")
+            print(f"WARNING: database transaction retrieval not available: {e}")
             return 0.0
         
         if not wallet_txs:
             print(f"DEBUG BALANCE: No transactions in database for {wallet_address[:12]}")
             return 0.0
         
+        # Filter to wallet only (needed when using get_all_transactions)
+        if wallet_txs:
+            wallet_txs = [tx for tx in wallet_txs if _tx_involves_wallet(tx, wallet_address_lower)]
+
         print(f"DEBUG BALANCE: Database has {len(wallet_txs)} transactions for {wallet_address[:12]}")
         print(f"DEBUG BALANCE: Looking for wallet (lowercased): {wallet_address_lower}")
         
+        # Resolve latest height for confirmations check
+        latest_height = None
+        try:
+            if blockchain is not None:
+                if hasattr(blockchain, 'get_latest_height'):
+                    latest_height = blockchain.get_latest_height()
+                elif hasattr(blockchain, 'get_blockchain_height'):
+                    latest_height = blockchain.get_blockchain_height()
+                elif hasattr(blockchain, 'get_latest_block'):
+                    blk = blockchain.get_latest_block()
+                    if isinstance(blk, dict):
+                        latest_height = blk.get('index')
+        except Exception:
+            latest_height = None
+
         # Process each confirmed transaction
         for tx in wallet_txs:
             # Handle both field name formats
@@ -117,14 +177,23 @@ def _calculate_confirmed_balance(wallet_address: str, database) -> float:
             tx_type = tx.get('type', tx.get('tx_type', 'transfer')).lower()
             tx_amount = float(tx.get('amount', 0))
             tx_fee = float(tx.get('fee', 0))
-            tx_status = tx.get('status', 'confirmed').lower()
+            status_raw = tx.get('status', None)
+            tx_status = str(status_raw).lower() if status_raw is not None else 'confirmed'
             reward_addr = tx.get('reward_address', '').lower()
             recipient_addr = tx.get('recipient', '').lower()
             
             print(f"  TX: type={tx_type}, from={tx_from[:12] if tx_from else 'none'}, to={tx_to[:12] if tx_to else 'none'}, amount={tx_amount}, status={tx_status}")
             
             # Only count confirmed (blockchain) transactions
-            if tx_status == 'confirmed':
+            block_height = tx.get('block_height', None)
+            confirmations = None
+            if block_height is not None and latest_height is not None:
+                try:
+                    confirmations = max(0, int(latest_height) - int(block_height) + 1)
+                except Exception:
+                    confirmations = None
+
+            if tx_status not in ('pending', 'unconfirmed', 'mempool') and not (confirmations is not None and confirmations < 6):
                 # Handle mining rewards (multiple storage formats)
                 if tx_type == 'reward':
                     # Incoming reward - check all possible ways wallet address is referenced
@@ -203,6 +272,92 @@ def _calculate_confirmed_balance(wallet_address: str, database) -> float:
     print(f"  - Transfers sent: {transfer_out_count}")
     print(f"  - Total transactions processed: {transfer_in_count + transfer_out_count + reward_transactions_count + fee_dist_count}")
     return max(0.0, confirmed_balance)
+
+
+def _calculate_pending_from_db(wallet_address: str, database, min_confirmations: int = 6) -> float:
+    """Treat mined txs with <min_confirmations as pending balance."""
+    if database is None:
+        return 0.0
+
+    pending_balance = 0.0
+    wallet_address_lower = wallet_address.lower()
+
+    # Resolve latest height for confirmations check
+    latest_height = None
+    try:
+        if blockchain is not None:
+            if hasattr(blockchain, 'get_latest_height'):
+                latest_height = blockchain.get_latest_height()
+            elif hasattr(blockchain, 'get_blockchain_height'):
+                latest_height = blockchain.get_blockchain_height()
+            elif hasattr(blockchain, 'get_latest_block'):
+                blk = blockchain.get_latest_block()
+                if isinstance(blk, dict):
+                    latest_height = blk.get('index')
+    except Exception:
+        latest_height = None
+
+    # Get transactions
+    txs = []
+    try:
+        if hasattr(database, 'get_all_transactions'):
+            txs = database.get_all_transactions()
+        elif hasattr(database, 'get_transactions'):
+            txs = database.get_transactions(wallet_address)
+        elif hasattr(database, 'get_wallet_transactions'):
+            txs = database.get_wallet_transactions(wallet_address, limit=10000)
+    except Exception:
+        txs = []
+
+    if not txs or latest_height is None:
+        return 0.0
+
+    # Filter to this wallet
+    def _tx_involves_wallet(tx: dict) -> bool:
+        address_fields = ['from', 'to', 'reward_address', 'recipient', 'sender', 'receiver']
+        for field in address_fields:
+            value = tx.get(field, '')
+            if isinstance(value, str) and value.lower() == wallet_address_lower:
+                return True
+        if str(tx.get('type', '')).lower() == 'reward':
+            reward_address = tx.get('reward_address', '')
+            if isinstance(reward_address, str) and reward_address.lower() == wallet_address_lower:
+                return True
+        return False
+
+    txs = [tx for tx in txs if _tx_involves_wallet(tx)]
+
+    for tx in txs:
+        block_height = tx.get('block_height', None)
+        if block_height is None:
+            continue
+        try:
+            confirmations = max(0, int(latest_height) - int(block_height) + 1)
+        except Exception:
+            continue
+        if confirmations >= min_confirmations:
+            continue
+
+        tx_from = tx.get('from', tx.get('from_address', '')).lower()
+        tx_to = tx.get('to', tx.get('to_address', '')).lower()
+        reward_addr = tx.get('reward_address', '').lower()
+        recipient_addr = tx.get('recipient', '').lower()
+        tx_type = tx.get('type', tx.get('tx_type', 'transfer')).lower()
+        tx_amount = float(tx.get('amount', 0))
+        tx_fee = float(tx.get('fee', 0))
+
+        if tx_type == 'reward':
+            if (reward_addr == wallet_address_lower or tx_to == wallet_address_lower):
+                pending_balance += tx_amount
+        elif tx_type == 'fee_distribution':
+            if (recipient_addr == wallet_address_lower or reward_addr == wallet_address_lower or tx_to == wallet_address_lower):
+                pending_balance += tx_amount
+        elif tx_from == wallet_address_lower:
+            pending_balance -= (tx_amount + tx_fee)
+        elif tx_to == wallet_address_lower:
+            pending_balance += tx_amount
+
+    return pending_balance
 
 
 def _calculate_pending_balance(wallet_address: str) -> float:

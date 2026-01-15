@@ -5,26 +5,48 @@ class ImportWalletPage:
         self.app = app
         self.on_back = on_back
         self.on_wallet_imported = on_wallet_imported
+        self._field_width = 420 if not app.is_mobile else 320
         
         # Form fields
         self.private_key = ft.TextField(
-            label="🔑 Private Key",
+            label="Private Key",
             hint_text="Enter your private key",
             multiline=True,
-            width=400 if not app.is_mobile else 300,
-            height=100
+            width=self._field_width,
+            height=120,
+            bgcolor="#1a0f0f",
+            border_color="#5c2e2e",
+            focused_border_color="#dc3545",
+            color="#f8d7da",
+            label_style=ft.TextStyle(color="#f8d7da"),
+            text_style=ft.TextStyle(color="#f8d7da", font_family="monospace"),
+            prefix_icon=ft.Icons.KEY,
         )
         self.wallet_name = ft.TextField(
-            label="👛 Wallet Name",
+            label="Wallet Name",
             hint_text="Enter wallet name", 
-            width=400 if not app.is_mobile else 300
+            width=self._field_width,
+            bgcolor="#1a0f0f",
+            border_color="#5c2e2e",
+            focused_border_color="#dc3545",
+            color="#f8d7da",
+            label_style=ft.TextStyle(color="#f8d7da"),
+            text_style=ft.TextStyle(color="#f8d7da"),
+            prefix_icon=ft.Icons.ACCOUNT_BALANCE_WALLET,
         )
         self.password = ft.TextField(
-            label="🔒 Password",
+            label="Password",
             password=True,
             can_reveal_password=True,
             hint_text="Enter password",
-            width=400 if not app.is_mobile else 300
+            width=self._field_width,
+            bgcolor="#1a0f0f",
+            border_color="#5c2e2e",
+            focused_border_color="#dc3545",
+            color="#f8d7da",
+            label_style=ft.TextStyle(color="#f8d7da"),
+            text_style=ft.TextStyle(color="#f8d7da"),
+            prefix_icon=ft.Icons.LOCK,
         )
         
     def create(self):
@@ -37,7 +59,10 @@ class ImportWalletPage:
                         icon_color="#f8d7da", 
                         on_click=lambda e: self.on_back()
                     ),
-                    ft.Text("📥 Import Wallet", size=24, weight="bold", color="#f8d7da"),
+                    ft.Column([
+                        ft.Text("Import Wallet", size=22, weight="bold", color="#f8d7da"),
+                        ft.Text("Restore from a private key", size=12, color="#a8a8a8"),
+                    ], spacing=2),
                     ft.Container(expand=True)
                 ]),
                 
@@ -46,36 +71,40 @@ class ImportWalletPage:
                 # Form
                 ft.Container(
                     content=ft.Column([
-                        ft.Text("Import existing wallet", size=18, color="#f8d7da"),
-                        ft.Text("Enter your private key to import your wallet", size=14, color="#f8d7da"),
-                        ft.Container(height=20),
+                        ft.Text("Wallet Details", size=14, color="#f8d7da", weight="bold", text_align="center"),
+                        ft.Text("Use the original private key for this wallet", size=11, color="#a8a8a8", text_align="center"),
+                        ft.Container(height=12),
                         
                         self.private_key,
+                        ft.Container(height=10),
                         self.wallet_name,
+                        ft.Container(height=10),
                         self.password,
                         
-                        ft.Container(height=30),
+                        ft.Container(height=16),
                         
                         ft.ElevatedButton(
-                            "📥 Import Wallet",
+                            "Import",
                             on_click=self.import_wallet,
                             style=ft.ButtonStyle(
                                 color="#ffffff",
                                 bgcolor="#dc3545", 
-                                padding=20
+                                padding=ft.padding.symmetric(horizontal=18, vertical=12),
+                                shape=ft.RoundedRectangleBorder(radius=8)
                             ),
-                            width=200
+                            width=160
                         )
                     ], horizontal_alignment=ft.CrossAxisAlignment.CENTER),
                     padding=20,
-                    margin=10,
+                    margin=ft.margin.symmetric(vertical=6),
                     bgcolor="#1a0f0f",
-                    border_radius=15,
-                    width=500 if not self.app.is_mobile else 350
+                    border_radius=12,
+                    border=ft.border.all(1, "#5c2e2e"),
+                    expand=True
                 )
             ]),
             expand=True, 
-            padding=20,
+            padding=10,
             bgcolor="#2c1a1a"
         )
     

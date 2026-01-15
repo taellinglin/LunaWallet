@@ -1,3 +1,47 @@
+import os
+import sys
+
+# Ensure local packages (./cryptography, ./certifi) shadow site-packages
+sys.path.insert(0, os.path.dirname(__file__))
+
+
+def _ensure_lunalib_on_path():
+    """Ensure lunalib is discoverable on Android APK runtime."""
+    try:
+        import lunalib  # noqa: F401
+        return
+    except Exception:
+        pass
+
+    base_dir = os.path.dirname(__file__)
+    flet_root = os.path.abspath(os.path.join(base_dir, ".."))
+
+    # Likely package roots in Flet APK layout
+    candidates = [
+        os.path.join(flet_root, "site-packages"),
+        os.path.join(flet_root, "packages"),
+        os.path.join(flet_root, "python", "site-packages"),
+    ]
+
+    for candidate in candidates:
+        if os.path.isdir(candidate) and candidate not in sys.path:
+            sys.path.insert(0, candidate)
+
+    # Fallback: search for a folder that contains lunalib
+    max_depth = 4
+    base_depth = flet_root.count(os.sep)
+    for root, dirs, _files in os.walk(flet_root):
+        if root.count(os.sep) - base_depth > max_depth:
+            dirs[:] = []
+            continue
+        if "lunalib" in dirs:
+            if root not in sys.path:
+                sys.path.insert(0, root)
+            break
+
+
+_ensure_lunalib_on_path()
+
 from app.core import LunaWalletApp
 from typing import List, Dict
 if __name__ == "__main__":
@@ -352,40 +396,11 @@ if __name__ == "__main__":
 
     def on_transaction_received(self):
         """Handle incoming transactions with auto-save"""
-        if hasattr(self, 'wallet_page') and self.wallet_page:
-            if hasattr(self.wallet_page, 'refresh_transaction_history'):
-                try:
-                    self.wallet_page.refresh_transaction_history()
-                except Exception as e:
-                    print(f"DEBUG: Error refreshing transaction history: {e}")
-        self.show_snackbar("New transaction received", "success")
-        
-        # Play transaction sound
-        self._play_sound("transaction")
-        print("Played Transaction Sound")
-        
-        self.save_wallet_data(force_save=True)
-        self.create_backup()
-        
-    def on_sync_complete(self):
-        """Handle sync completion with auto-save"""
-        if hasattr(self, 'wallet_page') and self.wallet_page:
-            if hasattr(self.wallet_page, '_update_wallet_data_ui_only'):
-                self.wallet_page._update_wallet_data_ui_only()
-            if hasattr(self.wallet_page, 'refresh_transaction_history'):
-                try:
-                    self.wallet_page.refresh_transaction_history()
-                except Exception as e:
-                    print(f"DEBUG: Error refreshing transaction history: {e}")
-        self.show_snackbar("Blockchain sync completed", "success")
-        self.save_wallet_data(force_save=True)  # Force save after sync
-        self.create_backup()  # Create backup after sync
-        
-    def on_error(self, error_msg):
-        self.show_snackbar(f"Error: {error_msg}", "error")
-
-    def create_main_ui(self, page: ft.Page):
-        self.page = page
+        try:
+            # Use Flet audio for mobile/Desktop compatibility
+            self._play_sound("transaction")
+        except Exception as e:
+            print(f"Error playing sound: {e}")
 
         # Detect if we're on mobile
         self.is_mobile = page.platform in ["ios", "android"]
@@ -867,6 +882,8 @@ if __name__ == "__main__":
                 try:
                     print("DEBUG: Starting blockchain sync using lunalib...")
 
+                    self._show_scan_overlay("Scanning Transactions...")
+
                     # Perform a full blockchain scan using lunalib
                     if hasattr(self.blockchain_manager, 'scan_for_updates'):
                         self.blockchain_manager.scan_for_updates()
@@ -888,11 +905,50 @@ if __name__ == "__main__":
 
                 except Exception as e:
                     print(f"DEBUG: Blockchain sync error: {e}")
+                finally:
+                    self._hide_scan_overlay()
             
             threading.Thread(target=sync_thread, daemon=True).start()
             
         except Exception as e:
             print(f"DEBUG: Error starting blockchain sync: {e}")
+
+    def _show_scan_overlay(self, text="Scanning Transactions..."):
+        """Show scanning overlay on wallet page (main thread safe)."""
+        try:
+            self._scan_overlay_shown_at = time.time()
+
+            def _do_show():
+                if hasattr(self, "wallet_page") and self.wallet_page:
+                    self.wallet_page.show_loading(text)
+
+            if hasattr(self, "page") and self.page:
+                self.page.run_thread(_do_show)
+        except Exception as e:
+            print(f"DEBUG: Error showing scan overlay: {e}")
+
+    def _hide_scan_overlay(self, min_visible_seconds=0.5):
+        """Hide scanning overlay with a minimum visible time."""
+        try:
+            shown_at = getattr(self, "_scan_overlay_shown_at", 0)
+            delay = max(0.0, min_visible_seconds - (time.time() - shown_at))
+
+            def _do_hide():
+                if hasattr(self, "wallet_page") and self.wallet_page:
+                    self.wallet_page.hide_loading()
+
+            def _delayed_hide():
+                try:
+                    if delay > 0:
+                        time.sleep(delay)
+                    if hasattr(self, "page") and self.page:
+                        self.page.run_thread(_do_hide)
+                except Exception as e:
+                    print(f"DEBUG: Error hiding scan overlay: {e}")
+
+            threading.Thread(target=_delayed_hide, daemon=True).start()
+        except Exception as e:
+            print(f"DEBUG: Error scheduling scan overlay hide: {e}")
 
     def scan_all_wallets_for_changes(self, force_full_scan=False):
         """
@@ -900,6 +956,7 @@ if __name__ == "__main__":
         - If force_full_scan=True: Do complete blockchain scan from start, cache results, then update all balances
         - Otherwise: Only check for NEW transactions since last scan, update balances when new found
         """
+        overlay_shown = False
         try:
             if not hasattr(self, 'wallet_core') or not self.wallet_core or not hasattr(self.wallet_core, 'wallets'):
                 return
@@ -918,6 +975,8 @@ if __name__ == "__main__":
             # If this is the first scan OR force_full_scan is True, do complete blockchain scan
             if self.last_scanned_block == 0 or force_full_scan:
                 print(f"DEBUG: Full blockchain scan - scanning from genesis to block {latest_height}")
+                self._show_scan_overlay("Scanning Transactions...")
+                overlay_shown = True
                 self._perform_full_blockchain_scan(wallet_addresses, latest_height)
                 self.last_scanned_block = latest_height
                 return
@@ -933,6 +992,8 @@ if __name__ == "__main__":
                 return  # No new blocks to scan
             
             print(f"DEBUG: Incremental scan - checking blocks {effective_start_height} to {latest_height}")
+            self._show_scan_overlay("Scanning Transactions...")
+            overlay_shown = True
             self._perform_incremental_scan(wallet_addresses, effective_start_height, latest_height)
             self.last_scanned_block = latest_height
             
@@ -940,6 +1001,9 @@ if __name__ == "__main__":
             print(f"DEBUG: Error in scan_all_wallets_for_changes: {e}")
             import traceback
             traceback.print_exc()
+        finally:
+            if overlay_shown:
+                self._hide_scan_overlay()
 
     def _perform_full_blockchain_scan(self, wallet_addresses, latest_height):
         """Perform complete blockchain scan from genesis using batch API"""
@@ -1011,7 +1075,13 @@ if __name__ == "__main__":
             wallet_addresses: List of wallet addresses to scan
             max_iterations: Maximum number of scan iterations per wallet
         """
+        overlay_was_visible = bool(
+            getattr(getattr(self, "wallet_page", None), "loading_overlay", None)
+            and getattr(self.wallet_page.loading_overlay, "visible", False)
+        )
         try:
+            if not overlay_was_visible:
+                self._show_scan_overlay("Scanning Transactions...")
             for wallet_addr in wallet_addresses:
                 wallet_addr_lower = wallet_addr.lower()
                 iteration = 0
@@ -1069,6 +1139,9 @@ if __name__ == "__main__":
             print(f"ERROR in _scan_all_rewards_iteratively: {e}")
             import traceback
             traceback.print_exc()
+        finally:
+            if not overlay_was_visible:
+                self._hide_scan_overlay()
 
     def _perform_incremental_scan(self, wallet_addresses, start_height, latest_height):
         """Perform incremental scan for only NEW transactions since last scan using batch API"""
@@ -1129,6 +1202,11 @@ if __name__ == "__main__":
             if new_transactions_found:
                 self._update_all_wallet_balances(wallet_addresses)
                 self._refresh_ui_after_scan(force_update=True)
+                if hasattr(self, 'sound_manager') and self.sound_manager and hasattr(self.sound_manager, 'play_sound'):
+                    self.sound_manager.play_sound("transaction")
+                    print("Playing Transaction Sound via Sound Manager")
+                elif hasattr(self, '_play_sound'):
+                    self._play_sound("transaction")
                 self.show_snackbar("New transactions detected!", "success")
             
         except Exception as e:
