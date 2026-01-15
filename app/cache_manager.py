@@ -3,6 +3,7 @@
 import os
 import sqlite3
 import json
+import time
 from pathlib import Path
 from typing import Optional, Dict, Any
 
@@ -67,7 +68,6 @@ class BlockchainCacheManager:
     def set_last_scanned_block(self, height: int):
         """Save the last scanned block height to cache state"""
         try:
-            import time
             conn = sqlite3.connect(self.cache_state_file)
             cursor = conn.cursor()
             
@@ -114,7 +114,6 @@ class BlockchainCacheManager:
     def set_cache_value(self, key: str, value: Any):
         """Set a cache metadata value"""
         try:
-            import time
             conn = sqlite3.connect(self.cache_state_file)
             cursor = conn.cursor()
             

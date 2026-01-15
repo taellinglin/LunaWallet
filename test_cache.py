@@ -76,4 +76,7 @@ print("=" * 60)
 # Cleanup
 import shutil
 shutil.rmtree(test_cache_dir, ignore_errors=True)
-shutil.rmtree(test_data_dir, ignore_errors=True) if 'test_data_dir' in locals() else None
+try:
+    shutil.rmtree(test_data_dir, ignore_errors=True)
+except NameError:
+    pass  # test_data_dir may not exist if app initialization was skipped
