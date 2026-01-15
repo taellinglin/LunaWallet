@@ -1,9 +1,15 @@
 """Test sidebar wallet selection highlighting fix"""
 import sys
 import os
+import traceback
 
 # Add app to path
 sys.path.insert(0, os.path.dirname(__file__))
+
+# Constants for UI colors
+SELECTED_WALLET_BGCOLOR = '#2c1a1a'  # Background color for selected wallet
+SELECTED_WALLET_BORDER_COLOR = '#dc3545'  # Border color for selected wallet
+UNSELECTED_WALLET_BGCOLOR = 'transparent'  # Background color for unselected wallet
 
 print("=" * 60)
 print("Testing Sidebar Wallet Selection Highlighting")
@@ -16,6 +22,7 @@ try:
     print("✓ Imports successful")
 except Exception as e:
     print(f"✗ Import failed: {e}")
+    traceback.print_exc()
     sys.exit(1)
 
 print("\n[TEST 2] Create mock app with multiple wallets...")
@@ -48,7 +55,7 @@ try:
             'label': 'Wallet 3',
             'address': 'address3',
             'confirmed_balance': 300.0,
-            'pending_balance': -5.0
+            'pending_balance': 5.0  # Positive pending balance
         }
     }
     mock_wallet_core.current_wallet_address = 'address2'  # Wallet 2 should be highlighted
@@ -104,11 +111,9 @@ try:
     print(f"    - Expected: NOT selected")
     
     # Check if highlighting is correct
-    # For expanded sidebar, selected wallet should have:
-    # - bgcolor = "#2c1a1a"
-    # - border with color "#dc3545"
+    # For expanded sidebar, selected wallet should have specific colors
     
-    if hasattr(item2, 'bgcolor') and item2.bgcolor == "#2c1a1a":
+    if hasattr(item2, 'bgcolor') and item2.bgcolor == SELECTED_WALLET_BGCOLOR:
         print("✓ Wallet 2 correctly highlighted (bgcolor)")
     else:
         print(f"✗ Wallet 2 highlighting incorrect (bgcolor={getattr(item2, 'bgcolor', 'N/A')})")
@@ -117,17 +122,17 @@ try:
         border_color = None
         if hasattr(item2.border, 'top') and hasattr(item2.border.top, 'color'):
             border_color = item2.border.top.color
-        if border_color == "#dc3545":
+        if border_color == SELECTED_WALLET_BORDER_COLOR:
             print("✓ Wallet 2 correctly highlighted (border)")
         else:
             print(f"✗ Wallet 2 border color incorrect: {border_color}")
     
-    if hasattr(item1, 'bgcolor') and item1.bgcolor == "transparent":
+    if hasattr(item1, 'bgcolor') and item1.bgcolor == UNSELECTED_WALLET_BGCOLOR:
         print("✓ Wallet 1 correctly NOT highlighted (bgcolor)")
     else:
         print(f"✗ Wallet 1 should not be highlighted (bgcolor={getattr(item1, 'bgcolor', 'N/A')})")
     
-    if hasattr(item3, 'bgcolor') and item3.bgcolor == "transparent":
+    if hasattr(item3, 'bgcolor') and item3.bgcolor == UNSELECTED_WALLET_BGCOLOR:
         print("✓ Wallet 3 correctly NOT highlighted (bgcolor)")
     else:
         print(f"✗ Wallet 3 should not be highlighted (bgcolor={getattr(item3, 'bgcolor', 'N/A')})")
@@ -170,7 +175,7 @@ try:
     else:
         print("✗ current_wallet_address changed unexpectedly")
     
-    if hasattr(item2_new, 'bgcolor') and item2_new.bgcolor == "#2c1a1a":
+    if hasattr(item2_new, 'bgcolor') and item2_new.bgcolor == SELECTED_WALLET_BGCOLOR:
         print("✓ Wallet 2 still highlighted after navigation")
     else:
         print(f"✗ Wallet 2 highlighting lost after navigation (bgcolor={getattr(item2_new, 'bgcolor', 'N/A')})")

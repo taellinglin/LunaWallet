@@ -554,6 +554,7 @@ class WalletPage:
                     is_selected = True
         except Exception as e:
             # If there's an error, default to not selected
+            print(f'DEBUG: Error determining wallet selection: {e}')
             is_selected = False
         
         # Get cached balance or show placeholder
