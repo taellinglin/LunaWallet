@@ -1409,13 +1409,23 @@ class LunaWalletApp:
             traceback.print_exc()
 
     def _perform_full_blockchain_scan(self, wallet_addresses, latest_height):
-        """Perform complete blockchain scan from genesis using batch API"""
+        """Perform complete blockchain scan from genesis using batch API with progress updates"""
         try:
             print(f"DEBUG: Starting full blockchain scan using batch API (0 to {latest_height})")
             
+            # Show progress notification
+            def show_progress(msg):
+                if hasattr(self, 'page') and self.page:
+                    try:
+                        self.page.run_thread(lambda: self.show_snackbar(msg, "info"))
+                    except:
+                        pass
+            
+            show_progress(f"Scanning blockchain... ({latest_height} blocks)")
+            
             # Use new batch method: scan_transactions_for_addresses(addresses: List[str])
             # Returns Dict[str, List[Dict]] where keys are addresses
-            print(f"[OK] Using batch scan_transactions_for_addresses() for {len(wallet_addresses)} wallets")
+            print(f"✓ Using batch scan_transactions_for_addresses() for {len(wallet_addresses)} wallets")
             all_transactions = self.blockchain_manager.scan_transactions_for_addresses(wallet_addresses)
                 
             # Process transactions for each wallet
@@ -1483,8 +1493,13 @@ class LunaWalletApp:
             # No need for full balance recalculation - balances updated incrementally
             # self._update_all_wallet_balances(wallet_addresses)
             
+            # Show completion message
+            show_progress(f"Blockchain scan complete! Processed {sum(sum(c.values()) for c in wallet_txs_count.values())} transactions")
+            
             # Refresh UI after full scan complete
             self._refresh_ui_after_scan(force_update=True)
+            
+            print(f"✓ Full blockchain scan completed successfully")
             
         except Exception as e:
             print(f"DEBUG: Error in _perform_full_blockchain_scan: {e}")
