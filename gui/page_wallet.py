@@ -44,6 +44,11 @@ class WalletPage:
         self.refs = {}
         # Transaction history state
         self.transaction_history = []
+        self.transaction_list_view = ft.ListView(
+            spacing=5, 
+            expand=True,
+            auto_scroll=False
+        )
         # UI elements
         self.balance_text = ft.Text("--.-- LKC", size=28, weight="bold", color="#999999")
         self.pending_balance_text = ft.Text("--.-- LKC", size=16, weight="500", color="#999999")
@@ -54,9 +59,44 @@ class WalletPage:
         # Preloader state - start with loading FALSE so main content shows
         self.is_loading = False
         self.preloader = self.create_preloader()
-        self.main_content = self.create_main_content()
+        self.main_content = None
         # Threading lock for sidebar updates to prevent duplicates
         self.sidebar_update_lock = threading.Lock()
+
+        self.sidebar = self._create_sidebar()
+        self.main_area = self._create_wallet_content()
+
+        self.loading_overlay = ft.Container(
+            content=ft.Column(
+                [
+                    ft.ProgressRing(width=48, height=48, stroke_width=5, color="#dc3545"),
+                    ft.Text("Loading...", size=16, weight="bold", color="#f8d7da"),
+                ],
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                alignment=ft.MainAxisAlignment.CENTER,
+                spacing=20,
+            ),
+            alignment=ft.Alignment(0, 0),
+            expand=True,
+            bgcolor="rgba(26, 15, 15, 0.7)",
+            visible=False,
+        )
+
+        # Main content stack
+        self.main_content_stack = ft.Stack(
+            controls=[
+                ft.Row(
+                    controls=[
+                        self.sidebar,
+                        ft.VerticalDivider(width=1, color="#5c2e2e"),
+                        self.main_area,
+                    ],
+                    expand=True,
+                ),
+                self.loading_overlay,
+            ],
+            expand=True
+        )
 
     def create(self):
         # Auto-hide loading after a short delay to ensure data is loaded
@@ -69,6 +109,7 @@ class WalletPage:
             def refresh_sidebar_after_load():
                 try:
                     self._refresh_sidebar_wallets()
+                    self._apply_sidebar_selection_highlight()
                     if hasattr(self.app, 'page') and self.app.page:
                         self.app.page.update()
                 except Exception as e:
@@ -77,13 +118,66 @@ class WalletPage:
             threading.Thread(target=refresh_sidebar_after_load, daemon=True).start()
         
         threading.Thread(target=auto_hide_loading, daemon=True).start()
+
+        # Ensure selected wallet is highlighted when page is shown
+        def apply_initial_sidebar_highlight():
+            try:
+                self._apply_sidebar_selection_highlight()
+                if hasattr(self.app, 'page') and self.app.page:
+                    self.app.page.update()
+            except Exception as e:
+                print(f"DEBUG: Error applying sidebar highlight: {e}")
+        threading.Thread(target=apply_initial_sidebar_highlight, daemon=True).start()
         
         return ft.Container(
-            content=ft.Stack([self.main_content, self.preloader]),
+            content=ft.Stack([self.main_content_stack, self.preloader]),
             expand=True,
             bgcolor="#2c1a1a",
             padding=0
         )
+
+    def _apply_sidebar_selection_highlight(self):
+        """Highlight the currently selected wallet in the sidebar."""
+        if 'sidebar_wallets_list' not in self.refs:
+            return
+        sidebar_list = self.refs['sidebar_wallets_list'].current
+        if not sidebar_list:
+            return
+
+        selected_address = None
+        if hasattr(self.app, 'wallet_core') and self.app.wallet_core:
+            selected_address = getattr(self.app.wallet_core, 'current_wallet_address', None)
+
+        # Fallback to selected index if current address is not set
+        if not selected_address and hasattr(self.app, 'selected_wallet_index'):
+            try:
+                if hasattr(self.app.wallet_core, 'wallets') and isinstance(self.app.wallet_core.wallets, dict):
+                    wallet_addresses = list(self.app.wallet_core.wallets.keys())
+                    idx = self.app.selected_wallet_index
+                    if idx is not None and idx < len(wallet_addresses):
+                        selected_address = wallet_addresses[idx]
+            except Exception:
+                pass
+
+        for control in sidebar_list.controls:
+            is_selected = False
+            if hasattr(control, 'data') and isinstance(control.data, dict):
+                is_selected = control.data.get('address') == selected_address
+
+            if self.sidebar_collapsed:
+                if hasattr(control.content, 'controls') and len(control.content.controls) > 0:
+                    icon_container = control.content.controls[0]
+                    icon_container.bgcolor = "#dc3545" if is_selected else "#5c2e2e"
+            else:
+                control.bgcolor = "#2c1a1a" if is_selected else "transparent"
+                control.border = ft.border.all(2, "#dc3545" if is_selected else "transparent")
+                # Also update the icon background in expanded view
+                if hasattr(control.content, 'controls') and len(control.content.controls) > 0:
+                    row = control.content.controls[0]
+                    if hasattr(row, 'controls') and len(row.controls) > 0:
+                        icon_container = row.controls[0]
+                        if hasattr(icon_container, 'bgcolor'):
+                            icon_container.bgcolor = "#dc3545" if is_selected else "#5c2e2e"
     
     def create_preloader(self):
         return ft.Container(
@@ -301,8 +395,8 @@ class WalletPage:
                         print(f"DEBUG: Wallets currently in sidebar: {sidebar_addresses}")
                         current_addr = getattr(self.app.wallet_core, 'current_wallet_address', None)
                         for address, wallet_data in self.app.wallet_core.wallets.items():
-                            confirmed_balance = wallet_data.get('confirmed_balance', 0.0)
-                            pending_balance = wallet_data.get('pending_balance', 0.0)
+                            # Always recalc balances from transactions to avoid stale/zero values
+                            confirmed_balance, pending_balance = self._calculate_balance_from_transactions(address)
                             existing_wallet = None
                             for w in sidebar_list.controls:
                                 if hasattr(w, 'data'):
@@ -330,6 +424,7 @@ class WalletPage:
                                 else:
                                     print(f"DEBUG: Wallet {address[:12]}... already in sidebar (by address check), skipping")
                         print(f"=== SIDEBAR REFRESH COMPLETE ===\n")
+                        self._apply_sidebar_selection_highlight()
             except Exception as e:
                 print(f"Error refreshing sidebar wallets: {e}")
                 import traceback
@@ -373,7 +468,7 @@ class WalletPage:
                             info_column.controls[2].color = pending_color
                         
                         # Update the entire column
-                        info_column.update()
+                        # info_column.update() # This can cause errors, update the page instead
             
             # Also update balance card if this is the current wallet
             if hasattr(self.app.wallet_core, 'current_wallet_address') and hasattr(wallet_item, 'data'):
@@ -646,52 +741,44 @@ class WalletPage:
             if hasattr(self.app, 'selected_wallet_index'):
                 self.app.selected_wallet_index = index
 
-            # Get the selected wallet address
+            # Get the selected wallet address and index
             selected_address = None
+            selected_index = index
+            
             if hasattr(self.app, 'wallet_core') and self.app.wallet_core:
                 if isinstance(self.app.wallet_core.wallets, dict):
                     wallet_addresses = list(self.app.wallet_core.wallets.keys())
-                    if index < len(wallet_addresses):
-                        selected_address = wallet_addresses[index]
-                        
-                        # Ensure wallet has private_key before switching
+                    if selected_index < len(wallet_addresses):
+                        selected_address = wallet_addresses[selected_index]
+
+                        # Ensure private_key exists before switching
                         wallet_obj = self.app.wallet_core.wallets.get(selected_address)
-                        if wallet_obj and 'private_key' not in wallet_obj and hasattr(self.app.wallet_core, 'private_key'):
-                            wallet_obj['private_key'] = self.app.wallet_core.private_key
-                        
+                        if wallet_obj is not None and 'private_key' not in wallet_obj:
+                            if hasattr(self.app.wallet_core, 'private_key') and self.app.wallet_core.private_key:
+                                wallet_obj['private_key'] = self.app.wallet_core.private_key
+
+                        # Set current wallet address for UI highlight immediately
+                        self.app.wallet_core.current_wallet_address = selected_address
+
                         # Switch to the selected wallet in the core
                         if hasattr(self.app.wallet_core, 'switch_wallet'):
-                            self.app.wallet_core.switch_wallet(selected_address)
-                        self.app.wallet_core.current_wallet_address = selected_address
+                            try:
+                                self.app.wallet_core.switch_wallet(selected_address)
+                            except KeyError as key_err:
+                                print(f"DEBUG: switch_wallet failed (missing key): {key_err}")
+                                self.app.show_snackbar("Wallet key missing. Please unlock or resave wallet.", "error")
+                                # Still allow UI highlight to update
                         print(f"DEBUG: Switched to wallet: {selected_address}")
 
             if not selected_address:
                 return
 
-            # サイドバーの選択状態を即時反映（色のみ）
-            if 'sidebar_wallets_list' in self.refs and self.refs['sidebar_wallets_list'].current:
-                sidebar_list = self.refs['sidebar_wallets_list'].current
-                for i, control in enumerate(sidebar_list.controls):
-                    # 色だけ即時反映、残高はrecalculate_wallet_balancesで更新
-                    if hasattr(control, 'data') and (
-                        (isinstance(control.data, dict) and control.data.get('address') == selected_address)
-                        or control.data == index
-                    ):
-                        if self.sidebar_collapsed:
-                            if hasattr(control.content, 'controls') and len(control.content.controls) > 0:
-                                control.content.controls[0].bgcolor = "#dc3545"
-                        else:
-                            control.bgcolor = "#2c1a1a"
-                            control.border = ft.border.all(1, "#dc3545")
-                    else:
-                        if self.sidebar_collapsed:
-                            if hasattr(control.content, 'controls') and len(control.content.controls) > 0:
-                                control.content.controls[0].bgcolor = "#5c2e2e"
-                        else:
-                            control.bgcolor = "transparent"
-                            control.border = ft.border.all(1, "transparent")
-                    control.update()
+            # Refresh transaction history for the newly selected wallet
+            self.refresh_transaction_history()
 
+            # --- START: Sidebar Highlight Logic ---
+            self._apply_sidebar_selection_highlight()
+            # --- END: Sidebar Highlight Logic ---
 
             # 残高・UIは選択ウォレットのみlunalibから取得し、サイドバーとカードを即時更新（他は更新しない）
             confirmed_balance, pending_balance = self._get_wallet_balances(selected_address)
@@ -712,6 +799,9 @@ class WalletPage:
                 except Exception as e:
                     print(f"DEBUG: Error saving wallet selection: {e}")
             threading.Thread(target=background_operations, daemon=True).start()
+
+            if hasattr(self.app, 'page') and self.app.page:
+                self.app.page.update()
         except Exception as e:
             print(f"DEBUG: Error in _on_wallet_select: {e}")
             import traceback
@@ -921,12 +1011,12 @@ class WalletPage:
         )
     
     def create_transaction_history(self):
-        self.transactions_list = ft.ListView(
-            spacing=5, 
-            height=250, 
-            expand=True,
-            auto_scroll=False
-        )
+        # self.transactions_list = ft.ListView(
+        #     spacing=5, 
+        #     height=250, 
+        #     expand=True,
+        #     auto_scroll=False
+        # )
         
         # Load initial transactions
         self.refresh_transaction_history()
@@ -945,7 +1035,7 @@ class WalletPage:
                     )
                 ]),
                 ft.Container(
-                    content=self.transactions_list,
+                    content=self.transaction_list_view,
                     padding=10,
                     bgcolor="#1a0f0f",
                     border_radius=12,
@@ -1019,28 +1109,9 @@ class WalletPage:
                                     if method == 'get_all_transactions':
                                         all_txs = getattr(self.app.database, method)()
                                         print(f"DEBUG: Database returned {len(all_txs)} total transactions (NO LIMIT)")
-                                        
-                                        # Filter for current wallet
-                                        all_transactions = []
-                                        for tx in all_txs:
-                                            # Check if this transaction involves our wallet
-                                            from_addr = tx.get('from', '').lower()
-                                            to_addr = tx.get('to', '').lower()
-                                            reward_addr = tx.get('reward_address', '').lower()
-                                            recipient_addr = tx.get('recipient', '').lower()
-                                            status = tx.get('status', 'unknown')
-                                            
-                                            current_lower = current_address.lower()
-                                            
-                                            # Include if any address matches our wallet
-                                            if (from_addr == current_lower or 
-                                                to_addr == current_lower or
-                                                reward_addr == current_lower or
-                                                recipient_addr == current_lower):
-                                                all_transactions.append(tx)
-                                                print(f"  Found: {tx.get('hash', 'unknown')[:8]}... (status={status}, type={tx.get('type', 'unknown')})")
-                                        
-                                        print(f"DEBUG: Filtered {len(all_transactions)} transactions for current wallet")
+
+                                        # Defer filtering to unified wallet-involvement check
+                                        all_transactions = all_txs
                                         if all_transactions:
                                             break
                                     else:
@@ -1136,7 +1207,7 @@ class WalletPage:
                 # to avoid duplicate sidebar refreshes during wallet selection
                 
                 def update_ui():
-                    self.transactions_list.controls.clear()
+                    self.transaction_list_view.controls.clear()
                     
                     if filtered_transactions:
                         # Compress sequential reward transactions
@@ -1144,7 +1215,7 @@ class WalletPage:
                         
                         for tx in compressed_transactions:
                             tx_item = self._create_transaction_item(tx, current_address)
-                            self.transactions_list.controls.append(tx_item)
+                            self.transaction_list_view.controls.append(tx_item)
                     else:
                         self._show_no_transactions_message()
                     
@@ -1239,6 +1310,14 @@ class WalletPage:
             label = self.app.wallet_core.wallets.get(wallet_address, {}).get('label', 'Wallet') if hasattr(self.app.wallet_core, 'wallets') else 'Wallet'
             addr_text = f"{wallet_address[:12]}...{wallet_address[-6:]}" if len(wallet_address) > 20 else wallet_address
             self.address_text.value = f"{label}: {addr_text}"
+
+            # Keep sidebar in sync for the active wallet
+            if 'sidebar_wallets_list' in self.refs and self.refs['sidebar_wallets_list'].current:
+                sidebar_list = self.refs['sidebar_wallets_list'].current
+                for control in sidebar_list.controls:
+                    if hasattr(control, 'data') and isinstance(control.data, dict) and control.data.get('address') == wallet_address:
+                        self._update_sidebar_wallet_display(control, ab, pb)
+                        break
             # Update the balance card
             if 'balance_card' in self.refs and self.refs['balance_card'].current:
                 try:
@@ -1496,8 +1575,8 @@ class WalletPage:
         """Determine if transaction is incoming to current wallet"""
         try:
             tx_type = tx_data.get('type', '')
-            to_addr = tx_data.get('to', '')
-            from_addr = tx_data.get('from', '')
+            to_addr = tx_data.get('to') or tx_data.get('to_address') or tx_data.get('receiver') or ''
+            from_addr = tx_data.get('from') or tx_data.get('from_address') or tx_data.get('sender') or ''
             
             # For rewards, check if the reward address matches current wallet
             if tx_type == 'reward':
@@ -1517,7 +1596,7 @@ class WalletPage:
     
     def _show_no_transactions_message(self):
         """Show no transactions message"""
-        self.transactions_list.controls.append(
+        self.transaction_list_view.controls.append(
             ft.Container(
                 content=ft.Column([
                     ft.Icon(ft.Icons.RECEIPT_LONG, size=32, color="#5c2e2e"),
@@ -1531,7 +1610,7 @@ class WalletPage:
     
     def _show_no_wallet_message(self):
         """Show no wallet selected message"""
-        self.transactions_list.controls.append(
+        self.transaction_list_view.controls.append(
             ft.Container(
                 content=ft.Column([
                     ft.Icon(ft.Icons.WALLET, size=32, color="#5c2e2e"),
@@ -1545,7 +1624,7 @@ class WalletPage:
     
     def _show_error_message(self, error: str):
         """Show error message"""
-        self.transactions_list.controls.append(
+        self.transaction_list_view.controls.append(
             ft.Container(
                 content=ft.Column([
                     ft.Icon(ft.Icons.ERROR, size=32, color="#5c2e2e"),
@@ -1778,21 +1857,19 @@ class WalletPage:
             margin=ft.margin.symmetric(horizontal=2)
         )
     
-    def show_loading(self):
-        self.is_loading = True
-        self.preloader.visible = True
-        self.main_content.visible = False
-        if hasattr(self.app, 'page'):
+    def show_loading(self, text="Loading..."):
+        """Show the loading overlay."""
+        self.loading_overlay.content.controls[1].value = text
+        self.loading_overlay.visible = True
+        if hasattr(self.app, "page") and self.app.page:
             self.app.page.update()
-    
+
     def hide_loading(self):
-        self.is_loading = False
-        self.preloader.visible = False
-        self.main_content.visible = True
-        self.update_wallet_data()
-        if hasattr(self.app, 'page'):
+        """Hide the loading overlay."""
+        self.loading_overlay.visible = False
+        if hasattr(self.app, "page") and self.app.page:
             self.app.page.update()
-    
+
     def update_wallet_data(self):
         try:
             if hasattr(self.app, 'wallet_core') and self.app.wallet_core:
@@ -1826,6 +1903,7 @@ class WalletPage:
                     
                     # Method 3: Get first wallet if no current
                     if not wallet_info and hasattr(self.app.wallet_core, 'wallets'):
+                       
                         if isinstance(self.app.wallet_core.wallets, dict) and self.app.wallet_core.wallets:
                             first_address = list(self.app.wallet_core.wallets.keys())[0]
                             wallet_info = self.app.wallet_core.wallets[first_address]
@@ -1836,6 +1914,9 @@ class WalletPage:
                         # Use cached balance from wallet_info (don't hardcode to 0)
                         balance = wallet_info.get('balance', wallet_info.get('confirmed_balance', None))
                         pending_balance = wallet_info.get('pending_balance', 0)
+
+
+
                         address = wallet_info.get('address', 'No wallet')
                         label = wallet_info.get('label', 'Wallet')
                         

@@ -135,7 +135,7 @@ class TransactionDetailsPage:
                     color=color
                 ),
                 ft.Row([
-                    ft.Text(f"{tx_type.title()} • {direction}", size=12, color="#a8a8a8", expand=True),
+                    ft.Text(f"{tx_type.title()} - {direction}", size=12, color="#a8a8a8", expand=True),
                     ft.Text(f"Fee: {fee:.6f} LKC", size=12, color="#a8a8a8"),
                 ])
             ]),
@@ -353,18 +353,12 @@ class TransactionDetailsPage:
                 show_snack()
     
     def _view_in_explorer(self, tx_hash):
-        """View transaction in blockchain explorer (transactions/verify endpoint)"""
+        """View transaction in blockchain explorer"""
         if hasattr(self.app, 'show_snackbar'):
             self.app.show_snackbar("Opening blockchain explorer...", "info")
         
-        # Check transaction type to use appropriate endpoint
-        tx_type = self.transaction_data.get('type', 'transfer')
         base_url = "https://bank.linglin.art"
-        
-        if tx_type in ['reward', 'fee_distribution']:
-            explorer_url = f"{base_url}/transactions/verify_reward/{tx_hash}"
-        else:
-            explorer_url = f"{base_url}/transactions/verify/{tx_hash}"
+        explorer_url = f"{base_url}/transaction-viewer/{tx_hash}"
         
         import webbrowser
         webbrowser.open(explorer_url)

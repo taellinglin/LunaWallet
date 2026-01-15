@@ -292,6 +292,7 @@ class LunaWalletApp:
 
         # NEW: Continuous blockchain scanning state
         self.continuous_scan_active = False
+        self.initial_scan_complete = False
         self.last_scanned_block = 0
         self.wallet_balances_cache = {}  # Cache of wallet balances to detect changes
         self.scan_interval = 30  # Scan every 30 seconds
@@ -440,11 +441,13 @@ class LunaWalletApp:
             return
 
         try:
+            sound_path = os.path.abspath(
+                os.path.join(os.path.dirname(__file__), "..", "assets", "sounds", f"{sound_type}.wav")
+            )
             # Use Flet audio for mobile compatibility
             if sound_type == "transaction":
-                # You can use Flet's Audio control for mobile
                 audio = ft.Audio(
-                    src="transaction.wav",
+                    src=sound_path,
                     autoplay=True,
                 )
                 self.page.overlay.append(audio)
@@ -452,7 +455,7 @@ class LunaWalletApp:
                 self.page.update()
             elif sound_type == "send":
                 audio = ft.Audio(
-                    src="send.wav",
+                    src=sound_path,
                     autoplay=True,
                 )
                 self.page.overlay.append(audio)
@@ -1039,60 +1042,42 @@ class LunaWalletApp:
     def on_send_transaction(self):
         """Handle send transaction action"""
         print("DEBUG: on_send_transaction called")
-        try:
-            send_page = SendPage(
-                self,
-                on_back=self.show_wallet_page,
-                on_send_complete=self.on_transaction_sent
-            )
-            self.current_page = send_page.create()
-            self.page.controls.clear()
-            self.page.add(self.current_page)
-            self.page.update()
-            print("DEBUG: Send page displayed")
-        except Exception as e:
-            print(f"DEBUG: Error showing send page: {e}")
-            import traceback
-            traceback.print_exc()
-            self.show_snackbar(f"Error opening send page: {str(e)}", "error")
+        send_page = SendPage(
+            self,
+            on_back=self.show_wallet_page,
+            on_send_complete=self.on_transaction_sent
+        )
+        self.current_page = send_page.create()
+        self.page.controls.clear()
+        self.page.add(self.current_page)
+        self.page.update()
+        print("DEBUG: Send page displayed")
 
     def on_receive(self):
         """Handle receive action"""
         print("DEBUG: on_receive called")
-        try:
-            receive_page = ReceivePage(
-                self,
-                on_back=self.show_wallet_page
-            )
-            self.current_page = receive_page.create()
-            self.page.controls.clear()
-            self.page.add(self.current_page)
-            self.page.update()
-            print("DEBUG: Receive page displayed")
-        except Exception as e:
-            print(f"DEBUG: Error showing receive page: {e}")
-            import traceback
-            traceback.print_exc()
-            self.show_snackbar(f"Error opening receive page: {str(e)}", "error")
+        receive_page = ReceivePage(
+            self,
+            on_back=self.show_wallet_page
+        )
+        self.current_page = receive_page.create()
+        self.page.controls.clear()
+        self.page.add(self.current_page)
+        self.page.update()
+        print("DEBUG: Receive page displayed")
 
     def on_export_key(self):
         """Handle export key action"""
         print("DEBUG: on_export_key called")
-        try:
-            export_key_page = ExportKeyPage(
-                self,
-                on_back=self.show_wallet_page
-            )
-            self.current_page = export_key_page.create()
-            self.page.controls.clear()
-            self.page.add(self.current_page)
-            self.page.update()
-            print("DEBUG: Export key page displayed")
-        except Exception as e:
-            print(f"DEBUG: Error showing export key page: {e}")
-            import traceback
-            traceback.print_exc()
-            self.show_snackbar(f"Error opening export key page: {str(e)}", "error")
+        export_key_page = ExportKeyPage(
+            self,
+            on_back=self.show_wallet_page
+        )
+        self.current_page = export_key_page.create()
+        self.page.controls.clear()
+        self.page.add(self.current_page)
+        self.page.update()
+        print("DEBUG: Export key page displayed")
 
     def on_transaction_sent(self):
         """Handle transaction sent confirmation"""
@@ -1249,6 +1234,9 @@ class LunaWalletApp:
                     traceback.print_exc()
                     raise
 
+                # START INITIAL SCAN after wallet page is shown
+                self.start_initial_blockchain_scan()
+
                 # Update page
                 if hasattr(self, 'page') and self.page:
                     try:
@@ -1267,35 +1255,53 @@ class LunaWalletApp:
             if hasattr(self, 'current_lock_page') and self.current_lock_page:
                 self.current_lock_page.hide_loading()
 
-    def start_blockchain_sync(self):
-        """Start blockchain synchronization for all wallets"""
-        try:
-            def sync_thread():
-                """Synchronize blockchain for all wallets using lunalib."""
-                try:
-                    # Perform a full blockchain scan using lunalib
-                    if hasattr(self.blockchain_manager, 'scan_for_updates'):
-                        self.blockchain_manager.scan_for_updates()
-                    else:
-                        # Fallback: scan transactions for all wallets
-                        if hasattr(self.wallet_core, 'wallets'):
-                            for wallet_addr in self.wallet_core.wallets.keys():
-                                self.blockchain_manager.scan_transactions_for_address(wallet_addr)
+    def start_initial_blockchain_scan(self):
+        """
+        Performs the initial, one-time, full blockchain scan.
+        This should only run once after the wallet is unlocked.
+        """
+        if self.initial_scan_complete:
+            print("DEBUG: Initial scan already completed. Skipping.")
+            return
 
-                    # Start continuous background monitoring
-                    if hasattr(self.blockchain_manager, 'start_continuous_scan'):
-                        self.blockchain_manager.start_continuous_scan()
-                    else:
-                        self.start_continuous_blockchain_scan()
+        print("DEBUG: Starting initial blockchain scan...")
 
-                except Exception as e:
-                    print(f"[BLOCKCHAIN] Sync error: {e}")
+        def initial_scan_thread():
+            try:
+                # Show loading indicator on the wallet page
+                if hasattr(self, 'wallet_page') and self.wallet_page:
+                    if hasattr(self.wallet_page, 'show_loading'):
+                        self.page.run_thread(self.wallet_page.show_loading, "Syncing Blockchain...")
 
-            threading.Thread(target=sync_thread, daemon=True).start()
+                # Perform the full scan
+                wallet_addresses = list(self.wallet_core.wallets.keys())
+                if wallet_addresses:
+                    latest_block = self.blockchain_manager.get_latest_block()
+                    latest_height = latest_block.get('index', 0) if latest_block else 0
+                    self._perform_full_blockchain_scan(wallet_addresses, latest_height)
+                    self.last_scanned_block = latest_height
+                
+                self.initial_scan_complete = True
+                print("DEBUG: Initial blockchain scan COMPLETED.")
 
-        except Exception as e:
-            print(f"[BLOCKCHAIN] Error starting sync: {e}")
+                # Hide loading indicator
+                if hasattr(self, 'wallet_page') and self.wallet_page:
+                    if hasattr(self.wallet_page, 'hide_loading'):
+                        self.page.run_thread(self.wallet_page.hide_loading)
 
+                # Now, start the continuous background scan for new blocks
+                self.start_continuous_blockchain_scan()
+
+            except Exception as e:
+                print(f"DEBUG: Error during initial blockchain scan: {e}")
+                import traceback
+                traceback.print_exc()
+                # Ensure loading indicator is hidden on error
+                if hasattr(self, 'wallet_page') and self.wallet_page:
+                    if hasattr(self.wallet_page, 'hide_loading'):
+                        self.page.run_thread(self.wallet_page.hide_loading)
+
+        threading.Thread(target=initial_scan_thread, daemon=True).start()
 
     def show_create_wallet(self):
         """Display the wallet creation page or dialog."""
@@ -1375,7 +1381,25 @@ class LunaWalletApp:
             # Returns Dict[str, List[Dict]] where keys are addresses
             print(f"[OK] Using batch scan_transactions_for_addresses() for {len(wallet_addresses)} wallets")
             all_transactions = self.blockchain_manager.scan_transactions_for_addresses(wallet_addresses)
-                
+            
+            # ALSO get sent transactions for each wallet, as scan_transactions_for_addresses might only get incoming
+            for wallet_addr in wallet_addresses:
+                try:
+                    sent_txs = self.blockchain_manager.get_sent_transactions(wallet_addr)
+                    if sent_txs:
+                        print(f"DEBUG: Found {len(sent_txs)} sent transactions for {wallet_addr[:12]}")
+                        # Add these to the all_transactions dict if not already present
+                        wallet_addr_lower = wallet_addr.lower()
+                        if wallet_addr_lower not in all_transactions:
+                            all_transactions[wallet_addr_lower] = []
+                        
+                        existing_tx_ids = {tx.get('transaction_id') for tx in all_transactions[wallet_addr_lower]}
+                        for tx in sent_txs:
+                            if tx.get('transaction_id') not in existing_tx_ids:
+                                all_transactions[wallet_addr_lower].append(tx)
+                except Exception as e:
+                    print(f"DEBUG: Error getting sent transactions for {wallet_addr[:12]}: {e}")
+
             # Process transactions for each wallet
             wallet_txs_count = {addr: {'reward': 0, 'transfer': 0, 'other': 0} for addr in wallet_addresses}
                 
@@ -1386,13 +1410,24 @@ class LunaWalletApp:
                 print(f"\n📨 Processing {len(wallet_txs)} transactions for {wallet_addr[:12]}...")
                     
                 for tx in wallet_txs:
+                    # Normalize sender/receiver fields so outgoing is counted correctly
+                    if not tx.get('from'):
+                        tx['from'] = tx.get('from_address') or tx.get('sender') or tx.get('sender_address') or ''
+                    if not tx.get('to'):
+                        tx['to'] = tx.get('to_address') or tx.get('receiver') or tx.get('recipient') or ''
+                    if not tx.get('hash'):
+                        tx['hash'] = tx.get('transaction_id') or ''
+
                     tx_type = tx.get('type', 'transfer').lower()
                     block_height = tx.get('block_height', 0)
                         
-                    # Save transaction with proper status
+                    # Save transaction with proper status (per-wallet unique hash)
                     tx['status'] = 'confirmed'
                     if hasattr(self, 'database'):
-                        self.database.save_transaction(tx, wallet_addr)
+                        tx_copy = dict(tx)
+                        base_hash = tx_copy.get('hash') or tx_copy.get('transaction_id') or ''
+                        tx_copy['hash'] = f"{base_hash}_{wallet_addr}" if base_hash else wallet_addr
+                        self.database.save_transaction(tx_copy, wallet_addr)
                         
                         # **IMPORTANT**: For incoming transfers, also save for the RECEIVER
                         if tx_type == 'transfer':
@@ -1403,14 +1438,11 @@ class LunaWalletApp:
                                 # Find if the receiver wallet is in our wallet list
                                 for check_wallet in wallet_addresses:
                                     if check_wallet.lower() == tx_to:
-                                        self.database.save_transaction(tx, check_wallet)
-                                        print(f"  → Saved incoming transfer to: {check_wallet[:12]}...")
-                                        # Play incoming transaction sound
-                                        if self.sound_manager:
-                                            print(f"DEBUG: Playing transaction sound for incoming transfer")
-                                            self.sound_manager.play_transaction_sound()
-                                        else:
-                                            print(f"DEBUG: sound_manager is None, cannot play sound")
+                                        tx_copy_receiver = dict(tx)
+                                        base_hash = tx_copy_receiver.get('hash') or tx_copy_receiver.get('transaction_id') or ''
+                                        tx_copy_receiver['hash'] = f"{base_hash}_{check_wallet}" if base_hash else check_wallet
+                                        self.database.save_transaction(tx_copy_receiver, check_wallet)
+                                        print(f"  → Saved outgoing transaction for receiver: {check_wallet[:12]}...")
                                         break
                         
                     # Update balance incrementally
@@ -1438,9 +1470,6 @@ class LunaWalletApp:
             # Detect new incoming transactions and play sound
             self._detect_new_incoming_transactions(wallet_addresses)
             
-            # No need for full balance recalculation - balances updated incrementally
-            # self._update_all_wallet_balances(wallet_addresses)
-            
             # Refresh UI after full scan complete
             self._refresh_ui_after_scan(force_update=True)
             
@@ -1460,10 +1489,34 @@ class LunaWalletApp:
             # Use new batch method to scan all wallets at once
             print(f"✓ Using batch scan_transactions_for_addresses() for new blocks {start_height}-{latest_height}")
             all_transactions = self.blockchain_manager.scan_transactions_for_addresses(
-                wallet_addresses, 
-                start_height=start_height, 
+                wallet_addresses,
+                start_height=start_height,
                 end_height=latest_height
             )
+
+            # ALSO fetch sent transactions for each wallet in this height range
+            for wallet_addr in wallet_addresses:
+                try:
+                    sent_txs = self.blockchain_manager.get_sent_transactions(
+                        wallet_addr,
+                        start_height=start_height,
+                        end_height=latest_height
+                    )
+                    if sent_txs:
+                        wallet_addr_lower = wallet_addr.lower()
+                        if wallet_addr_lower not in all_transactions:
+                            all_transactions[wallet_addr_lower] = []
+
+                        existing_tx_ids = {
+                            tx.get('transaction_id') or tx.get('hash')
+                            for tx in all_transactions[wallet_addr_lower]
+                        }
+                        for tx in sent_txs:
+                            tx_id = tx.get('transaction_id') or tx.get('hash')
+                            if tx_id and tx_id not in existing_tx_ids:
+                                all_transactions[wallet_addr_lower].append(tx)
+                except Exception as e:
+                    print(f"DEBUG: Error getting sent transactions for {wallet_addr[:12]}: {e}")
                 
             for wallet_addr in wallet_addresses:
                 wallet_addr_lower = wallet_addr.lower()
@@ -1474,33 +1527,39 @@ class LunaWalletApp:
                     print(f"\n📨 Processing {len(wallet_txs)} transactions for {wallet_addr[:12]}...")
                         
                     for tx in wallet_txs:
+                        # Normalize sender/receiver fields so outgoing is counted correctly
+                        if not tx.get('from'):
+                            tx['from'] = tx.get('from_address') or tx.get('sender') or tx.get('sender_address') or ''
+                        if not tx.get('to'):
+                            tx['to'] = tx.get('to_address') or tx.get('receiver') or tx.get('recipient') or ''
+                        if not tx.get('hash'):
+                            tx['hash'] = tx.get('transaction_id') or ''
+
                         tx_type = tx.get('type', 'transfer').lower()
                         block_height = tx.get('block_height', 0)
-                        
-                        # Save transaction with proper status
+
+                        # Save transaction with proper status (per-wallet unique hash)
                         tx['status'] = 'confirmed'
                         if hasattr(self, 'database'):
-                            self.database.save_transaction(tx, wallet_addr)
-                            
-                            # **IMPORTANT**: For incoming transfers, also save for the RECEIVER
+                            tx_copy = dict(tx)
+                            base_hash = tx_copy.get('hash') or tx_copy.get('transaction_id') or ''
+                            tx_copy['hash'] = f"{base_hash}_{wallet_addr}" if base_hash else wallet_addr
+                            self.database.save_transaction(tx_copy, wallet_addr)
+
+                            # For transfers, also save for the receiver if we own it
                             if tx_type == 'transfer':
                                 tx_to = (tx.get('to') or tx.get('to_address') or '').lower()
                                 wallet_addr_lower = wallet_addr.lower()
-                                # If this wallet is the sender, also save it for the receiver
                                 if tx_to and tx_to != wallet_addr_lower:
-                                    # Find if the receiver wallet is in our wallet list
                                     for check_wallet in wallet_addresses:
                                         if check_wallet.lower() == tx_to:
-                                            self.database.save_transaction(tx, check_wallet)
-                                            print(f"  → Saved incoming transfer to: {check_wallet[:12]}...")
-                                            # Play incoming transaction sound
-                                            if self.sound_manager:
-                                                print(f"DEBUG: Playing transaction sound for incoming transfer")
-                                                self.sound_manager.play_transaction_sound()
-                                            else:
-                                                print(f"DEBUG: sound_manager is None, cannot play sound")
+                                            tx_copy_receiver = dict(tx)
+                                            base_hash = tx_copy_receiver.get('hash') or tx_copy_receiver.get('transaction_id') or ''
+                                            tx_copy_receiver['hash'] = f"{base_hash}_{check_wallet}" if base_hash else check_wallet
+                                            self.database.save_transaction(tx_copy_receiver, check_wallet)
+                                            print(f"  → Saved outgoing transaction for receiver: {check_wallet[:12]}...")
                                             break
-                        
+
                         # Update balance incrementally
                         self._update_wallet_balance_incremental(wallet_addr, tx)
                         
@@ -1531,8 +1590,6 @@ class LunaWalletApp:
             
             # Only update UI - balances already updated incrementally
             if new_transactions_found:
-                # No need for full balance recalculation - balances updated incrementally
-                # self._update_all_wallet_balances(wallet_addresses)
                 self._refresh_ui_after_scan(force_update=True)
                 self.show_snackbar("New transactions detected!", "success")
             
@@ -1689,7 +1746,9 @@ class LunaWalletApp:
         """Play transaction notification sound"""
         try:
             import os
-            sound_file = os.path.join(os.path.dirname(__file__), 'assets', 'sounds', 'transaction.wav')
+            sound_file = os.path.abspath(
+                os.path.join(os.path.dirname(__file__), "..", "assets", "sounds", "transaction.wav")
+            )
             
             if os.path.exists(sound_file):
                 print(f"Playing transaction sound: {sound_file}")
@@ -1786,16 +1845,16 @@ class LunaWalletApp:
                 print(f">>> UI REFRESH STARTING (on main thread)")
                 
                 if hasattr(self, 'wallet_page') and self.wallet_page:
-                    # FIRST: Update all sidebar wallet balances
-                    print(f">>> [1] Updating all sidebar wallet balances...")
-                    if hasattr(self.wallet_page, 'update_all_sidebar_wallets_after_scan'):
-                        self.wallet_page.update_all_sidebar_wallets_after_scan()
-                    
-                    # SECOND: Refresh sidebar structure
-                    print(f">>> [2] Refreshing sidebar wallets structure...")
+                    # FIRST: Refresh sidebar structure (rebuild list)
+                    print(f">>> [1] Refreshing sidebar wallets structure...")
                     if hasattr(self.wallet_page, '_refresh_sidebar_wallets'):
                         self.wallet_page._refresh_sidebar_wallets()
-                    
+
+                    # SECOND: Update all sidebar wallet balances (after structure refresh)
+                    print(f">>> [2] Updating all sidebar wallet balances...")
+                    if hasattr(self.wallet_page, 'update_all_sidebar_wallets_after_scan'):
+                        self.wallet_page.update_all_sidebar_wallets_after_scan()
+
                     # THIRD: Update active wallet's balance card
                     print(f">>> [3] Recalculating balance from all transactions...")
                     if hasattr(self.wallet_page, 'recalculate_wallet_balances'):
@@ -1839,6 +1898,8 @@ class LunaWalletApp:
         print("DEBUG: Starting continuous blockchain scan (every 30 seconds)")
         
         def continuous_scan_loop():
+            # Wait a bit before starting the loop to let the initial scan finish
+            time.sleep(self.scan_interval)
             while self.continuous_scan_active and not self.is_locked:
                 try:
                     current_time = time.time()

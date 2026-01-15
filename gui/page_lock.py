@@ -190,7 +190,9 @@ class LockPage:
         
         self.is_unlocking = True
         self.show_loading()
-        self.on_unlock(password)
+        
+        # Run unlock in a separate thread to avoid blocking UI
+        threading.Thread(target=self.on_unlock, args=(password,), daemon=True).start()
     
     def show_loading(self):
         if self.unlock_button:

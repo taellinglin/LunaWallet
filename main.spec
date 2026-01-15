@@ -1,3 +1,5 @@
+import os
+
 # build.spec
 block_cipher = None
 

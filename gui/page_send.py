@@ -1,6 +1,7 @@
 import flet as ft
 from utils import calculate_wallet_balances
 import requests
+import threading
 
 class SendPage:
     def __init__(self, app, on_back, on_send_complete, from_address=None):
@@ -40,7 +41,17 @@ class SendPage:
             self.send_sound_path = os.path.join(sys._MEIPASS, "sounds", "send.wav")
         else:
             self.send_sound_path = os.path.join("assets", "sounds", "send.wav")
-        
+        self.loading_ring = ft.ProgressRing(visible=False, width=20, height=20)
+        self.send_button = ft.ElevatedButton(
+            "📨 Send Transaction",
+            on_click=self._send_transaction_thread,
+            style=ft.ButtonStyle(
+                color="#ffffff",
+                bgcolor="#dc3545",
+                padding=20
+            ),
+            width=200
+        )
 
     def _prepare_wallet_for_sending(self, password):
         """Ensure wallet is ready for transaction sending"""
@@ -538,6 +549,34 @@ class SendPage:
                 
                 print(f"[SEND] Broadcast successful")
                 _global_trace(f"BROADCAST SUCCESS - TX: {tx_hash}, Message: {broadcast_message}", "SEND")
+
+                # Save pending transaction to local database so outgoing shows immediately
+                try:
+                    if hasattr(self.app, 'database') and self.app.database:
+                        tx_record = dict(transaction)
+                        tx_record.setdefault('status', 'pending')
+                        tx_record.setdefault('timestamp', time.time())
+                        tx_record.setdefault('hash', tx_hash)
+                        tx_record.setdefault('from', wallet.address)
+                        tx_record.setdefault('to', recipient)
+                        tx_record.setdefault('amount', amount)
+                        tx_record.setdefault('fee', tx_fee)
+
+                        # Save for sender wallet with per-wallet hash
+                        sender_record = dict(tx_record)
+                        sender_record['hash'] = f"{tx_hash}_{wallet.address}" if tx_hash else wallet.address
+                        self.app.database.save_transaction(sender_record, wallet.address)
+
+                        # If recipient is one of our wallets, save there too with per-wallet hash
+                        if hasattr(self.app.wallet_core, 'wallets') and isinstance(self.app.wallet_core.wallets, dict):
+                            for addr in self.app.wallet_core.wallets.keys():
+                                if addr.lower() == recipient.lower():
+                                    receiver_record = dict(tx_record)
+                                    receiver_record['hash'] = f"{tx_hash}_{addr}" if tx_hash else addr
+                                    self.app.database.save_transaction(receiver_record, addr)
+                                    break
+                except Exception as save_err:
+                    print(f"DEBUG: Failed to save pending transaction: {save_err}")
                 
                 # デバッグ: 送信直後のトランザクション履歴を表示
                 try:
@@ -553,6 +592,8 @@ class SendPage:
                 
                 # Transaction sent successfully!
                 print("DEBUG: Transaction sent successfully!")
+                if hasattr(self.app, '_play_sound'):
+                    self.app._play_sound("send")
                 
                 # Refresh balances to get updated state
                 wallet.refresh_balance()
@@ -658,15 +699,12 @@ class SendPage:
                         ft.Container(height=10),
                         self.password,
                         ft.Container(height=30),
-                        ft.ElevatedButton(
-                            "📨 Send Transaction", 
-                            on_click=self.send_transaction,
-                            style=ft.ButtonStyle(
-                                color="#ffffff", 
-                                bgcolor="#dc3545", 
-                                padding=20
-                            ),
-                            width=200
+                        ft.Row(
+                            [
+                                self.send_button,
+                                self.loading_ring,
+                            ],
+                            alignment=ft.MainAxisAlignment.CENTER,
                         )
                     ], 
                     horizontal_alignment=ft.CrossAxisAlignment.CENTER,
@@ -686,6 +724,28 @@ class SendPage:
             bgcolor="#2c1a1a",
             alignment=ft.Alignment(0, 0)
         )
+
+    def _set_sending_state(self, is_sending: bool):
+        self.loading_ring.visible = is_sending
+        self.send_button.disabled = is_sending
+        self.recipient.disabled = is_sending
+        self.amount.disabled = is_sending
+        self.memo.disabled = is_sending
+        self.password.disabled = is_sending
+        if hasattr(self.app, 'page') and self.app.page:
+            self.app.page.update()
+
+    def _send_transaction_thread(self, e):
+        """Run send in a background thread and show loading indicator."""
+        self._set_sending_state(True)
+
+        def _run():
+            try:
+                self.send_transaction(e)
+            finally:
+                self._set_sending_state(False)
+
+        threading.Thread(target=_run, daemon=True).start()
     
     def get_current_balance(self):
         """Get current wallet total balance using unified calculation system"""

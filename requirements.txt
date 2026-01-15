@@ -3,6 +3,7 @@ flet-desktop
 flet-cli
 cryptography
 requests
+certifi
 qrcode
 pillow
 pystray
