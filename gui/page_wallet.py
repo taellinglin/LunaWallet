@@ -545,16 +545,16 @@ class WalletPage:
     def _create_sidebar_wallet_item(self, wallet, index):
         """Create wallet item for sidebar"""
         # Determine if this wallet is currently selected
+        # Always use address-based comparison for reliable highlighting
         is_selected = False
         try:
             if hasattr(self.app.wallet_core, 'current_wallet_address'):
                 current_address = self.app.wallet_core.current_wallet_address
                 if isinstance(wallet, dict) and wallet.get('address') == current_address:
                     is_selected = True
-                elif hasattr(self.app, 'selected_wallet_index') and index == self.app.selected_wallet_index:
-                    is_selected = True
-        except:
-            is_selected = index == getattr(self.app, 'selected_wallet_index', 0)
+        except Exception as e:
+            # If there's an error, default to not selected
+            is_selected = False
         
         # Get cached balance or show placeholder
         confirmed = wallet.get('confirmed_balance', wallet.get('balance', None))
@@ -672,11 +672,12 @@ class WalletPage:
             if 'sidebar_wallets_list' in self.refs and self.refs['sidebar_wallets_list'].current:
                 sidebar_list = self.refs['sidebar_wallets_list'].current
                 for i, control in enumerate(sidebar_list.controls):
-                    # 色だけ即時反映、残高はrecalculate_wallet_balancesで更新
-                    if hasattr(control, 'data') and (
-                        (isinstance(control.data, dict) and control.data.get('address') == selected_address)
-                        or control.data == index
-                    ):
+                    # Use address-based comparison for reliable highlighting
+                    is_this_selected = False
+                    if hasattr(control, 'data') and isinstance(control.data, dict):
+                        is_this_selected = control.data.get('address') == selected_address
+                    
+                    if is_this_selected:
                         if self.sidebar_collapsed:
                             if hasattr(control.content, 'controls') and len(control.content.controls) > 0:
                                 control.content.controls[0].bgcolor = "#dc3545"
