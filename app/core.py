@@ -292,9 +292,16 @@ class LunaWalletApp:
 
         # NEW: Continuous blockchain scanning state
         self.continuous_scan_active = False
-        self.last_scanned_block = 0
         self.wallet_balances_cache = {}  # Cache of wallet balances to detect changes
         self.scan_interval = 30  # Scan every 30 seconds
+        
+        # Initialize cache manager for persistent cache state
+        from app.cache_manager import BlockchainCacheManager
+        self.cache_manager = BlockchainCacheManager(cache_dir=self._get_data_directory())
+        
+        # Load last scanned block from cache
+        self.last_scanned_block = self.cache_manager.get_last_scanned_block()
+        print(f"DEBUG: Loaded last scanned block from cache: {self.last_scanned_block}")
 
     def show_snackbar(self, message: str, message_type: str = "info"):
         """Display a slim notification panel docked at the bottom of the window.
@@ -1268,33 +1275,64 @@ class LunaWalletApp:
                 self.current_lock_page.hide_loading()
 
     def start_blockchain_sync(self):
-        """Start blockchain synchronization for all wallets"""
+        """Start blockchain synchronization for all wallets with loading indicator"""
         try:
+            print("DEBUG: Starting blockchain sync for all wallets...")
+            
             def sync_thread():
-                """Synchronize blockchain for all wallets using lunalib."""
+                """Synchronize blockchain for all wallets using cached data."""
                 try:
-                    # Perform a full blockchain scan using lunalib
-                    if hasattr(self.blockchain_manager, 'scan_for_updates'):
-                        self.blockchain_manager.scan_for_updates()
+                    # Show loading indicator
+                    def show_loading():
+                        if hasattr(self, 'page') and self.page:
+                            self.show_snackbar("Syncing blockchain...", "info")
+                    
+                    self.page.run_thread(show_loading) if hasattr(self, 'page') else None
+                    
+                    print("DEBUG: Starting blockchain sync using lunalib with cache...")
+                    
+                    # Check if we have cached data
+                    if self.last_scanned_block > 0:
+                        print(f"✓ Loading from cache (last scanned block: {self.last_scanned_block})")
+                        self.show_snackbar(f"Loading from cache (block {self.last_scanned_block})...", "info")
                     else:
-                        # Fallback: scan transactions for all wallets
-                        if hasattr(self.wallet_core, 'wallets'):
-                            for wallet_addr in self.wallet_core.wallets.keys():
-                                self.blockchain_manager.scan_transactions_for_address(wallet_addr)
-
+                        print("⚠ No cache found, performing initial blockchain scan...")
+                        self.show_snackbar("Initial blockchain scan...", "info")
+                    
+                    # Use our improved scan_all_wallets_for_changes method
+                    # This will automatically use cache if available
+                    self.scan_all_wallets_for_changes(force_full_scan=False)
+                    
+                    # Show completion message
+                    def show_complete():
+                        if hasattr(self, 'page') and self.page:
+                            self.show_snackbar("Blockchain sync completed", "success")
+                    
+                    self.page.run_thread(show_complete) if hasattr(self, 'page') else None
+                    print("DEBUG: Blockchain sync completed using lunalib.")
+                    
                     # Start continuous background monitoring
+                    print("DEBUG: Starting continuous background monitoring...")
                     if hasattr(self.blockchain_manager, 'start_continuous_scan'):
                         self.blockchain_manager.start_continuous_scan()
                     else:
                         self.start_continuous_blockchain_scan()
 
                 except Exception as e:
-                    print(f"[BLOCKCHAIN] Sync error: {e}")
-
+                    print(f"DEBUG: Blockchain sync error: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    
+                    def show_error():
+                        if hasattr(self, 'page') and self.page:
+                            self.show_snackbar(f"Sync error: {str(e)}", "error")
+                    
+                    self.page.run_thread(show_error) if hasattr(self, 'page') else None
+            
             threading.Thread(target=sync_thread, daemon=True).start()
-
+            
         except Exception as e:
-            print(f"[BLOCKCHAIN] Error starting sync: {e}")
+            print(f"DEBUG: Error starting blockchain sync: {e}")
 
 
     def show_create_wallet(self):
@@ -1345,6 +1383,8 @@ class LunaWalletApp:
                 print(f"DEBUG: Full blockchain scan - scanning from genesis to block {latest_height}")
                 self._perform_full_blockchain_scan(wallet_addresses, latest_height)
                 self.last_scanned_block = latest_height
+                # Persist last scanned block to cache
+                self.cache_manager.set_last_scanned_block(latest_height)
                 return
             
             # Check what's already cached to avoid redundant scanning
@@ -1360,6 +1400,8 @@ class LunaWalletApp:
             print(f"DEBUG: Incremental scan - checking blocks {effective_start_height} to {latest_height}")
             self._perform_incremental_scan(wallet_addresses, effective_start_height, latest_height)
             self.last_scanned_block = latest_height
+            # Persist last scanned block to cache
+            self.cache_manager.set_last_scanned_block(latest_height)
             
         except Exception as e:
             print(f"DEBUG: Error in scan_all_wallets_for_changes: {e}")
