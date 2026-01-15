@@ -971,6 +971,14 @@ class LunaWalletApp:
         try:
             print("[WALLET_PAGE] showing wallet page...")
 
+            # Ensure current_wallet_address is set for proper sidebar highlighting
+            if hasattr(self.wallet_core, 'wallets') and self.wallet_core.wallets:
+                if not hasattr(self.wallet_core, 'current_wallet_address') or not self.wallet_core.current_wallet_address:
+                    # Set to first wallet if not set
+                    first_address = list(self.wallet_core.wallets.keys())[0]
+                    self.wallet_core.current_wallet_address = first_address
+                    print(f"[WALLET_PAGE] Set current_wallet_address to first wallet: {first_address[:12]}...")
+
             # Create the wallet page with all necessary callbacks
             wallet_page = WalletPage(
                 app=self,
@@ -1214,8 +1222,10 @@ class LunaWalletApp:
                                 if field not in wallet_obj:
                                     wallet_obj[field] = 0.0
                         
-                        # Switch to wallet
+                        # Switch to wallet and set current address
                         self.wallet_core.switch_wallet(wallet_address)
+                        # Ensure current_wallet_address is set for sidebar highlighting
+                        self.wallet_core.current_wallet_address = wallet_address
                         success = True
                         break
             
