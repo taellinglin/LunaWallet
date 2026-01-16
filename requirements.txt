@@ -4,6 +4,7 @@ flet-cli; sys_platform != "android"
 cryptography==43.0.1; sys_platform != "android"
 requests
 qrcode
+pypng
 pystray; sys_platform != "android"
 lunalib==1.8.6
 pyperclip

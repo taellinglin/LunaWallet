@@ -40,18 +40,65 @@ from gui.tab_menu import TabMenu
 from gui.tab_transactions import TabTransactions
 from gui.tab_wallets import TabWallets
 
+# Import utils
+from utils import format_address, format_balance, format_timestamp, get_transaction_color, get_transaction_icon
+
+
+def _bootstrap_ca_bundle():
+    """Ensure CA bundle env vars are set to a string at import time."""
+    try:
+        ca_path = None
+        try:
+            from certifi import where
+
+            ca_path = where()
+        except Exception:
+            ca_path = None
+
+        if not ca_path:
+            try:
+                import requests
+
+                ca_path = requests.certs.where()
+            except Exception:
+                ca_path = None
+
+        if not ca_path:
+            try:
+                import ssl
+
+                ca_path = ssl.get_default_verify_paths().cafile
+            except Exception:
+                ca_path = None
+
+        if not ca_path:
+            try:
+                base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+                local_bundle = os.path.join(base_dir, "certifi", "cacert.pem")
+                if os.path.exists(local_bundle) and os.path.getsize(local_bundle) > 0:
+                    ca_path = local_bundle
+            except Exception:
+                ca_path = None
+
+        if ca_path and os.path.exists(ca_path):
+            os.environ["REQUESTS_CA_BUNDLE"] = ca_path
+            os.environ["SSL_CERT_FILE"] = ca_path
+        else:
+            os.environ.pop("REQUESTS_CA_BUNDLE", None)
+            os.environ.pop("SSL_CERT_FILE", None)
+    except Exception:
+        os.environ.pop("REQUESTS_CA_BUNDLE", None)
+        os.environ.pop("SSL_CERT_FILE", None)
+
+
+_bootstrap_ca_bundle()
+
 # Import lunalib components
 from lunalib.core.wallet import LunaWallet
 from lunalib.core.blockchain import BlockchainManager
 from lunalib.transactions.transactions import TransactionManager
 from lunalib.storage.encryption import EncryptionManager
 from lunalib.storage.database import WalletDatabase
-
-# Import utils
-from utils import format_address, format_balance, format_timestamp, get_transaction_color, get_transaction_icon
-import os
-import sqlite3
-from pathlib import Path
 
 # Global trace logger for builds
 def _global_trace(msg: str, category: str = "INFO"):
@@ -216,6 +263,7 @@ class LunaWalletApp:
             print(f"DEBUG: Failed to initialize debug logger: {e}")
             self.debug_logger = None
         
+        self._patch_lunalib_legacy_fernet()
         self._patch_lunalib_cache()
         # Use services instead of direct lunalib
         self.wallet_service = WalletService()
@@ -226,7 +274,8 @@ class LunaWalletApp:
         self.wallet_core = self.wallet_service.core
         self.blockchain_manager = self.blockchain_service.manager
         self.mempool_manager = self.mempool_service.manager
-        
+        self._inactivity_monitor_started = False
+        self._ensure_ca_bundle()
         # Initialize sound manager
         try:
             from app.sound_manager import SoundManager
@@ -308,6 +357,52 @@ class LunaWalletApp:
     def _register_activity(self, *_args, **_kwargs):
         """Update last activity time for inactivity auto-lock."""
         self.last_activity_time = time.time()
+
+    def _ensure_ca_bundle(self):
+        """Ensure requests has a valid CA bundle path."""
+        try:
+            ca_path = None
+            try:
+                from certifi import where
+
+                ca_path = where()
+            except Exception:
+                ca_path = None
+
+            if not ca_path:
+                try:
+                    import requests
+
+                    ca_path = requests.certs.where()
+                except Exception:
+                    ca_path = None
+
+            if not ca_path:
+                try:
+                    import ssl
+
+                    ca_path = ssl.get_default_verify_paths().cafile
+                except Exception:
+                    ca_path = None
+
+            if not ca_path:
+                try:
+                    base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+                    local_bundle = os.path.join(base_dir, "certifi", "cacert.pem")
+                    if os.path.exists(local_bundle) and os.path.getsize(local_bundle) > 0:
+                        ca_path = local_bundle
+                except Exception:
+                    ca_path = None
+
+            if ca_path and os.path.exists(ca_path):
+                os.environ["REQUESTS_CA_BUNDLE"] = ca_path
+                os.environ["SSL_CERT_FILE"] = ca_path
+            else:
+                # Avoid NoneType path usage in downstream libs
+                os.environ.pop("REQUESTS_CA_BUNDLE", None)
+                os.environ.pop("SSL_CERT_FILE", None)
+        except Exception as e:
+            print(f"DEBUG: Failed to set CA bundle: {e}")
 
     def _start_inactivity_monitor(self):
         """Start background monitor to auto-lock after inactivity."""
@@ -477,6 +572,36 @@ class LunaWalletApp:
         except Exception as e:
             print(f"DEBUG: Error patching lunalib cache: {e}")
 
+    def _patch_lunalib_legacy_fernet(self):
+        """Enable legacy Fernet token decryption if cryptography is available."""
+        try:
+            import base64
+            import hashlib
+            from lunalib.core import wallet as luna_wallet
+
+            original_decrypt = luna_wallet._decrypt_with_password
+
+            def _decrypt_with_password_patched(token, password: str) -> bytes:
+                token_bytes = luna_wallet._normalize_token_bytes(token)
+                if token_bytes.startswith(b"gAAAA"):
+                    try:
+                        from cryptography.fernet import Fernet
+
+                        key = base64.urlsafe_b64encode(
+                            hashlib.sha256(password.encode()).digest()
+                        )
+                        return Fernet(key).decrypt(token_bytes)
+                    except Exception as e:
+                        raise ValueError(
+                            f"Legacy Fernet token not supported without cryptography: {e}"
+                        )
+                return original_decrypt(token, password)
+
+            luna_wallet._decrypt_with_password = _decrypt_with_password_patched
+            print("DEBUG: Patched lunalib legacy Fernet decrypt")
+        except Exception as e:
+            print(f"DEBUG: Failed to patch legacy Fernet decrypt: {e}")
+
     def _play_sound(self, sound_type):
         """Play sound using Flet's audio capabilities (mobile compatible)"""
         if not self.sound_enabled:
@@ -488,8 +613,6 @@ class LunaWalletApp:
             fallback_map = {
                 "transfer": "transaction",
                 "reward": "transaction",
-                "lock": "transaction",
-                "unlock": "transaction",
             }
             sound_name = sound_type
             sound_path = os.path.join(sounds_dir, f"{sound_name}.wav")
@@ -574,6 +697,11 @@ class LunaWalletApp:
     def _get_data_directory(self):
         """Get the application data directory"""
         try:
+            flet_storage = os.getenv("FLET_APP_STORAGE")
+            if flet_storage:
+                flet_dir = os.path.join(flet_storage, "luna_wallet")
+                os.makedirs(flet_dir, exist_ok=True)
+                return flet_dir
             # Default data directories to check (don't depend on self.database being initialized)
             default_dirs = [
                 os.path.join(os.path.expanduser("~"), ".luna_wallet"),
@@ -888,6 +1016,28 @@ class LunaWalletApp:
                     wallet_exists=False
                 )
 
+    def _set_mobile_content(self, content, transition=None):
+        if transition is None:
+            transition = getattr(ft.AnimatedSwitcherTransition, "SLIDE", ft.AnimatedSwitcherTransition.FADE)
+        if not hasattr(self, "_mobile_switcher") or self._mobile_switcher is None:
+            self._mobile_switcher = ft.AnimatedSwitcher(
+                content=content,
+                transition=transition,
+                duration=300,
+                reverse_duration=300,
+            )
+            if hasattr(self, 'page') and self.page:
+                try:
+                    self.page.clean()
+                except Exception:
+                    self.page.controls.clear()
+                self.page.add(self._mobile_switcher)
+        else:
+            self._mobile_switcher.transition = transition
+            self._mobile_switcher.content = content
+        if hasattr(self, 'page') and self.page:
+            self.page.update()
+
     def initialize_wallet_state(self):
         """Initialize wallet state and show appropriate screen"""
         try:
@@ -1053,7 +1203,9 @@ class LunaWalletApp:
                 on_lock=self.on_lock,
                 on_create_wallet=self.on_create_wallet,
                 on_import_wallet=self.on_import_wallet,
-                on_settings=self.on_settings
+                on_settings=self.on_settings,
+                show_back=self.is_mobile,
+                on_back=self.show_wallet_index_page if self.is_mobile else None
             )
 
             # Store reference for later updates
@@ -1080,7 +1232,9 @@ class LunaWalletApp:
                 if hasattr(self.page, 'overlay'):
                     self.page.overlay.clear()
             
-            if hasattr(self, 'page') and self.page:
+            if self.is_mobile:
+                self._set_mobile_content(self.current_page)
+            elif hasattr(self, 'page') and self.page:
                 self.page.add(self.current_page)
                 # Force UI refresh
                 self.page.update()
@@ -1096,6 +1250,33 @@ class LunaWalletApp:
             import traceback
             traceback.print_exc()
             raise
+
+    def show_wallet_index_page(self):
+        """Display wallet index page on mobile."""
+        if not self.is_mobile:
+            return self.show_wallet_page()
+
+        from gui.page_wallet_index import WalletIndexPage
+
+        def _select_wallet(address):
+            try:
+                if hasattr(self.wallet_core, 'switch_wallet'):
+                    self.wallet_core.switch_wallet(address)
+                elif hasattr(self.wallet_core, 'current_wallet_address'):
+                    self.wallet_core.current_wallet_address = address
+                self.show_wallet_page()
+            except Exception as e:
+                print(f"DEBUG: Failed to select wallet: {e}")
+
+        index_page = WalletIndexPage(
+            app=self,
+            on_select_wallet=_select_wallet,
+            on_create_wallet=self.on_create_wallet,
+            on_import_wallet=self.on_import_wallet,
+        )
+
+        self.current_page = index_page.create()
+        self._set_mobile_content(self.current_page)
 
     def lock_wallet(self):
         """Lock the wallet and return to lock screen"""
@@ -1214,8 +1395,11 @@ class LunaWalletApp:
                     self.wallet_page._refresh_sidebar_wallets()
                     print("DEBUG: Sidebar wallets refreshed")
             
-            # Show the wallet page
-            self.show_wallet_page()
+            # Show the wallet page (mobile uses index)
+            if self.is_mobile:
+                self.show_wallet_index_page()
+            else:
+                self.show_wallet_page()
         except Exception as e:
             print(f"DEBUG: Error refreshing wallet list: {e}")
             import traceback
@@ -1299,7 +1483,10 @@ class LunaWalletApp:
                 
                 # Transition to wallet page
                 try:
-                    self.show_wallet_page()
+                    if self.is_mobile:
+                        self.show_wallet_index_page()
+                    else:
+                        self.show_wallet_page()
                     _global_trace("Wallet page displayed", "UNLOCK")
                 except Exception as page_error:
                     print(f"[UNLOCK] show_wallet_page() failed: {page_error}")
@@ -1344,8 +1531,8 @@ class LunaWalletApp:
             try:
                 # Show loading indicator on the wallet page
                 if hasattr(self, 'wallet_page') and self.wallet_page:
-                    if hasattr(self.wallet_page, 'show_loading'):
-                        self.page.run_thread(self.wallet_page.show_loading, "Syncing Blockchain...")
+                    if hasattr(self.wallet_page, 'show_sync_status'):
+                        self.page.run_thread(self.wallet_page.show_sync_status, "Syncing Blockchain...")
 
                 # Perform the full scan
                 wallet_addresses = list(self.wallet_core.wallets.keys())
@@ -1363,8 +1550,8 @@ class LunaWalletApp:
 
                 # Hide loading indicator
                 if hasattr(self, 'wallet_page') and self.wallet_page:
-                    if hasattr(self.wallet_page, 'hide_loading'):
-                        self.page.run_thread(self.wallet_page.hide_loading)
+                    if hasattr(self.wallet_page, 'hide_sync_status'):
+                        self.page.run_thread(self.wallet_page.hide_sync_status)
 
                 # Now, start the continuous background scan for new blocks
                 self.start_continuous_blockchain_scan()
@@ -1375,8 +1562,8 @@ class LunaWalletApp:
                 traceback.print_exc()
                 # Ensure loading indicator is hidden on error
                 if hasattr(self, 'wallet_page') and self.wallet_page:
-                    if hasattr(self.wallet_page, 'hide_loading'):
-                        self.page.run_thread(self.wallet_page.hide_loading)
+                    if hasattr(self.wallet_page, 'hide_sync_status'):
+                        self.page.run_thread(self.wallet_page.hide_sync_status)
 
         threading.Thread(target=initial_scan_thread, daemon=True).start()
 
@@ -1384,11 +1571,11 @@ class LunaWalletApp:
         """Update scan overlay text without toggling visibility."""
         try:
             if hasattr(self, 'wallet_page') and self.wallet_page:
-                if hasattr(self.wallet_page, 'show_loading'):
+                if hasattr(self.wallet_page, 'show_sync_status'):
                     if hasattr(self, 'page') and self.page and hasattr(self.page, 'run_thread'):
-                        self.page.run_thread(self.wallet_page.show_loading, text)
+                        self.page.run_thread(self.wallet_page.show_sync_status, text)
                     else:
-                        self.wallet_page.show_loading(text)
+                        self.wallet_page.show_sync_status(text)
         except Exception as e:
             print(f"DEBUG: Error updating scan loading text: {e}")
 
@@ -1427,7 +1614,7 @@ class LunaWalletApp:
                 if hasattr(self, 'wallet_page') and self.wallet_page:
                     def _do_show():
                         try:
-                            self.wallet_page.show_loading("Scanning Transactions...")
+                            self.wallet_page.show_sync_status("Scanning Transactions...")
                         finally:
                             show_ready.set()
 
@@ -1444,7 +1631,7 @@ class LunaWalletApp:
         def _hide_scan_loading():
             try:
                 if hasattr(self, 'wallet_page') and self.wallet_page:
-                    self.wallet_page.hide_loading()
+                    self.wallet_page.hide_sync_status()
             except Exception as e:
                 print(f"DEBUG: Error hiding scan loading: {e}")
 

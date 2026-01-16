@@ -123,15 +123,22 @@ class ReceivePage:
             qr.add_data(address)
             qr.make(fit=True)
             
-            from qrcode.image.svg import SvgImage
-            svg_img = qr.make_image(image_factory=SvgImage)
-            svg_bytes = svg_img.to_string()
-            svg_base64 = base64.b64encode(svg_bytes).decode()
-            svg_src = f"data:image/svg+xml;base64,{svg_base64}"
+            try:
+                from qrcode.image.pure import PyPNGImage
 
-            if hasattr(ft, "Svg"):
-                qr_control = ft.Svg(src=svg_src, width=180, height=180)
-            else:
+                png_img = qr.make_image(image_factory=PyPNGImage)
+                buf = io.BytesIO()
+                png_img.save(buf)
+                png_base64 = base64.b64encode(buf.getvalue()).decode()
+                png_src = f"data:image/png;base64,{png_base64}"
+                qr_control = ft.Image(src=png_src, width=180, height=180, fit="contain")
+            except Exception:
+                from qrcode.image.svg import SvgImage
+
+                svg_img = qr.make_image(image_factory=SvgImage)
+                svg_bytes = svg_img.to_string()
+                svg_base64 = base64.b64encode(svg_bytes).decode()
+                svg_src = f"data:image/svg+xml;base64,{svg_base64}"
                 qr_control = ft.Image(src=svg_src, width=180, height=180, fit="contain")
 
             return ft.Container(
@@ -159,13 +166,21 @@ class ReceivePage:
             try:
                 print(f"DEBUG: copy_address called with: {address[:12]}...")
                 
-                # Try async first
-                if hasattr(self.app.page, 'set_clipboard'):
+                # Prefer async clipboard on mobile
+                if hasattr(self.app.page, 'set_clipboard_async'):
+                    print("DEBUG: Using page.set_clipboard_async()")
+                    async def _do_copy():
+                        try:
+                            await self.app.page.set_clipboard_async(address)
+                        except Exception as e:
+                            print(f"DEBUG: Async clipboard error: {e}")
+                    if hasattr(self.app.page, 'run_task'):
+                        self.app.page.run_task(_do_copy)
+                    else:
+                        self.app.page.set_clipboard_async(address)
+                elif hasattr(self.app.page, 'set_clipboard'):
                     print("DEBUG: Using page.set_clipboard()")
                     self.app.page.set_clipboard(address)
-                elif hasattr(self.app.page, 'set_clipboard_async'):
-                    print("DEBUG: Using page.set_clipboard_async()")
-                    self.app.page.set_clipboard_async(address)
                 else:
                     # Fallback for different Flet versions
                     print("DEBUG: Using pyperclip fallback")

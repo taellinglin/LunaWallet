@@ -27,7 +27,7 @@ def _safe_print(*args, **kwargs):
             pass
 
 class WalletPage:
-    def __init__(self, app, on_send, on_receive, on_export_key, on_lock, on_create_wallet, on_import_wallet, on_settings):
+    def __init__(self, app, on_send, on_receive, on_export_key, on_lock, on_create_wallet, on_import_wallet, on_settings, show_back=False, on_back=None):
         self.app = app
         self.on_send = on_send
         self.on_receive = on_receive
@@ -36,6 +36,9 @@ class WalletPage:
         self.on_create_wallet = on_create_wallet
         self.on_import_wallet = on_import_wallet
         self.on_settings = on_settings
+        self.show_back = show_back
+        self.on_back = on_back
+        self.is_mobile = getattr(app, "is_mobile", False)
         # Sidebar state
         self.sidebar_collapsed = False
         self.sidebar_width = 280
@@ -53,6 +56,10 @@ class WalletPage:
         self.balance_text = ft.Text("--.-- LKC", size=28, weight="bold", color="#999999")
         self.pending_balance_text = ft.Text("--.-- LKC", size=16, weight="500", color="#999999")
         self.address_text = ft.Text("", size=12, color="#f8d7da")
+        # Sync status UI (inline, non-blocking)
+        self.refs['sync_text'] = ft.Ref[ft.Text]()
+        self.refs['sync_banner'] = ft.Ref[ft.Container]()
+        self.sync_status_bar = self.create_sync_status_bar()
         # Create balance card and store in ref
         self.refs['balance_card'] = ft.Ref[ft.Container]()
         self.balance_card = self.create_balance_card()
@@ -65,6 +72,9 @@ class WalletPage:
         # Threading lock for sidebar updates to prevent duplicates
         self.sidebar_update_lock = threading.Lock()
 
+        if self.is_mobile:
+            self.sidebar_width = 0
+            self.sidebar_collapsed_width = 0
         self.sidebar = self._create_sidebar()
         self.main_area = self._create_wallet_content()
 
@@ -99,16 +109,17 @@ class WalletPage:
         )
 
         # Main content stack
+        main_row = ft.Row(
+            controls=[
+                self.sidebar,
+                ft.VerticalDivider(width=1, color="#5c2e2e"),
+                self.main_area,
+            ],
+            expand=True,
+        )
         self.main_content_stack = ft.Stack(
             controls=[
-                ft.Row(
-                    controls=[
-                        self.sidebar,
-                        ft.VerticalDivider(width=1, color="#5c2e2e"),
-                        self.main_area,
-                    ],
-                    expand=True,
-                ),
+                main_row if not self.is_mobile else self.main_area,
                 self.loading_overlay,
             ],
             expand=True
@@ -382,12 +393,13 @@ class WalletPage:
         return ft.Container(
             content=ft.Column([
                 self.create_header(),
+                self.sync_status_bar,
                 self.balance_card,  # Use stored balance card reference
                 self.create_action_buttons(),
                 self.create_transaction_history(),
             ], spacing=15),
             expand=True,
-            padding=20,
+            padding=12 if self.is_mobile else 20,
             bgcolor="#2c1a1a"
         )
     
@@ -1042,18 +1054,33 @@ class WalletPage:
             self.address_text.value = "Error loading balance"
     
     def create_header(self):
+        left_controls = []
+        if self.show_back and self.on_back:
+            left_controls.append(
+                ft.IconButton(
+                    icon=ft.Icons.ARROW_BACK,
+                    icon_color="#f8d7da",
+                    icon_size=18,
+                    on_click=lambda e: self.on_back(),
+                    tooltip="Back",
+                    style=ft.ButtonStyle(padding=5),
+                )
+            )
+        left_controls.append(
+            ft.Container(
+                content=ft.Image(
+                    src="./wallet_icon.svg",
+                    width=20,
+                    height=20,
+                    color="#dc3545",
+                    error_content=ft.Icon(ft.Icons.ACCOUNT_BALANCE_WALLET, size=20, color="#dc3545"),
+                ),
+                padding=5,
+            )
+        )
         return ft.Container(
             content=ft.Row([
-                ft.Container(
-                    content=ft.Image(
-                        src="./wallet_icon.svg",
-                        width=20,
-                        height=20,
-                        color="#dc3545",
-                        error_content=ft.Icon(ft.Icons.ACCOUNT_BALANCE_WALLET, size=20, color="#dc3545")
-                    ),
-                    padding=5
-                ),
+                ft.Row(left_controls, spacing=4),
                 ft.Text("Luna Wallet", size=16, weight="bold", color="#f8d7da"),
                 ft.Container(expand=True),
                 ft.Row([
@@ -1069,6 +1096,49 @@ class WalletPage:
             ]),
             padding=ft.padding.symmetric(vertical=5)
         )
+
+    def create_sync_status_bar(self):
+        return ft.Container(
+            ref=self.refs['sync_banner'],
+            content=ft.Row(
+                [
+                    ft.ProgressRing(width=16, height=16, stroke_width=3, color="#dc3545"),
+                    ft.Text(
+                        "Syncing...",
+                        ref=self.refs['sync_text'],
+                        size=12,
+                        color="#f8d7da",
+                    ),
+                ],
+                spacing=8,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+            padding=ft.padding.symmetric(horizontal=10, vertical=6),
+            bgcolor="#1a0f0f",
+            border=ft.border.all(1, "#5c2e2e"),
+            border_radius=8,
+            visible=False,
+        )
+
+    def show_sync_status(self, text="Syncing..."):
+        try:
+            if 'sync_text' in self.refs and self.refs['sync_text'].current:
+                self.refs['sync_text'].current.value = text
+            if 'sync_banner' in self.refs and self.refs['sync_banner'].current:
+                self.refs['sync_banner'].current.visible = True
+            if hasattr(self.app, 'page') and self.app.page:
+                self.app.page.update()
+        except Exception as e:
+            print(f"DEBUG: Error showing sync status: {e}")
+
+    def hide_sync_status(self):
+        try:
+            if 'sync_banner' in self.refs and self.refs['sync_banner'].current:
+                self.refs['sync_banner'].current.visible = False
+            if hasattr(self.app, 'page') and self.app.page:
+                self.app.page.update()
+        except Exception as e:
+            print(f"DEBUG: Error hiding sync status: {e}")
     
     def create_balance_card(self):
         return ft.Container(
@@ -1442,18 +1512,18 @@ class WalletPage:
         if self._loading_refcount == 1:
             self._loading_hold = True
             if hasattr(self.app, "page") and self.app.page:
-                self.app.page.run_thread(lambda: self.show_loading(text))
+                self.app.page.run_thread(lambda: self.show_sync_status(text))
             else:
-                self.show_loading(text)
+                self.show_sync_status(text)
 
     def _end_loading_hold(self):
         self._loading_refcount = max(0, getattr(self, "_loading_refcount", 1) - 1)
         if self._loading_refcount == 0:
             self._loading_hold = False
             if hasattr(self.app, "page") and self.app.page:
-                self.app.page.run_thread(self.hide_loading)
+                self.app.page.run_thread(self.hide_sync_status)
             else:
-                self.hide_loading()
+                self.hide_sync_status()
     
     def _refresh_all_wallet_balances(self):
         """
