@@ -14,11 +14,25 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+      - name: Set LANG for UTF-8
+        run: setx LANG en_US.UTF-8
+        shell: cmd
       - name: Set UTF-8 encoding
         run: chcp 65001
         shell: cmd
+      - name: Set UTF-8 encoding env
+        run: echo PYTHONIOENCODING=utf-8 >> %GITHUB_ENV%
+        shell: cmd
       - name: Install Flet
         run: pip install flet
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.38.6'
+          channel: 'stable'
+      - name: Workaround Dart.EXE.exe bug
+        run: copy C:\hostedtoolcache\windows\flutter\stable-3.38.6-x64\bin\cache\dart-sdk\bin\dart.exe C:\hostedtoolcache\windows\flutter\stable-3.38.6-x64\bin\cache\dart-sdk\bin\dart.EXE.exe
+        shell: cmd
       - name: Build Windows binary
         run: flet build windows
       - name: Upload Windows Artifact
@@ -37,6 +51,13 @@ jobs:
           python-version: '3.11'
       - name: Install Flet
         run: pip install flet
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.38.6'
+          channel: 'stable'
+      - name: Add Flutter to PATH
+        run: echo "$HOME/flutter/bin" >> $GITHUB_PATH
       - name: Build macOS binary
         run: flet build macos
       - name: Upload macOS Artifact
@@ -45,7 +66,7 @@ jobs:
           name: macos
           path: build/macos
 
-  build-linux-apk:
+  build-linux:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -55,48 +76,37 @@ jobs:
           python-version: '3.11'
       - name: Install Flet
         run: pip install flet
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.38.6'
+          channel: 'stable'
+      - name: Install GTK 3
+        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev
+      - name: Add Flutter to PATH
+        run: echo "$HOME/flutter/bin" >> $GITHUB_PATH
+      - name: Check Flutter version
+        run: flutter --version
       - name: Build Linux binary
         run: flet build linux
-      - name: Build APK
-        run: flet build apk
       - name: Upload Linux Artifact
         uses: actions/upload-artifact@v4
         with:
           name: linux
           path: build/linux
-      - name: Upload APK Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: apk
-          path: build/apk
 
   release:
-    needs: [build-windows, build-macos, build-linux-apk]
+    needs: [build-linux]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: windows
-          path: build/windows
-      - uses: actions/download-artifact@v4
-        with:
-          name: macos
-          path: build/macos
-      - uses: actions/download-artifact@v4
-        with:
           name: linux
           path: build/linux
-      - uses: actions/download-artifact@v4
-        with:
-          name: apk
-          path: build/apk
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            build/windows/**
-            build/macos/**
             build/linux/**
-            build/apk/**
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
