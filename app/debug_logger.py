@@ -1,7 +1,13 @@
 """Debug logging utility for built executables"""
 import os
 import sys
+import traceback
 from datetime import datetime
+
+try:
+    from app.config import DATA_DIR
+except Exception:
+    DATA_DIR = os.path.expanduser("~/.luna_wallet")
 
 class DebugLogger:
     """Logger that writes to a file for debugging built executables"""
@@ -14,13 +20,8 @@ class DebugLogger:
     def _init_log_file(self):
         """Initialize log file in user's temp directory"""
         try:
-            # Get a writable directory
-            if hasattr(sys, '_MEIPASS'):
-                # Running as built executable
-                log_dir = os.path.join(os.path.expanduser('~'), 'LunaWallet_Logs')
-            else:
-                # Running as script
-                log_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'logs')
+            # Always log to data dir
+            log_dir = os.path.join(DATA_DIR, 'logs')
             
             os.makedirs(log_dir, exist_ok=True)
             
@@ -71,3 +72,36 @@ def debug_log(message):
     logger.log(message)
     # Also print to console if available
     print(message)
+
+def log_exception(prefix: str = "UNHANDLED"):
+    try:
+        logger = get_logger()
+        exc_text = ''.join(traceback.format_exception(*sys.exc_info()))
+        logger.log(f"[{prefix}] {exc_text}")
+    except Exception:
+        pass
+
+def install_exception_hooks():
+    """Route uncaught exceptions to debug log."""
+    logger = get_logger()
+
+    def _sys_excepthook(exc_type, exc_value, exc_tb):
+        try:
+            logger.log(''.join(traceback.format_exception(exc_type, exc_value, exc_tb)))
+        except Exception:
+            pass
+
+    sys.excepthook = _sys_excepthook
+
+    try:
+        import threading
+
+        def _thread_excepthook(args):
+            try:
+                logger.log(''.join(traceback.format_exception(args.exc_type, args.exc_value, args.exc_traceback)))
+            except Exception:
+                pass
+
+        threading.excepthook = _thread_excepthook
+    except Exception:
+        pass

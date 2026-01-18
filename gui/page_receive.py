@@ -25,22 +25,20 @@ class ReceivePage:
                 ]),
                 ft.Divider(color="#5c2e2e"),
                 
-                # Centered content container
+                # Centered content container (send page style)
                 ft.Container(
                     content=ft.Column([
                         self._create_address_section(address),
                         ft.Container(height=16),
                         self._create_qr_section(address),
-                        ft.Container(height=16),
-                        self._create_instructions_section()
-                    ], horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+                    ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=0, scroll=ft.ScrollMode.AUTO),
                     padding=20,
                     margin=ft.margin.symmetric(vertical=6),
                     bgcolor="#1a0f0f",
                     border_radius=12,
                     border=ft.border.all(1, "#5c2e2e"),
                     alignment=ft.Alignment(0, 0),
-                    expand=True  # Expand to fill available space
+                    expand=True
                 )
             ]),
             expand=True,  # Fill entire window
@@ -81,18 +79,6 @@ class ReceivePage:
                 ft.Container(height=5),
                 ft.Text("Scan to receive", color="#a8a8a8", size=11)
             ], horizontal_alignment=ft.CrossAxisAlignment.CENTER)
-        )
-    
-    def _create_instructions_section(self):
-        return ft.Container(
-            content=ft.Column([
-                ft.Text("How it works", size=13, color="#f8d7da", weight="bold"),
-                ft.Container(height=6),
-                ft.Text("Share your address or QR code", size=11, color="#a8a8a8"),
-                ft.Text("Funds appear after network confirmation", size=11, color="#a8a8a8"),
-            ]),
-            padding=12, bgcolor="#1a0f0f", border_radius=10,
-            expand=True
         )
     
     def get_wallet_address(self):

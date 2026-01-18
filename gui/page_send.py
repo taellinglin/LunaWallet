@@ -192,6 +192,16 @@ class SendPage:
             wallet_address = self.from_address or getattr(self.app.wallet_core, 'current_wallet_address', None)
             if not wallet_address:
                 return 0.0
+
+            # Prefer cached confirmed balance if available
+            try:
+                wallets = getattr(self.app.wallet_core, 'wallets', None)
+                if isinstance(wallets, dict) and wallet_address in wallets:
+                    cached_confirmed = wallets[wallet_address].get('confirmed_balance', None)
+                    if isinstance(cached_confirmed, (int, float)):
+                        return float(cached_confirmed)
+            except Exception:
+                pass
             
             # Calculate balance from transactions directly (avoid LunaLib WalletManager issues)
             confirmed_balance = 0.0
@@ -209,8 +219,16 @@ class SendPage:
             except Exception:
                 latest_height = None
             
-            # Get transactions from database
-            if hasattr(self.app, 'database'):
+            # Get transactions from storage (preferred)
+            all_txs = []
+            if hasattr(self.app, 'get_wallet_transactions'):
+                try:
+                    all_txs = self.app.get_wallet_transactions(wallet_address)
+                except Exception as storage_err:
+                    print(f"DEBUG SendPage: Error getting transactions from storage: {storage_err}")
+
+            # Fallback to database
+            if not all_txs and hasattr(self.app, 'database'):
                 try:
                     # Try to get wallet transactions
                     if hasattr(self.app.database, 'get_wallet_transactions'):
@@ -594,24 +612,33 @@ class SendPage:
                 print(f"[SEND] Broadcast successful")
                 _global_trace(f"BROADCAST SUCCESS - TX: {tx_hash}, Message: {broadcast_message}", "SEND")
 
-                # Save pending transaction to local database so outgoing shows immediately
+                # Save pending transaction to local storage so outgoing shows immediately
                 try:
-                    if hasattr(self.app, 'database') and self.app.database:
-                        tx_record = dict(transaction)
-                        tx_record.setdefault('status', 'pending')
-                        tx_record.setdefault('timestamp', time.time())
-                        tx_record.setdefault('hash', tx_hash)
-                        tx_record.setdefault('from', wallet.address)
-                        tx_record.setdefault('to', recipient)
-                        tx_record.setdefault('amount', amount)
-                        tx_record.setdefault('fee', tx_fee)
+                    tx_record = dict(transaction)
+                    tx_record.setdefault('status', 'pending')
+                    tx_record.setdefault('timestamp', time.time())
+                    tx_record.setdefault('hash', tx_hash)
+                    tx_record.setdefault('from', wallet.address)
+                    tx_record.setdefault('to', recipient)
+                    tx_record.setdefault('amount', amount)
+                    tx_record.setdefault('fee', tx_fee)
 
-                        # Save for sender wallet with per-wallet hash
+                    if hasattr(self.app, '_store_transaction'):
+                        self.app._store_transaction(wallet.address, tx_record, status='pending')
+
+                        # If recipient is one of our wallets, save there too
+                        if hasattr(self.app.wallet_core, 'wallets') and isinstance(self.app.wallet_core.wallets, dict):
+                            for addr in self.app.wallet_core.wallets.keys():
+                                if addr.lower() == recipient.lower():
+                                    self.app._store_transaction(addr, tx_record, status='pending')
+                                    break
+
+                    # Legacy database path (if present)
+                    if hasattr(self.app, 'database') and self.app.database:
                         sender_record = dict(tx_record)
                         sender_record['hash'] = f"{tx_hash}_{wallet.address}" if tx_hash else wallet.address
                         self.app.database.save_transaction(sender_record, wallet.address)
 
-                        # If recipient is one of our wallets, save there too with per-wallet hash
                         if hasattr(self.app.wallet_core, 'wallets') and isinstance(self.app.wallet_core.wallets, dict):
                             for addr in self.app.wallet_core.wallets.keys():
                                 if addr.lower() == recipient.lower():

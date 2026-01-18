@@ -704,6 +704,16 @@ class WalletPage:
                 except Exception as e:
                     print(f"DEBUG: Error getting pending transactions: {e}")
             
+            # Build a set of stored tx IDs (pending or confirmed) to avoid mempool double counting
+            pending_seen = set()
+            try:
+                for tx in all_txs:
+                    tx_id = tx.get('hash') or tx.get('transaction_id')
+                    if tx_id:
+                        pending_seen.add(str(tx_id))
+            except Exception:
+                pending_seen = set()
+
             # Calculate confirmed balance
             for tx in all_txs:
                 status_raw = tx.get('status', None)
@@ -766,8 +776,11 @@ class WalletPage:
                     confirmed_balance -= (amount + fee)
                     _safe_print(f"  [TRANSFER_OUT] -{amount} - {fee} fee")
             
-            # Calculate pending balance
+            # Calculate pending balance (skip duplicates already in storage)
             for tx in pending_txs:
+                tx_id = tx.get('hash') or tx.get('transaction_id')
+                if tx_id and str(tx_id) in pending_seen:
+                    continue
                 # Handle both field name formats
                 tx_from = tx.get('from', tx.get('from_address', '')).lower()
                 tx_to = tx.get('to', tx.get('to_address', '')).lower()
@@ -780,13 +793,13 @@ class WalletPage:
                 if tx_type == 'reward':
                     if (tx_to == wallet_addr_lower or reward_addr == wallet_addr_lower):
                         pending_balance += amount
-                        print(f"  ⏳ Pending Reward: +{amount}")
+                        _safe_print(f"  [PENDING] reward +{amount}")
                 # Pending fee distribution
                 elif tx_type == 'fee_distribution':
                     recipient_addr = tx.get('recipient', '').lower()
                     if (tx_to == wallet_addr_lower or reward_addr == wallet_addr_lower or recipient_addr == wallet_addr_lower):
                         pending_balance += amount
-                        print(f"  ⏳ Pending Fee distribution: +{amount}")
+                        _safe_print(f"  [PENDING] fee_distribution +{amount}")
                 # Outgoing pending
                 elif tx_from == wallet_addr_lower:
                     pending_balance -= (amount + fee)
