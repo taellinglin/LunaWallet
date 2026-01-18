@@ -1,0 +1,79 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "LunaWallet"
+version = "1.0.0"
+description = "Luna Wallet - Secure cryptocurrency wallet"
+authors = [
+    {name = "Ling Lin", email = "taellinglin@gmail.com"},
+]
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "flet>=0.10.0",
+    "qrcode>=7.4.0",
+    "pillow",
+    "lunalib==1.9.3",
+    "requests",
+    "cryptography==42.0.5; sys_platform != \"android\"",
+    "pyperclip",
+    "base58",         # Added base58 dependency
+    "tqdm",
+    "rich",
+]
+
+[project.urls]
+Homepage = "https://linglin.art"
+Documentation = "https://bank.linglin.art"
+
+[project.scripts]
+LunaWallet = "main:main"
+
+# PyInstaller configuration for building executable
+[tool.pyinstaller]
+main-file = "main.py"
+console = false
+name = "LunaWallet"
+upx = true
+icon = "./wallet_icon.ico"
+
+# Include only the essential files
+binaries = []
+datas = [
+    ["assets/sounds/send.wav", "sounds"],
+    ["assets/sounds/reward.wav", "sounds"],
+]
+hiddenimports = [
+    "lunalib.core.blockchain",
+    "lunalib.core.mempool",
+    "lunalib.transactions.transactions",
+    "lunalib.core.wallet",
+    "playsound",
+    "qrcode",
+    "qrcode.image.pil",
+    "qrcode.image.pure",
+    "qrcode.image.svg",
+    "PIL",
+    "PIL.Image",
+    "certifi",
+    "base58",
+]
+
+# Exclude unnecessary packages to reduce size
+excludes = [
+    "tkinter",
+    "test",
+    "unittest",
+    "pydoc",
+    "distutils",
+    "pystray",
+]
+
+# Windows specific
+version-file = "version_info.txt"
+
+# Additional PyInstaller options
+[tool.pyinstaller.windows]
+target_arch = "x64"
