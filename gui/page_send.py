@@ -432,17 +432,13 @@ class SendPage:
                 )
                 return
             
-            # Validate recipient address format
-            if not recipient or len(recipient) < 20:
+            # Lunaアドレスのバリデーション
+            from utils import validate_luna_address
+            is_valid, reason = validate_luna_address(recipient)
+            if not is_valid:
                 from app.core import _global_trace
-                _global_trace(f"RECIPIENT VALIDATION - INVALID: {recipient}, Length: {len(recipient) if recipient else 0}", "SEND_ERROR")
-                self.app.show_snackbar("Invalid recipient address format", "error")
-                return
-            
-            if not recipient.startswith("LUN_"):
-                from app.core import _global_trace
-                _global_trace(f"RECIPIENT VALIDATION - INVALID PREFIX: {recipient}", "SEND_ERROR")
-                self.app.show_snackbar("Recipient address must start with 'LUN_'", "error")
+                _global_trace(f"RECIPIENT VALIDATION - {reason}: {recipient}", "SEND_ERROR")
+                self.app.show_snackbar(f"Invalid recipient address: {reason}", "error")
                 return
             
             print(f"DEBUG: Sending {amount} LKC from {wallet.address} to {recipient}")
@@ -773,6 +769,13 @@ class SendPage:
 
     def _send_transaction_thread(self, e):
         """Run send in a background thread and show loading indicator."""
+        recipient = self.recipient.value.strip()
+        from utils import validate_luna_address
+        is_valid, reason = validate_luna_address(recipient)
+        if not is_valid:
+            self.app.show_snackbar(f"Invalid recipient address: {reason}", "error")
+            return
+
         self._set_sending_state(True)
 
         def _run():

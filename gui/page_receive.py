@@ -118,34 +118,50 @@ class ReceivePage:
         try:
             if not address or address in ["No wallet available", "Error loading address"]:
                 return self._create_qr_placeholder("No valid address")
-            
+
             qr = qrcode.QRCode(version=1, error_correction=qrcode.constants.ERROR_CORRECT_L, box_size=8, border=2)
             qr.add_data(address)
             qr.make(fit=True)
-            
+
+            # 1. Pillow (PIL) PNG
+            try:
+                from PIL import Image as PILImage
+                img = qr.make_image(fill_color="black", back_color="white")
+                buf = io.BytesIO()
+                img.save(buf, format="PNG")
+                png_base64 = base64.b64encode(buf.getvalue()).decode()
+                png_src = f"data:image/png;base64,{png_base64}"
+                qr_control = ft.Image(src=png_src, width=180, height=180, fit="contain")
+                return ft.Container(content=qr_control, width=200, height=200, bgcolor="#ffffff", border_radius=10, padding=10, alignment=ft.Alignment(0, 0))
+            except Exception:
+                pass
+
+            # 2. PyPNGImage (pure python PNG)
             try:
                 from qrcode.image.pure import PyPNGImage
-
                 png_img = qr.make_image(image_factory=PyPNGImage)
                 buf = io.BytesIO()
                 png_img.save(buf)
                 png_base64 = base64.b64encode(buf.getvalue()).decode()
                 png_src = f"data:image/png;base64,{png_base64}"
                 qr_control = ft.Image(src=png_src, width=180, height=180, fit="contain")
+                return ft.Container(content=qr_control, width=200, height=200, bgcolor="#ffffff", border_radius=10, padding=10, alignment=ft.Alignment(0, 0))
             except Exception:
-                from qrcode.image.svg import SvgImage
+                pass
 
+            # 3. SVG fallback
+            try:
+                from qrcode.image.svg import SvgImage
                 svg_img = qr.make_image(image_factory=SvgImage)
                 svg_bytes = svg_img.to_string()
                 svg_base64 = base64.b64encode(svg_bytes).decode()
                 svg_src = f"data:image/svg+xml;base64,{svg_base64}"
                 qr_control = ft.Image(src=svg_src, width=180, height=180, fit="contain")
+                return ft.Container(content=qr_control, width=200, height=200, bgcolor="#ffffff", border_radius=10, padding=10, alignment=ft.Alignment(0, 0))
+            except Exception:
+                pass
 
-            return ft.Container(
-                content=qr_control,
-                width=200, height=200, bgcolor="#ffffff", border_radius=10, padding=10,
-                alignment=ft.Alignment(0, 0)
-            )
+            return self._create_qr_placeholder("QR Code\nNot Available", ft.Icons.WARNING, "#ffd700")
         except ImportError:
             return self._create_qr_placeholder("QR Code\nNot Available", ft.Icons.WARNING, "#ffd700")
         except Exception as e:

@@ -168,6 +168,28 @@ class CreateWalletPage:
             return "Password must be at least 8 characters"
             
         return None
+
+    def _label_exists(self, label: str) -> bool:
+        try:
+            if not label:
+                return False
+            label_lower = label.strip().lower()
+            wallets = getattr(self.app.wallet_core, 'wallets', None)
+            if isinstance(wallets, dict):
+                for w in wallets.values():
+                    if isinstance(w, dict):
+                        existing = str(w.get('label', '')).strip().lower()
+                        if existing and existing == label_lower:
+                            return True
+            elif isinstance(wallets, list):
+                for w in wallets:
+                    if isinstance(w, dict):
+                        existing = str(w.get('label', '')).strip().lower()
+                        if existing and existing == label_lower:
+                            return True
+        except Exception:
+            return False
+        return False
         
     def create_wallet(self, e):
         # Validate form
@@ -177,6 +199,10 @@ class CreateWalletPage:
         
         if not wallet_name:
             self.app.show_snackbar("Please enter wallet name", "error")
+            return
+
+        if self._label_exists(wallet_name):
+            self.app.show_snackbar("Wallet name already exists. Please choose a different name.", "error")
             return
             
         if not password:
@@ -203,12 +229,12 @@ class CreateWalletPage:
                 if wallet_data:
                     print("DEBUG: Wallet created successfully!")
                     
-                    # Save to database for persistence
+                    # Save to storage for persistence
                     try:
                         self.app.save_wallet_data(force_save=True)
-                        print("DEBUG: Wallet saved to database")
+                        print("DEBUG: Wallet saved to storage")
                     except Exception as db_save_ex:
-                        print(f"DEBUG: Failed to save wallet to database: {db_save_ex}")
+                        print(f"DEBUG: Failed to save wallet to storage: {db_save_ex}")
                     
                     # Set app state to unlocked
                     self.app.is_locked = False
@@ -222,6 +248,9 @@ class CreateWalletPage:
                             else:
                                 print("DEBUG: No callback found, going to wallet page directly")
                                 self.app.show_wallet_page()
+                            if hasattr(self.app, 'wallet_page') and self.app.wallet_page:
+                                if hasattr(self.app.wallet_page, '_refresh_sidebar_wallets'):
+                                    self.app.wallet_page._refresh_sidebar_wallets()
                         except Exception as ui_error:
                             print(f"DEBUG: UI update error: {ui_error}")
                             if self.on_wallet_created:

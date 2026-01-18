@@ -1,6 +1,7 @@
 import os
 import sys
-
+import threading
+import shutil
 # Ensure local packages (./cryptography, ./certifi) shadow site-packages
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -43,6 +44,7 @@ def _ensure_lunalib_on_path():
 _ensure_lunalib_on_path()
 
 from app.core import LunaWalletApp
+from gui.page_wallet_index import WalletIndexPage
 from typing import List, Dict
 if __name__ == "__main__":
     import flet as ft
@@ -241,6 +243,14 @@ if __name__ == "__main__":
                 self.page.overlay.append(audio)
                 print("play transaction sound")
                 self.page.update()
+            elif sound_type == "reward":
+                audio = ft.Audio(
+                    src="reward.wav",
+                    autoplay=True,
+                )
+                self.page.overlay.append(audio)
+                print("play reward sound")
+                self.page.update()
             elif sound_type == "send":
                 audio = ft.Audio(
                     src="send.wav", 
@@ -251,6 +261,26 @@ if __name__ == "__main__":
                 self.page.update()
         except Exception as e:
             print(f"Sound error: {e}")
+
+    def _mark_incoming_sound(self, sound_type: str):
+        try:
+            self._last_incoming_sound_type = sound_type
+            self._last_incoming_sound_time = time.time()
+        except Exception:
+            pass
+
+    def _should_play_incoming_sound(self, sound_type: str, window_seconds: float = 3.0) -> bool:
+        try:
+            last_type = getattr(self, "_last_incoming_sound_type", None)
+            last_time = float(getattr(self, "_last_incoming_sound_time", 0) or 0)
+            if last_time and (time.time() - last_time) < window_seconds:
+                if last_type == sound_type:
+                    return False
+                if last_type == "reward" and sound_type == "transaction":
+                    return False
+        except Exception:
+            pass
+        return True
     def _load_wallet_metadata(self):
         """Load wallet metadata using lunalib's SQLite backend (no password required)"""
         print("DEBUG: _load_wallet_metadata called")
@@ -382,7 +412,9 @@ if __name__ == "__main__":
             if hasattr(self.wallet_page, '_update_wallet_data_ui_only'):
                 self.wallet_page._update_wallet_data_ui_only()
         self.save_wallet_data(force_save=True)  # Force save on balance changes
-        self._play_sound("transaction")
+        if self._should_play_incoming_sound("transaction"):
+            self._play_sound("transaction")
+            self._mark_incoming_sound("transaction")
         self.create_backup()  # Create backup for important changes
 
     def on_sync_progress(self, progress, message):
@@ -398,7 +430,9 @@ if __name__ == "__main__":
         """Handle incoming transactions with auto-save"""
         try:
             # Use Flet audio for mobile/Desktop compatibility
-            self._play_sound("transaction")
+            if self._should_play_incoming_sound("transaction"):
+                self._play_sound("transaction")
+                self._mark_incoming_sound("transaction")
         except Exception as e:
             print(f"Error playing sound: {e}")
 
@@ -579,11 +613,10 @@ if __name__ == "__main__":
             return False
 
     def show_wallet_page(self):
-        """Display the main wallet page with all wallets and transactions"""
+        """Display the main wallet page or wallet index for mobile."""
         try:
             print("DEBUG: show_wallet_page called")
 
-            # Simple file logger for builds with no console
             def _trace(msg: str):
                 try:
                     home = os.path.expanduser('~')
@@ -598,7 +631,29 @@ if __name__ == "__main__":
             self.show_snackbar("Loading wallet page...", "info")
             _trace("[WALLET_PAGE] begin create")
 
-            # Create the wallet page with all necessary callbacks
+            if getattr(self, 'is_mobile', False):
+                # モバイル：ウォレットインデックスページを表示
+                def on_select_wallet(address):
+                    self.show_mobile_wallet_page(address)
+                def on_create_wallet():
+                    self.show_create_wallet()
+                def on_import_wallet():
+                    self.on_import_wallet()
+                wallet_index_page = WalletIndexPage(
+                    app=self,
+                    on_select_wallet=on_select_wallet,
+                    on_create_wallet=on_create_wallet,
+                    on_import_wallet=on_import_wallet
+                )
+                self.current_page = wallet_index_page.create()
+                self.page.controls.clear()
+                self.page.add(self.current_page)
+                self.page.update()
+                _trace("[WALLET_INDEX_PAGE] displayed (mobile)")
+                print("DEBUG: Wallet index page displayed (mobile)")
+                return
+
+            # デスクトップ：従来通りWalletPage
             wallet_page = WalletPage(
                 app=self,
                 on_send=self.on_send_transaction,
@@ -609,11 +664,7 @@ if __name__ == "__main__":
                 on_import_wallet=self.on_import_wallet,
                 on_settings=self.on_settings
             )
-            
-            # Store reference for later updates
             self.wallet_page = wallet_page
-            
-            # Set as current page
             try:
                 self.current_page = wallet_page.create()
                 _trace("[WALLET_PAGE] create succeeded")
@@ -622,48 +673,43 @@ if __name__ == "__main__":
                 _trace(f"[WALLET_PAGE] create failed: {create_err}")
                 self.show_snackbar(f"Wallet page error: {create_err}", "error")
                 raise
-            
-            # Clear page controls and display
             if hasattr(self, 'page') and self.page:
-                try:
-                    _trace(f"[WALLET_PAGE] controls before clear: {len(self.page.controls)}")
-                except Exception:
-                    pass
-                # Clear both controls and overlay to avoid stale lock UI
                 try:
                     self.page.clean()
-                    _trace("[WALLET_PAGE] page.clean() called")
                 except Exception:
                     self.page.controls.clear()
-                    _trace("[WALLET_PAGE] page.controls.clear() fallback")
-                try:
-                    _trace(f"[WALLET_PAGE] controls after clear: {len(self.page.controls)}")
-                except Exception:
-                    _trace("[WALLET_PAGE] page controls cleared")
-            else:
-                _trace("[WALLET_PAGE] page missing; cannot clear")
-
-            if hasattr(self, 'page') and self.page:
-                try:
-                    _trace(f"[WALLET_PAGE] adding control type: {type(self.current_page)}")
-                except Exception:
-                    pass
                 self.page.add(self.current_page)
                 self.page.update()
-                try:
-                    _trace(f"[WALLET_PAGE] controls after add: {len(self.page.controls)}")
-                except Exception:
-                    pass
-                _trace("[WALLET_PAGE] page updated")
-            else:
-                _trace("[WALLET_PAGE] page missing; add/update skipped")
-            
             print("DEBUG: Wallet page displayed successfully")
             _trace("[WALLET_PAGE] displayed")
         except Exception as e:
             print(f"DEBUG: Error showing wallet page: {e}")
             import traceback
             traceback.print_exc()
+
+    def show_mobile_wallet_page(self, address):
+        """モバイル用：ウォレット選択後に詳細ページを表示"""
+        from gui.page_wallet import WalletPage
+        print(f"DEBUG: show_mobile_wallet_page({address}) called")
+        # 現在のウォレットアドレスをセット
+        if hasattr(self.wallet_core, 'current_wallet_address'):
+            self.wallet_core.current_wallet_address = address
+        wallet_page = WalletPage(
+            app=self,
+            on_send=self.on_send_transaction,
+            on_receive=self.on_receive,
+            on_export_key=self.on_export_key,
+            on_lock=self.on_lock,
+            on_create_wallet=self.on_create_wallet,
+            on_import_wallet=self.on_import_wallet,
+            on_settings=self.on_settings
+        )
+        self.wallet_page = wallet_page
+        self.current_page = wallet_page.create()
+        self.page.controls.clear()
+        self.page.add(self.current_page)
+        self.page.update()
+        print("DEBUG: Mobile wallet page displayed for address", address)
 
     def lock_wallet(self):
         """Lock the wallet and return to lock screen"""
@@ -1308,7 +1354,14 @@ if __name__ == "__main__":
                         if is_incoming:
                             print(f"    ✨ NEW incoming {tx_type}: {amount} LKC")
                             # Play sound for new incoming transaction
-                            self._play_transaction_sound()
+                            if tx_type in ("reward", "fee_distribution"):
+                                if self._should_play_incoming_sound("reward"):
+                                    self._play_sound("reward")
+                                    self._mark_incoming_sound("reward")
+                            else:
+                                if self._should_play_incoming_sound("transaction"):
+                                    self._play_transaction_sound()
+                                    self._mark_incoming_sound("transaction")
                         else:
                             tx['tx_age'] = 'old'  # Mark outgoing as old
                     else:

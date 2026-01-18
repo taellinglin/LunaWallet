@@ -14,13 +14,13 @@ requires-python = ">=3.8"
 dependencies = [
     "flet>=0.10.0",
     "qrcode>=7.4.0",
-    "lunalib==1.8.6",
+    "lunalib==1.9.3",
     "requests",
-    "cryptography==43.0.1; sys_platform != \"android\"",
+    "cryptography==42.0.5; sys_platform != \"android\"",
     "pyperclip",
     "base58",         # Added base58 dependency
     "tqdm",
-    "rich"
+    "rich",
 ]
 
 [project.urls]
@@ -42,6 +42,7 @@ icon = "./wallet_icon.ico"
 binaries = []
 datas = [
     ["assets/sounds/send.wav", "sounds"],
+    ["assets/sounds/reward.wav", "sounds"],
 ]
 hiddenimports = [
     "lunalib.core.blockchain",

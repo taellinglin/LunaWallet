@@ -165,6 +165,21 @@ class WalletPage:
             padding=0
         )
 
+    def _toggle_sound(self, e):
+        try:
+            current = bool(getattr(self.app, 'sound_enabled', True))
+            self.app.sound_enabled = not current
+            # Update icon
+            if hasattr(self, 'mute_button') and self.mute_button:
+                self.mute_button.icon = ft.Icons.VOLUME_UP if self.app.sound_enabled else ft.Icons.VOLUME_OFF
+                self.mute_button.tooltip = "Mute" if self.app.sound_enabled else "Unmute"
+                self.mute_button.update()
+            if hasattr(self.app, 'show_snackbar'):
+                msg = "Notifications unmuted" if self.app.sound_enabled else "Notifications muted"
+                self.app.show_snackbar(msg, "info")
+        except Exception as ex:
+            print(f"DEBUG: Failed to toggle sound: {ex}")
+
     def _apply_sidebar_selection_highlight(self):
         """Highlight the currently selected wallet in the sidebar."""
         if 'sidebar_wallets_list' not in self.refs:
@@ -635,9 +650,17 @@ class WalletPage:
 
             latest_height = _get_latest_height()
             
-            # Get all transactions for this wallet from database
+            # Get all transactions for this wallet from storage (preferred)
             all_txs = []
-            if hasattr(self.app, 'database'):
+            if hasattr(self.app, 'get_wallet_transactions'):
+                try:
+                    all_txs = self.app.get_wallet_transactions(wallet_address)
+                    print(f"DEBUG: Storage returned {len(all_txs)} transactions")
+                except Exception as storage_err:
+                    print(f"DEBUG: Error getting transactions from storage: {storage_err}")
+
+            # Fallback to legacy database if needed
+            if not all_txs and hasattr(self.app, 'database'):
                 try:
                     # IMPORTANT: Prefer get_all_transactions to avoid 100-tx limit
                     db_methods = ['get_all_transactions', 'get_transactions', 'get_wallet_transactions']
@@ -1078,12 +1101,21 @@ class WalletPage:
                 padding=5,
             )
         )
+        self.mute_button = ft.IconButton(
+            icon=ft.Icons.VOLUME_UP if getattr(self.app, 'sound_enabled', True) else ft.Icons.VOLUME_OFF,
+            icon_color="#f8d7da",
+            icon_size=18,
+            on_click=self._toggle_sound,
+            tooltip="Mute" if getattr(self.app, 'sound_enabled', True) else "Unmute",
+            style=ft.ButtonStyle(padding=5),
+        )
         return ft.Container(
             content=ft.Row([
                 ft.Row(left_controls, spacing=4),
                 ft.Text("Luna Wallet", size=16, weight="bold", color="#f8d7da"),
                 ft.Container(expand=True),
                 ft.Row([
+                    self.mute_button,
                     ft.IconButton(
                         icon=ft.Icons.LOCK,
                         icon_color="#f8d7da",
@@ -1233,7 +1265,7 @@ class WalletPage:
                         icon=ft.Icons.REFRESH,
                         icon_color="#f8d7da",
                         icon_size=16,
-                        on_click=lambda e: self.refresh_transaction_history(),
+                        on_click=lambda e: self.refresh_transaction_history(force_scan=True),
                         tooltip="Refresh Transactions",
                         style=ft.ButtonStyle(padding=3)
                     )
@@ -1278,7 +1310,7 @@ class WalletPage:
         except Exception as e:
             print(f"Error checking transaction involvement: {e}")
             return False
-    def refresh_transaction_history(self):
+    def refresh_transaction_history(self, force_scan: bool = False):
         """Load and display transaction history for CURRENT wallet only"""
         def load_transactions():
             overlay_was_visible = bool(getattr(getattr(self, "loading_overlay", None), "visible", False))
@@ -1305,8 +1337,17 @@ class WalletPage:
                 # Try to get transactions from various sources
                 all_transactions = []
                 
-                # Method 1: Try database (most reliable - includes both confirmed and pending)
-                if hasattr(self.app, 'database'):
+                # Method 1: Try storage-backed history (most reliable, persistent)
+                if hasattr(self.app, 'get_wallet_transactions'):
+                    try:
+                        all_transactions = self.app.get_wallet_transactions(current_address)
+                        if all_transactions:
+                            print(f"DEBUG: Loaded {len(all_transactions)} transactions from storage")
+                    except Exception as e:
+                        print(f"DEBUG: Error loading from storage: {e}")
+
+                # Method 2: Try database (legacy)
+                if not all_transactions and hasattr(self.app, 'database'):
                     try:
                         # IMPORTANT: Try get_all_transactions FIRST because get_wallet_transactions
                         # has a 100-transaction limit in lunalib. Always prefer get_all_transactions.
@@ -1334,11 +1375,26 @@ class WalletPage:
                     except Exception as e:
                         print(f"DEBUG: Error loading from database: {e}")
                 
-                # Method 2: Try blockchain manager (for confirmed transactions only)
-                if not all_transactions and hasattr(self.app, 'blockchain_manager'):
+                # Method 3: Try blockchain manager (for confirmed transactions only)
+                should_scan = True
+                try:
+                    if not force_scan and hasattr(self.app, 'initial_scan_complete') and self.app.initial_scan_complete:
+                        last_ui_scan = getattr(self.app, 'last_ui_scan_time', 0)
+                        interval = getattr(self.app, 'ui_scan_interval_seconds', 300)
+                        if (time.time() - last_ui_scan) < interval:
+                            should_scan = False
+                            print(f"DEBUG: Skipping UI blockchain scan (cooldown {interval}s)")
+                except Exception as scan_gate_err:
+                    print(f"DEBUG: UI scan gate error: {scan_gate_err}")
+
+                if not all_transactions and should_scan and hasattr(self.app, 'blockchain_manager'):
                     try:
                         all_transactions = self.app.blockchain_manager.scan_transactions_for_address(current_address)
                         print(f"DEBUG: Found {len(all_transactions)} transactions from blockchain manager")
+                        try:
+                            self.app.last_ui_scan_time = time.time()
+                        except Exception:
+                            pass
                     except Exception as e:
                         print(f"DEBUG: Error loading from blockchain: {e}")
                 
@@ -1655,6 +1711,7 @@ class WalletPage:
         is_compressed = tx_data.get('_is_compressed', False)
         
         if is_compressed:
+            item_key = f"tx-{tx_data.get('hash', tx_data.get('timestamp', time.time()))}"
             # Handle compressed reward transactions with expandable view
             original_count = tx_data.get('_original_count', 1)
             amount = tx_data.get('amount', 0)
@@ -1726,6 +1783,14 @@ class WalletPage:
                             expansion_container.current.controls.append(reward_item)
                     
                     expansion_container.current.update()
+
+                # Ensure expanded content is visible
+                try:
+                    if hasattr(self, 'transaction_list_view') and self.transaction_list_view:
+                        self.transaction_list_view.scroll_to(key=item_key, duration=200)
+                        self.transaction_list_view.update()
+                except Exception as scroll_err:
+                    print(f"DEBUG: Failed to scroll expanded item into view: {scroll_err}")
             
             # Main compressed reward item
             return ft.Container(
@@ -1758,6 +1823,7 @@ class WalletPage:
                     ),
                     ft.Column([], ref=expansion_container, spacing=0),
                 ], spacing=0),
+                key=item_key,
                 bgcolor="#2c1a1a",
                 border_radius=8,
                 padding=5,
@@ -1765,6 +1831,7 @@ class WalletPage:
             )
         
         # Regular transaction handling
+        item_key = f"tx-{tx_data.get('hash', tx_data.get('timestamp', time.time()))}"
         tx_type = tx_data.get('type', 'transfer')
         amount = tx_data.get('amount', 0)
         from_addr = tx_data.get('from', 'Unknown')
@@ -1826,6 +1893,7 @@ class WalletPage:
                 ]),
                 on_click=lambda e, tx=tx_data: self._show_transaction_details(tx),
             ),
+            key=item_key,
             bgcolor="#2c1a1a",
             border_radius=8,
             padding=5,

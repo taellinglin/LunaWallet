@@ -1,7 +1,11 @@
 import flet as ft
 from typing import List, Dict
 from utils import calculate_wallet_balances
-from lunalib.core.mempool import MempoolManager
+from app.storage import is_web
+try:
+    from lunalib.core.mempool import MempoolManager
+except Exception:
+    MempoolManager = None
 
 class TabWallets:
     def __init__(self, wallet_core, is_mobile=False, selected_wallet_index=0, on_wallet_select=None, on_create_wallet=None, on_import_wallet=None, page=None):
@@ -146,6 +150,23 @@ class TabWallets:
         def create_wallet_click(e):
             wallet_name = wallet_name_field.value.strip()
             if wallet_name:
+                # Prevent duplicate labels
+                try:
+                    existing_labels = [
+                        str(w.get('label', '')).strip().lower()
+                        for w in (self.wallet_core.wallets.values() if isinstance(self.wallet_core.wallets, dict) else self.wallet_core.wallets)
+                        if isinstance(w, dict)
+                    ]
+                    if wallet_name.lower() in existing_labels:
+                        self.page.snack_bar = ft.SnackBar(
+                            content=ft.Text("Wallet name already exists. Please choose a different name."),
+                            bgcolor="#f44336"
+                        )
+                        self.page.snack_bar.open = True
+                        self.page.update()
+                        return
+                except Exception:
+                    pass
                 # Create the wallet using wallet_core
                 try:
                     wallet = self.wallet_core.create_wallet(wallet_name)
@@ -209,6 +230,23 @@ class TabWallets:
             seed_phrase = seed_phrase_field.value.strip()
             
             if wallet_name and seed_phrase:
+                # Prevent duplicate labels
+                try:
+                    existing_labels = [
+                        str(w.get('label', '')).strip().lower()
+                        for w in (self.wallet_core.wallets.values() if isinstance(self.wallet_core.wallets, dict) else self.wallet_core.wallets)
+                        if isinstance(w, dict)
+                    ]
+                    if wallet_name.lower() in existing_labels:
+                        self.page.snack_bar = ft.SnackBar(
+                            content=ft.Text("Wallet name already exists. Please choose a different name."),
+                            bgcolor="#f44336"
+                        )
+                        self.page.snack_bar.open = True
+                        self.page.update()
+                        return
+                except Exception:
+                    pass
                 try:
                     # Import the wallet using wallet_core
                     wallet = self.wallet_core.import_wallet(wallet_name, seed_phrase)
@@ -277,38 +315,29 @@ class TabWallets:
         if self.page:
             def update_balances():
                 try:
-                    from lunalib.storage.database import WalletDatabase
-                    database = WalletDatabase()
-                    mempool_manager = MempoolManager()
-                    
                     for wallet in wallets:
                         wallet_address = wallet.get('address') if isinstance(wallet, dict) else str(wallet)
-                        
-                        # Calculate fresh balances using lunalib
-                        balances = calculate_wallet_balances(
-                            wallet_address,
-                            database=database,
-                            mempool_manager=mempool_manager
-                        )
-                        
-                        # Store in wallet_core for caching
+
+                        balances = calculate_wallet_balances(wallet_address)
+
                         if hasattr(self.wallet_core, 'wallets') and wallet_address in self.wallet_core.wallets:
                             self.wallet_core.wallets[wallet_address]['confirmed_balance'] = balances.get('available', 0.0)
                             self.wallet_core.wallets[wallet_address]['pending_balance'] = balances.get('pending', 0.0)
                             self.wallet_core.wallets[wallet_address]['available_balance'] = balances.get('available', 0.0)
                             self.wallet_core.wallets[wallet_address]['balance'] = balances.get('total', 0.0)
-                            
+
                             print(f"Updated balance for {wallet_address[:12]}: confirmed={balances.get('available')}, pending={balances.get('pending')}")
-                    
-                    # Refresh UI after balances are calculated
+
                     if self.page:
                         self.page.run_thread(lambda: self.refresh_wallets_list_ui())
-                        
                 except Exception as e:
                     print(f"Error updating wallet balances: {e}")
-            
-            import threading
-            threading.Thread(target=update_balances, daemon=True).start()
+
+            if is_web():
+                update_balances()
+            else:
+                import threading
+                threading.Thread(target=update_balances, daemon=True).start()
     
     def refresh_wallets_list_ui(self):
         """Refresh just the UI with updated balances"""

@@ -6,27 +6,58 @@ from typing import Dict, List, Optional, Tuple
 import requests
 import socket
 
-# Import from lunalib
+
+# Import from lunalib (except database)
 from lunalib.transactions.transactions import TransactionManager
 from lunalib.transactions.security import TransactionSecurity
 from lunalib.core.crypto import KeyManager
 from lunalib.storage.encryption import EncryptionManager
 from lunalib.core.wallet import LunaWallet
-from lunalib.core.p2p import HybridBlockchainClient
+try:
+    from lunalib.core.p2p import HybridBlockchainClient
+except Exception:
+    HybridBlockchainClient = None
 from lunalib.core.blockchain import BlockchainManager
-from lunalib.core.mempool import MempoolManager
+try:
+    from lunalib.core.mempool import MempoolManager
+except Exception:
+    MempoolManager = None
+
+# Import Storage abstraction
+from app.storage import Storage, is_web
 
 # Initialize managers with corrected configurations
 try:
     blockchain = BlockchainManager(endpoint_url="https://bank.linglin.art/api/blockchain/full")
     print("DEBUG: BlockchainManager initialized with endpoint: https://bank.linglin.art/api/blockchain/full")
-    mempool = MempoolManager(["https://bank.linglin.art"])
-    client = HybridBlockchainClient(
-        "https://bank.linglin.art",
-        blockchain,
-        mempool
-    )
-    client.start()
+
+    # Normalize latest block responses (some endpoints return a list)
+    try:
+        _orig_get_latest_block = blockchain.get_latest_block
+
+        def _safe_get_latest_block():
+            try:
+                result = _orig_get_latest_block()
+                if isinstance(result, list) and result:
+                    return result[-1]
+                return result
+            except Exception as e:
+                print(f"DEBUG: _safe_get_latest_block error: {e}")
+                return None
+
+        blockchain.get_latest_block = _safe_get_latest_block
+    except Exception as e:
+        print(f"DEBUG: Failed to patch get_latest_block: {e}")
+    mempool = MempoolManager(["https://bank.linglin.art"]) if MempoolManager is not None else None
+    if HybridBlockchainClient is not None:
+        client = HybridBlockchainClient(
+            "https://bank.linglin.art",
+            blockchain,
+            mempool
+        )
+        client.start()
+    else:
+        client = None
 except Exception as e:
     print(f"ERROR: Failed to initialize blockchain client: {e}")
     blockchain = None
@@ -50,22 +81,22 @@ def calculate_wallet_balances(wallet_address: str) -> Dict[str, float]:
     print(f"DEBUG: calculate_wallet_balances called for {wallet_address[:8]}")
 
     # Get confirmed balance from blockchain transactions
-    database = None
-    if client is not None and hasattr(client, 'database'):
-        database = client.database
-    if database is None:
-        try:
-            from lunalib.storage.database import WalletDatabase
-            database = WalletDatabase()
-        except Exception as e:
-            print(f"WARNING: Could not initialize WalletDatabase fallback: {e}")
-            database = None
 
-    confirmed_balance = _calculate_confirmed_balance(wallet_address, database)
-    
+    storage = None
+    if client is not None and hasattr(client, 'storage'):
+        storage = client.storage
+    if storage is None:
+        try:
+            storage = Storage()
+        except Exception as e:
+            print(f"WARNING: Could not initialize Storage fallback: {e}")
+            storage = None
+
+    confirmed_balance = _calculate_confirmed_balance(wallet_address, storage)
+
     # Get pending balance from mempool + low-confirmation mined txs
     pending_balance = _calculate_pending_balance(wallet_address)
-    pending_balance += _calculate_pending_from_db(wallet_address, database, min_confirmations=6)
+    pending_balance += _calculate_pending_from_db(wallet_address, storage, min_confirmations=6)
 
     total_balance = confirmed_balance + pending_balance
 
@@ -866,4 +897,22 @@ def format_balance(amount):
 def format_address(address):
     return address[:6] + "..." + address[-6:] if address else ""
 
-# 他にも必要なフォーマット関数や共通処理をここに追加
+# Lunaアドレスのバリデーション
+def validate_luna_address(address: str) -> (bool, str):
+    """
+    Lunaアドレスのバリデーション。形式・長さ・プレフィックス・文字種をチェック。
+    Returns: (is_valid, reason)
+    """
+    if not address or not isinstance(address, str):
+        return False, "Address is empty or not a string"
+    if len(address) < 20:
+        return False, "Address is too short (minimum 20 characters)"
+    if not address.startswith("LUN_"):
+        return False, "Address must start with 'LUN_'"
+    # 文字種チェック（英数字と一部記号のみ許可）
+    import re
+    if not re.match(r'^LUN_[A-Za-z0-9]+$', address):
+        return False, "Address contains invalid characters"
+    # 追加のチェック（例: ブラックリストや自分自身への送金禁止など）
+    # ...
+    return True, "Valid address"

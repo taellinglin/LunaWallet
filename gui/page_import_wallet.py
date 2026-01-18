@@ -107,6 +107,28 @@ class ImportWalletPage:
             padding=10,
             bgcolor="#2c1a1a"
         )
+
+    def _label_exists(self, label: str) -> bool:
+        try:
+            if not label:
+                return False
+            label_lower = label.strip().lower()
+            wallets = getattr(self.app.wallet_core, 'wallets', None)
+            if isinstance(wallets, dict):
+                for w in wallets.values():
+                    if isinstance(w, dict):
+                        existing = str(w.get('label', '')).strip().lower()
+                        if existing and existing == label_lower:
+                            return True
+            elif isinstance(wallets, list):
+                for w in wallets:
+                    if isinstance(w, dict):
+                        existing = str(w.get('label', '')).strip().lower()
+                        if existing and existing == label_lower:
+                            return True
+        except Exception:
+            return False
+        return False
     
     def import_wallet(self, e):
         # Validate form
@@ -120,6 +142,10 @@ class ImportWalletPage:
             
         if not wallet_name:
             self.app.show_snackbar("Please enter wallet name", "error")
+            return
+
+        if self._label_exists(wallet_name):
+            self.app.show_snackbar("Wallet name already exists. Please choose a different name.", "error")
             return
             
         if not password:
@@ -144,15 +170,19 @@ class ImportWalletPage:
                     self.app.show_snackbar("Invalid password for existing wallet", "error")
                     return
 
-            # インポート用wallet_dataを作成
-            wallet_data = {
-                'private_key': private_key,
-                'label': wallet_name,
-                # addressはKeyManager等で自動生成される場合もあるが、必要ならここで生成
-            }
-
-            # lunalibのimport_walletにpasswordを渡す
-            result = self.app.wallet_core.import_wallet(wallet_data, password)
+            # lunalib 1.9.3 import API (try new signature first, then fallback)
+            result = None
+            try:
+                result = self.app.wallet_core.import_wallet(private_key, wallet_name, password)
+            except TypeError:
+                try:
+                    wallet_data = {
+                        'private_key': private_key,
+                        'label': wallet_name,
+                    }
+                    result = self.app.wallet_core.import_wallet(wallet_data, password)
+                except TypeError:
+                    result = self.app.wallet_core.import_wallet(private_key, password)
             if result:
                 self.app.wallet_core.save_wallet(password)
                 self.on_wallet_imported()
