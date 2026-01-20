@@ -33,6 +33,7 @@ class ImportWalletPage:
             label_style=ft.TextStyle(color="#f8d7da"),
             text_style=ft.TextStyle(color="#f8d7da"),
             prefix_icon=ft.Icons.ACCOUNT_BALANCE_WALLET,
+            on_submit=self.import_wallet,
         )
         self.password = ft.TextField(
             label="Password",
@@ -47,6 +48,7 @@ class ImportWalletPage:
             label_style=ft.TextStyle(color="#f8d7da"),
             text_style=ft.TextStyle(color="#f8d7da"),
             prefix_icon=ft.Icons.LOCK,
+            on_submit=self.import_wallet,
         )
         
     def create(self):

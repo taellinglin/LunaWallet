@@ -22,6 +22,7 @@ class SendPage:
             label_style=ft.TextStyle(color="#f8d7da"),
             text_style=ft.TextStyle(color="#f8d7da"),
             prefix_icon=ft.Icons.PERSON,
+            on_submit=self._send_transaction_thread,
         )
         self.amount = ft.TextField(
             label="Amount (LKC)",
@@ -34,6 +35,7 @@ class SendPage:
             label_style=ft.TextStyle(color="#f8d7da"),
             text_style=ft.TextStyle(color="#f8d7da"),
             prefix_icon=ft.Icons.ATTACH_MONEY,
+            on_submit=self._send_transaction_thread,
         )
         self.memo = ft.TextField(
             label="Memo (Optional)",
@@ -60,6 +62,7 @@ class SendPage:
             label_style=ft.TextStyle(color="#f8d7da"),
             text_style=ft.TextStyle(color="#f8d7da"),
             prefix_icon=ft.Icons.LOCK,
+            on_submit=self._send_transaction_thread,
         )
         # サウンド再生用のパス（PyInstaller対応）
         import sys
