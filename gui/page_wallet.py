@@ -118,6 +118,7 @@ class WalletPage:
                 self.main_area,
             ],
             expand=True,
+            spacing=0,
         )
         self.main_content_stack = ft.Stack(
             controls=[
@@ -1398,6 +1399,12 @@ class WalletPage:
         def load_transactions():
             overlay_was_visible = bool(getattr(getattr(self, "loading_overlay", None), "visible", False))
             try:
+                if cache_only and hasattr(self.app, 'schedule_catchup_scan_from_cache'):
+                    try:
+                        self.app.schedule_catchup_scan_from_cache()
+                    except Exception as scan_err:
+                        print(f"DEBUG: schedule_catchup_scan_from_cache failed: {scan_err}")
+
                 # Get current wallet address
                 current_address = None
                 if hasattr(self.app.wallet_core, 'current_wallet_address'):

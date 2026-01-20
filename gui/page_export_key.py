@@ -166,11 +166,19 @@ class ExportKeyPage:
     def copy_private_key(self, e):
         if self.private_key_display.value:
             try:
-                # Try sync first, then async
-                if hasattr(self.app.page, 'set_clipboard'):
+                # Prefer async clipboard when available
+                if hasattr(self.app.page, 'set_clipboard_async'):
+                    async def _do_copy():
+                        try:
+                            await self.app.page.set_clipboard_async(self.private_key_display.value)
+                        except Exception as async_err:
+                            print(f"DEBUG: Async clipboard error: {async_err}")
+                    if hasattr(self.app.page, 'run_task'):
+                        self.app.page.run_task(_do_copy)
+                    else:
+                        self.app.page.set_clipboard_async(self.private_key_display.value)
+                elif hasattr(self.app.page, 'set_clipboard'):
                     self.app.page.set_clipboard(self.private_key_display.value)
-                elif hasattr(self.app.page, 'set_clipboard_async'):
-                    self.app.page.set_clipboard_async(self.private_key_display.value)
                 else:
                     # Fallback for different Flet versions
                     import pyperclip

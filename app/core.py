@@ -1087,8 +1087,7 @@ class LunaWalletApp:
                 if cached_height >= latest_height:
                     return
 
-                effective_start_height = max(0, cached_height + 1)
-                self._perform_incremental_scan(wallet_addresses, effective_start_height, latest_height)
+                self._sync_wallets_with_lunalib()
                 self.last_scanned_block = max(self.last_scanned_block, latest_height)
             except Exception as e:
                 print(f"DEBUG: schedule_catchup_scan_from_cache failed: {e}")
@@ -2142,7 +2141,7 @@ class LunaWalletApp:
                     if hasattr(self.wallet_page, 'show_sync_status'):
                         self.page.run_thread(self.wallet_page.show_sync_status, "Syncing Blockchain...")
 
-                # Perform the full scan
+                # Perform the initial sync using lunalib
                 wallet_addresses = list(self.wallet_core.wallets.keys())
                 if wallet_addresses:
                     self._update_scan_loading("Connecting to node...")
@@ -2165,15 +2164,9 @@ class LunaWalletApp:
                         self.last_scanned_block = cached_height
                         self._update_scan_loading(f"Blockchain already up to date (height={cached_height})")
                         print(f"DEBUG: Blockchain already up to date (height={cached_height})")
-                    elif cached_height > 0:
-                        self.last_scanned_block = cached_height
-                        self._update_scan_loading(f"Using cached blocks up to {cached_height}...")
-                        self._update_scan_loading(f"Scanning new blocks ({cached_height + 1}-{latest_height})...")
-                        self._perform_incremental_scan(wallet_addresses, cached_height + 1, latest_height)
-                        self.last_scanned_block = latest_height
                     else:
-                        self._update_scan_loading(f"Scanning Transactions (0-{latest_height})...")
-                        self._perform_full_blockchain_scan(wallet_addresses, latest_height)
+                        self._update_scan_loading("Syncing Transactions (lunalib)...")
+                        self._sync_wallets_with_lunalib()
                         self.last_scanned_block = latest_height
                     self._update_scan_loading("Processing results...")
                 
@@ -2233,11 +2226,50 @@ class LunaWalletApp:
             if hasattr(self, 'page') and self.page:
                 self.page.update()
 
+    def _ensure_wallet_sync_helper(self):
+        if hasattr(self, '_wallet_sync_helper') and self._wallet_sync_helper:
+            return self._wallet_sync_helper
+        try:
+            from lunalib.core.wallet_sync_helper import create_wallet_sync_helper
+            helper = create_wallet_sync_helper(self.wallet_core, self.blockchain_manager, self.mempool_manager)
+            self._wallet_sync_helper = helper
+            try:
+                helper.register_wallets_from_lunawallet()
+            except Exception as reg_err:
+                print(f"DEBUG: wallet sync register failed: {reg_err}")
+            return helper
+        except Exception as e:
+            print(f"DEBUG: wallet sync helper unavailable: {e}")
+            self._wallet_sync_helper = None
+            return None
+
+    def _sync_wallets_with_lunalib(self) -> bool:
+        try:
+            # Prefer wallet's built-in sync if available
+            if hasattr(self.wallet_core, 'sync_with_state_manager'):
+                self.wallet_core.sync_with_state_manager(
+                    blockchain=self.blockchain_manager,
+                    mempool=self.mempool_manager
+                )
+                return True
+        except Exception as e:
+            print(f"DEBUG: wallet_core sync_with_state_manager failed: {e}")
+
+        helper = self._ensure_wallet_sync_helper()
+        if not helper:
+            return False
+        try:
+            # Refresh registered wallets each sync
+            helper.register_wallets_from_lunawallet()
+            helper.sync_wallets_now()
+            return True
+        except Exception as e:
+            print(f"DEBUG: wallet sync helper failed: {e}")
+            return False
+
     def scan_all_wallets_for_changes(self, force_full_scan=False):
         """
-        Scan wallets for transactions.
-        - If force_full_scan=True: Do complete blockchain scan from start, cache results, then update all balances
-        - Otherwise: Only check for NEW transactions since last scan, update balances when new found
+        Scan wallets for transactions using lunalib built-in sync.
         """
         show_ready = threading.Event()
 
@@ -2281,54 +2313,16 @@ class LunaWalletApp:
             if not wallet_addresses:
                 return
             
-            # Get latest block height
-            latest_block = self.blockchain_manager.get_latest_block()
-            if not latest_block:
+            # Use lunalib wallet sync helper
+            if not self._sync_wallets_with_lunalib():
+                print("DEBUG: lunalib wallet sync not available")
                 return
-                
-            latest_height = latest_block.get('index', 0)
-            try:
-                from app.debug_logger import debug_log
-                debug_log(f"[SCAN] wallets={len(wallet_addresses)} latest_height={latest_height} last_scanned={self.last_scanned_block} force_full={force_full_scan}")
-            except Exception:
-                pass
-            
-            # If this is the first scan OR force_full_scan is True, do complete blockchain scan
-            if self.last_scanned_block == 0 or force_full_scan:
-                print(f"DEBUG: Full blockchain scan - scanning from genesis to block {latest_height}")
-                try:
-                    from app.debug_logger import debug_log
-                    debug_log(f"[SCAN] full_scan from 0 to {latest_height}")
-                except Exception:
-                    pass
-                self._perform_full_blockchain_scan(wallet_addresses, latest_height)
-                self.last_scanned_block = latest_height
-                self._integrity_check_base_url(latest_block)
-                return
-            
-            # Check what's already cached to avoid redundant scanning
-            cached_height = self.blockchain_manager.cache.get_highest_cached_height()
 
-            # 修正: 必ずcached+1からlatest_heightまでスキャンする（キャッシュが遅れている場合も対応）
-            effective_start_height = cached_height + 1
-            # 範囲逆転防止: latest_height < cached_height の場合は何もしない
-            if effective_start_height > latest_height:
-                try:
-                    from app.debug_logger import debug_log
-                    debug_log(f"[SCAN] no new blocks (effective_start={effective_start_height}, latest={latest_height}, cached={cached_height})")
-                except Exception:
-                    pass
-                return  # No new blocks to scan
-
-            print(f"DEBUG: Incremental scan - checking blocks {effective_start_height} to {latest_height}")
+            # Refresh UI after lunalib sync completes
             try:
-                from app.debug_logger import debug_log
-                debug_log(f"[SCAN] incremental {effective_start_height}-{latest_height} cached={cached_height}")
-            except Exception:
-                pass
-            self._perform_incremental_scan(wallet_addresses, effective_start_height, latest_height)
-            self.last_scanned_block = latest_height
-            self._integrity_check_base_url(latest_block)
+                self._refresh_ui_after_scan(force_update=True)
+            except Exception as refresh_err:
+                print(f"DEBUG: refresh after lunalib sync failed: {refresh_err}")
             
         except Exception as e:
             print(f"DEBUG: Error in scan_all_wallets_for_changes: {e}")
@@ -2403,251 +2397,6 @@ class LunaWalletApp:
             self.last_integrity_check_time = now
         except Exception as e:
             print(f"[INTEGRITY] Error in lunalib-only integrity check: {e}")
-    def _perform_full_blockchain_scan(self, wallet_addresses, latest_height):
-        """Perform complete blockchain scan from genesis using batch API"""
-        try:
-            print(f"DEBUG: Starting full blockchain scan using batch API (0 to {latest_height})")
-            try:
-                from app.debug_logger import debug_log
-                debug_log(f"[SCAN] full_scan start wallets={len(wallet_addresses)} latest_height={latest_height}")
-            except Exception:
-                pass
-            self._update_scan_loading(f"Scanning Transactions (multi-scan 0-{latest_height})...", progress=0)
-            
-            # Use new batch method: scan_transactions_for_addresses(addresses: List[str])
-            # Returns Dict[str, List[Dict]] where keys are addresses
-            _safe_print(f"[OK] Using batch scan_transactions_for_addresses() for {len(wallet_addresses)} wallets")
-            all_transactions = self.blockchain_manager.scan_transactions_for_addresses(wallet_addresses)
-            try:
-                from app.debug_logger import debug_log
-                debug_log(f"[SCAN] full_scan result keys={list(all_transactions.keys())[:3]} total_keys={len(all_transactions)}")
-            except Exception:
-                pass
-            self._update_scan_loading("Processing scanned transactions...", progress=5)
-            
-            # Process transactions for each wallet
-            wallet_txs_count = {addr: {'reward': 0, 'transfer': 0, 'other': 0} for addr in wallet_addresses}
-                
-            total_wallets = max(1, len(wallet_addresses))
-            for idx, wallet_addr in enumerate(wallet_addresses):
-                try:
-                    progress_pct = ((idx + 1) / total_wallets) * 100
-                    self._update_scan_loading(f"Processing wallets ({idx + 1}/{total_wallets})...", progress=progress_pct)
-                except Exception:
-                    pass
-                wallet_addr_lower = wallet_addr.lower()
-                wallet_txs = all_transactions.get(wallet_addr_lower, []) or all_transactions.get(wallet_addr, [])
-                    
-                _safe_print(f"\n[SCAN] Processing {len(wallet_txs)} transactions for {wallet_addr[:12]}...")
-                    
-                for tx in wallet_txs:
-                    # Normalize sender/receiver fields so outgoing is counted correctly
-                    if not tx.get('from'):
-                        tx['from'] = tx.get('from_address') or tx.get('sender') or tx.get('sender_address') or ''
-                    if not tx.get('to'):
-                        tx['to'] = tx.get('to_address') or tx.get('receiver') or tx.get('recipient') or ''
-                    if not tx.get('hash'):
-                        tx['hash'] = tx.get('transaction_id') or ''
-
-                    tx_type = tx.get('type', 'transfer').lower()
-                    block_height = tx.get('block_height', 0)
-                        
-                    # Save transaction with proper status (per-wallet unique hash)
-                    tx['status'] = 'confirmed'
-                    self._store_transaction(wallet_addr, tx, status='confirmed')
-
-                    # **IMPORTANT**: For incoming transfers, also save for the RECEIVER
-                    if tx_type == 'transfer':
-                        tx_to = (tx.get('to') or tx.get('to_address') or '').lower()
-                        wallet_addr_lower = wallet_addr.lower()
-                        if tx_to and tx_to != wallet_addr_lower:
-                            for check_wallet in wallet_addresses:
-                                if check_wallet.lower() == tx_to:
-                                    self._store_transaction(check_wallet, tx, status='confirmed')
-                                    _safe_print(f"  -> Saved outgoing transaction for receiver: {check_wallet[:12]}...")
-                                    break
-                        
-                    # Update balance incrementally
-                    self._update_wallet_balance_incremental(wallet_addr, tx)
-                        
-                    # Count by type
-                    if tx_type == 'reward':
-                        wallet_txs_count[wallet_addr]['reward'] += 1
-                        _safe_print(f"  [REWARD] {tx.get('amount')} LKC @ block {block_height}")
-                        try:
-                            if self._is_reward_for_wallet(tx, wallet_addr_lower):
-                                self._handle_reward_detected(wallet_addr, tx, notify=self.initial_scan_complete)
-                        except Exception as reward_err:
-                            print(f"DEBUG: Reward detect failed: {reward_err}")
-                    elif tx_type == 'fee_distribution':
-                        wallet_txs_count[wallet_addr]['other'] += 1
-                        try:
-                            if self._is_reward_for_wallet(tx, wallet_addr_lower):
-                                self._handle_reward_detected(wallet_addr, tx, notify=self.initial_scan_complete)
-                        except Exception as reward_err:
-                            print(f"DEBUG: Fee distribution detect failed: {reward_err}")
-                    else:
-                        wallet_txs_count[wallet_addr]['transfer'] += 1
-                
-            # Print summary
-            _safe_print(f"\n[SCAN] SUMMARY:")
-            for wallet_addr in wallet_addresses:
-                counts = wallet_txs_count[wallet_addr]
-                total = counts['reward'] + counts['transfer'] + counts['other']
-                _safe_print(f"  {wallet_addr[:12]}...: {counts['reward']} rewards, {counts['transfer']} transfers, {counts['other']} other = {total} total")
-            
-            # Check mempool for ALL pending transactions at once
-            self._check_mempool_for_pending(wallet_addresses)
-            
-            # Detect new incoming transactions and play sound
-            self._detect_new_incoming_transactions(wallet_addresses)
-            
-            # Refresh UI after full scan complete
-            self._update_scan_loading("Finalizing...", progress=100)
-            self._refresh_ui_after_scan(force_update=True)
-            try:
-                from app.debug_logger import debug_log
-                debug_log("[SCAN] full_scan complete")
-            except Exception:
-                pass
-            
-        except Exception as e:
-            print(f"DEBUG: Error in _perform_full_blockchain_scan: {e}")
-            import traceback
-            traceback.print_exc()
-            try:
-                from app.debug_logger import debug_log
-                debug_log(f"[SCAN][ERROR] full_scan: {e}")
-            except Exception:
-                pass
-
-    def _perform_incremental_scan(self, wallet_addresses, start_height, latest_height):
-        """Perform incremental scan for only NEW transactions since last scan using batch API"""
-        try:
-            print(f"DEBUG: Incremental scan from block {start_height} to {latest_height}")
-            try:
-                from app.debug_logger import debug_log
-                debug_log(f"[SCAN] incremental start wallets={len(wallet_addresses)} range={start_height}-{latest_height}")
-            except Exception:
-                pass
-            new_transactions_found = False
-            
-            wallet_txs_count = {addr: {'reward': 0, 'transfer': 0, 'other': 0} for addr in wallet_addresses}
-            
-            # Use new batch method to scan all wallets at once
-            _safe_print(f"[OK] Using batch scan_transactions_for_addresses() for new blocks {start_height}-{latest_height}")
-            self._update_scan_loading(f"Scanning new blocks ({start_height}-{latest_height})...", progress=0)
-            all_transactions = self.blockchain_manager.scan_transactions_for_addresses(
-                wallet_addresses,
-                start_height=start_height,
-                end_height=latest_height
-            )
-            try:
-                from app.debug_logger import debug_log
-                debug_log(f"[SCAN] incremental result keys={list(all_transactions.keys())[:3]} total_keys={len(all_transactions)}")
-            except Exception:
-                pass
-
-            total_wallets = max(1, len(wallet_addresses))
-            for idx, wallet_addr in enumerate(wallet_addresses):
-                try:
-                    progress_pct = ((idx + 1) / total_wallets) * 100
-                    self._update_scan_loading(f"Processing wallets ({idx + 1}/{total_wallets})...", progress=progress_pct)
-                except Exception:
-                    pass
-                wallet_addr_lower = wallet_addr.lower()
-                wallet_txs = all_transactions.get(wallet_addr_lower, []) or all_transactions.get(wallet_addr, [])
-                    
-                if wallet_txs:
-                    new_transactions_found = True
-                    _safe_print(f"\n[SCAN] Processing {len(wallet_txs)} transactions for {wallet_addr[:12]}...")
-                        
-                    for tx in wallet_txs:
-                        # Normalize sender/receiver fields so outgoing is counted correctly
-                        if not tx.get('from'):
-                            tx['from'] = tx.get('from_address') or tx.get('sender') or tx.get('sender_address') or ''
-                        if not tx.get('to'):
-                            tx['to'] = tx.get('to_address') or tx.get('receiver') or tx.get('recipient') or ''
-                        if not tx.get('hash'):
-                            tx['hash'] = tx.get('transaction_id') or ''
-
-                        tx_type = tx.get('type', 'transfer').lower()
-                        block_height = tx.get('block_height', 0)
-
-                        # Save transaction with proper status (per-wallet unique hash)
-                        tx['status'] = 'confirmed'
-                        self._store_transaction(wallet_addr, tx, status='confirmed')
-
-                        # For transfers, also save for the receiver if we own it
-                        if tx_type == 'transfer':
-                            tx_to = (tx.get('to') or tx.get('to_address') or '').lower()
-                            wallet_addr_lower = wallet_addr.lower()
-                            if tx_to and tx_to != wallet_addr_lower:
-                                for check_wallet in wallet_addresses:
-                                    if check_wallet.lower() == tx_to:
-                                        self._store_transaction(check_wallet, tx, status='confirmed')
-                                        _safe_print(f"  -> Saved outgoing transaction for receiver: {check_wallet[:12]}...")
-                                        break
-
-                        # Update balance incrementally
-                        self._update_wallet_balance_incremental(wallet_addr, tx)
-                        
-                        # Count by type
-                        if tx_type == 'reward':
-                            wallet_txs_count[wallet_addr]['reward'] += 1
-                            _safe_print(f"  [REWARD] {tx.get('amount')} LKC @ block {block_height}")
-                            try:
-                                if self._is_reward_for_wallet(tx, wallet_addr_lower):
-                                    self._handle_reward_detected(wallet_addr, tx, notify=True)
-                            except Exception as reward_err:
-                                print(f"DEBUG: Reward detect failed: {reward_err}")
-                        elif tx_type == 'fee_distribution':
-                            wallet_txs_count[wallet_addr]['other'] += 1
-                            try:
-                                if self._is_reward_for_wallet(tx, wallet_addr_lower):
-                                    self._handle_reward_detected(wallet_addr, tx, notify=True)
-                            except Exception as reward_err:
-                                print(f"DEBUG: Fee distribution detect failed: {reward_err}")
-                        else:
-                            wallet_txs_count[wallet_addr]['transfer'] += 1
-                            _safe_print(f"  [TXN] Found transaction in block {block_height} for {wallet_addr[:12]}...")
-            
-            # Print summary
-            if new_transactions_found:
-                _safe_print(f"\n[SCAN] INCREMENTAL SUMMARY:")
-                for wallet_addr in wallet_addresses:
-                    counts = wallet_txs_count[wallet_addr]
-                    total = counts['reward'] + counts['transfer'] + counts['other']
-                    if total > 0:
-                        _safe_print(f"  {wallet_addr[:12]}...: {counts['reward']} rewards, {counts['transfer']} transfers, {counts['other']} other")
-            
-            # Check mempool for pending transactions
-            self._check_mempool_for_pending(wallet_addresses)
-            
-            # Detect new incoming transactions and play sound
-            self._detect_new_incoming_transactions(wallet_addresses)
-            
-            # Always reload from cache and refresh UI after cache updates
-            self._update_scan_loading("Finalizing...", progress=100)
-            self._refresh_ui_after_scan(force_update=True)
-            if new_transactions_found:
-                self.show_snackbar("New transactions detected!", "success")
-            try:
-                from app.debug_logger import debug_log
-                debug_log(f"[SCAN] incremental complete new_found={new_transactions_found}")
-            except Exception:
-                pass
-            
-        except Exception as e:
-            print(f"DEBUG: Error in _perform_incremental_scan: {e}")
-            import traceback
-            traceback.print_exc()
-            try:
-                from app.debug_logger import debug_log
-                debug_log(f"[SCAN][ERROR] incremental_scan: {e}")
-            except Exception:
-                pass
-
     def _check_mempool_for_pending(self, wallet_addresses):
         """Check mempool for pending transactions using batch API"""
         try:
@@ -2967,26 +2716,30 @@ class LunaWalletApp:
             print("DEBUG: Continuous scan already active")
             return
         
+        helper = self._ensure_wallet_sync_helper()
+        if helper and hasattr(helper, 'start_continuous_sync'):
+            self.continuous_scan_active = True
+            print(f"DEBUG: Starting lunalib continuous sync (every {self.scan_interval}s)")
+            try:
+                helper.start_continuous_sync(poll_interval=int(self.scan_interval))
+                return
+            except Exception as e:
+                print(f"DEBUG: lunalib continuous sync failed: {e}")
+
+        # Fallback to periodic sync loop if helper isn't available
         self.continuous_scan_active = True
-        print("DEBUG: Starting continuous blockchain scan (every 30 seconds)")
-        
+        print("DEBUG: Starting continuous sync loop (every 30 seconds)")
+
         def continuous_scan_loop():
-            # Wait a bit before starting the loop to let the initial scan finish
             time.sleep(self.scan_interval)
             while self.continuous_scan_active and not self.is_locked:
                 try:
-                    current_time = time.time()
-                    
-                    # Scan all wallets for new transactions
                     self.scan_all_wallets_for_changes()
-                    
-                    # Sleep for scan interval
                     time.sleep(self.scan_interval)
-                    
                 except Exception as e:
                     print(f"DEBUG: Continuous scan error: {e}")
                     time.sleep(self.scan_interval)
-        
+
         threading.Thread(target=continuous_scan_loop, daemon=True).start()
 
 if __name__ == "__main__":
