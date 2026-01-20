@@ -101,14 +101,8 @@ jobs:
           zip -r linux.zip linux
       - name: Upload Linux Artifact
         uses: actions/upload-artifact@v4
-      - name: Package Linux build
-        run: |
-          cd build
-          zip -r linux.zip linux
         with:
           name: linux
-          path: build/linux.zip
-
           path: build/linux.zip
 
   release:
