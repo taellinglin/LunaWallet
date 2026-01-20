@@ -50,7 +50,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: windows
-          path: build/windows.zip
+          path: build/LunaWallet-1.0.0-Windows.zip
 
   build-macos:
     runs-on: macos-latest
@@ -74,12 +74,12 @@ jobs:
       - name: Package macOS build
         run: |
           cd build
-          zip -r macos.zip macos
+          zip -r LunaWallet-1.0.0-Macos.zip macos
       - name: Upload macOS Artifact
         uses: actions/upload-artifact@v4
         with:
           name: macos
-          path: build/macos.zip
+          path: build/LunaWallet-1.0.0-Macos.zip
 
   build-linux:
     runs-on: ubuntu-latest
@@ -112,7 +112,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: linux
-          path: build/linux.zip
+          path: build/LunaWallet-1.0.0-Linux.zip
 
   release:
     needs: [build-windows, build-macos, build-linux]
@@ -135,8 +135,9 @@ jobs:
           command: |
             set -euo pipefail
             tag="${GITHUB_REF_NAME}"
+            release_name="LunaWallet-${GITHUB_REF_NAME}"
             if ! gh release view "$tag" >/dev/null 2>&1; then
-              gh release create "$tag" --title "$tag" --notes "Automated release"
+              gh release create "$tag" --title "$release_name" --notes "Automated release"
             fi
             gh release upload "$tag" build/*.zip --clobber
         env:
