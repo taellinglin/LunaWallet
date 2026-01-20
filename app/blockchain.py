@@ -1,14 +1,16 @@
 # app/blockchain.py
 
 from lunalib.core.blockchain import BlockchainManager
-import requests
-import socket
+from lunalib.core.p2p import P2PClient
+import threading
 
 class BlockchainService:
+
     def __init__(self, endpoint_url="https://bank.linglin.art"):
         self.endpoint_url = endpoint_url.rstrip("/")
         self.manager = BlockchainManager(endpoint_url=endpoint_url)
         self.peers = []
+        self.p2p_client = None
 
         # Patch manager with peer helpers for UI access
         try:
@@ -18,6 +20,11 @@ class BlockchainService:
         except Exception:
             pass
 
+        # Start P2P client in background (non-blocking)
+        try:
+            self._ensure_p2p_client(start_in_background=True)
+        except Exception:
+            pass
     def get_latest_block(self):
         return self.manager.get_latest_block()
 
@@ -34,90 +41,46 @@ class BlockchainService:
         if hasattr(self.manager, 'scan_for_updates'):
             self.manager.scan_for_updates()
 
-    def _get_base_url(self) -> str:
-        if "/api/" in self.endpoint_url:
-            return self.endpoint_url.split("/api/")[0]
-        return self.endpoint_url
+    def _ensure_p2p_client(self, start_in_background: bool = False):
+        if self.p2p_client is None:
+            self.p2p_client = P2PClient(primary_node_url=self.endpoint_url)
+        if start_in_background and not getattr(self.p2p_client, 'is_running', False):
+            threading.Thread(target=self.p2p_client.start, daemon=True).start()
 
-    def _parse_peers(self, data):
-        if isinstance(data, list):
-            return data
-        if isinstance(data, dict):
-            return data.get('peers') or data.get('nodes') or data.get('data') or []
-        return []
+    def get_p2p_status(self) -> dict:
+        """Return P2P client status for UI (running, peer_count)."""
+        try:
+            self._ensure_p2p_client(start_in_background=False)
+            running = bool(getattr(self.p2p_client, 'is_running', False)) if self.p2p_client else False
+            peers = len(getattr(self.p2p_client, 'peers', []) or []) if self.p2p_client else 0
+            return {"running": running, "peers": peers}
+        except Exception:
+            return {"running": False, "peers": 0}
 
     def refresh_peers(self) -> int:
-        base_url = self._get_base_url()
-        endpoints = [
-            f"{base_url}/api/peers",
-            f"{base_url}/peers",
-            f"{base_url}/api/p2p/peers",
-            f"{base_url}/p2p/peers",
-        ]
-        for endpoint in endpoints:
-            try:
-                response = requests.get(endpoint, timeout=5)
-                if response.status_code == 200:
-                    peers = self._parse_peers(response.json())
-                    if peers is not None:
-                        self.peers = peers
-                        try:
-                            self.manager.peers = peers
-                        except Exception:
-                            pass
-                        return len(peers)
-            except Exception:
-                continue
+        try:
+            self._ensure_p2p_client(start_in_background=True)
+            if self.p2p_client:
+                self.peers = list(getattr(self.p2p_client, 'peers', []) or [])
+                try:
+                    self.manager.peers = self.peers
+                except Exception:
+                    pass
+        except Exception:
+            pass
         return len(self.peers) if self.peers else 0
 
     def get_peer_count(self) -> int:
         try:
-            if hasattr(self.manager, 'peers') and self.manager.peers:
-                return len(self.manager.peers)
+            if self.p2p_client and getattr(self.p2p_client, 'peers', None) is not None:
+                return len(self.p2p_client.peers)
         except Exception:
             pass
-        if self.peers:
-            return len(self.peers)
         return self.refresh_peers()
 
     def register_as_peer(self, my_address: str = None, my_port: int = None) -> bool:
-        base_url = self._get_base_url()
-        if not my_address:
-            try:
-                hostname = socket.gethostname()
-                my_address = socket.gethostbyname(hostname)
-            except Exception:
-                my_address = "127.0.0.1"
-        if not my_port:
-            my_port = 8545
-
-        endpoints = [
-            f"{base_url}/api/peers/register",
-            f"{base_url}/peers/register",
-            f"{base_url}/peer/add",
-        ]
-
-        payloads = [
-            {
-                'address': my_address,
-                'port': my_port,
-                'node_type': 'wallet',
-                'version': '1.0.0'
-            },
-            {
-                'node_id': f"wallet-{my_address}:{my_port}",
-                'timestamp': __import__("time").time(),
-                'capabilities': ['sync', 'relay'],
-                'peer_url': f"http://{my_address}:{my_port}"
-            }
-        ]
-
-        for endpoint in endpoints:
-            for payload in payloads:
-                try:
-                    response = requests.post(endpoint, json=payload, timeout=5)
-                    if response.status_code in (200, 201):
-                        return True
-                except Exception:
-                    continue
-        return False
+        try:
+            self._ensure_p2p_client(start_in_background=True)
+            return bool(self.p2p_client)
+        except Exception:
+            return False

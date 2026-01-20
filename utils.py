@@ -3,8 +3,6 @@ import io
 import time
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
-import requests
-import socket
 
 
 # Import from lunalib (except database)
@@ -727,43 +725,6 @@ def trigger_scan_if_behind():
     except Exception as e:
         print(f"ERROR: Failed to check or trigger scan: {e}")
 
-def _register_with_primary(self):
-        """Register this node with the primary daemon using the updated endpoint."""
-        max_retries = 3
-        retry_delay = 5  # seconds
-
-        for attempt in range(max_retries):
-            try:
-                peer_info = {
-                    'node_id': self.node_id,
-                    'timestamp': time.time(),
-                    'capabilities': ['sync', 'relay'],
-                    'peer_url': f"https://{socket.gethostname()}:{8545}"  # Example peer URL
-                }
-
-                print(f"DEBUG: Attempting registration with payload: {peer_info}")
-                response = requests.post(
-                    f"{self.primary_node}/peer/add",
-                    json=peer_info,
-                    timeout=10
-                )
-
-                print(f"DEBUG: Server response: {response.status_code} - {response.text}")
-
-                if response.status_code == 200:
-                    print(f"✅ Registered with primary node as peer: {self.node_id}")
-                    return True
-                else:
-                    print(f"⚠️  Registration failed (Attempt {attempt + 1}/{max_retries}): {response.status_code}")
-
-            except requests.exceptions.RequestException as e:
-                print(f"❌ Registration error (Attempt {attempt + 1}/{max_retries}): {e}")
-
-            # Wait before retrying
-            time.sleep(retry_delay)
-
-        print("❌ Registration failed after maximum retries. Continuing without registration.")
-        return False
 
 def get_p2p_status(self) -> Dict:
         """Get P2P network status"""
@@ -795,100 +756,6 @@ def get_p2p_status(self) -> Dict:
                 'status': f'Error: {e}'
             }
 
-def _fetch_peers_from_daemon(self):
-        try:
-            # Try common P2P daemon endpoints with short timeout
-            endpoints = [
-                f"{self.config.node_url}/api/peers",
-                f"{self.config.node_url}/peers",
-                f"{self.config.node_url}/api/p2p/peers",
-            ]
-
-            for endpoint in endpoints:
-                try:
-                    response = requests.get(endpoint, timeout=5)
-                    if response.status_code == 200:
-                        data = response.json()
-
-                        # Handle different response formats
-                        if isinstance(data, list):
-                            self.peers = data
-                        elif isinstance(data, dict):
-                            self.peers = data.get('peers', data.get('nodes', data.get('data', [])))
-
-                        if self.peers:
-                            print(f"[DEBUG] Fetched {len(self.peers)} peers from {endpoint}")
-
-                            # Register peers with P2P client if available
-                            if self.p2p_client and hasattr(self.p2p_client, 'add_peers'):
-                                try:
-                                    self.p2p_client.add_peers(self.peers)
-                                except:
-                                    pass
-
-                            return True
-                except:
-                    continue
-
-            # No peers found - this is OK, not an error
-            print("[DEBUG] No P2P peers available from daemon")
-            return False
-
-        except Exception as e:
-            print(f"[DEBUG] Peer fetch skipped: {e}")
-            return False
-
-def refresh_peers(self) -> Dict:
-    """Manually refresh peer list from daemon"""
-    success = self._fetch_peers_from_daemon()
-    return {
-        'success': success,
-        'peers': len(self.peers),
-        'peer_list': self.peers[:10]
-    }
-
-def register_as_peer(self, my_address: str = None, my_port: int = None) -> bool:
-    """Register this node as a peer with the daemon (optional, may not be supported)"""
-    try:
-        # Get local address if not provided
-        if not my_address:
-            try:
-                hostname = socket.gethostname()
-                my_address = socket.gethostbyname(hostname)
-            except:
-                my_address = "127.0.0.1"
-
-        if not my_port:
-            my_port = 8545  # Default P2P port
-
-        # Try to register with daemon
-        endpoints = [
-            f"{self.config.node_url}/api/peers/register",
-            f"{self.config.node_url}/peers/register",
-        ]
-
-        registration_data = {
-            'address': my_address,
-            'port': my_port,
-            'node_type': 'miner',
-            'version': '1.0.0'
-        }
-
-        for endpoint in endpoints:
-            try:
-                response = requests.post(endpoint, json=registration_data, timeout=5)
-                if response.status_code in [200, 201]:
-                    print(f"[DEBUG] Registered as peer: {my_address}:{my_port}")
-                    return True
-            except:
-                continue
-
-        # Registration not supported - this is OK
-        return False
-
-    except Exception as e:
-        print(f"[DEBUG] Peer registration skipped: {e}")
-        return False
 
 # Additional utilities
 def format_balance(amount):

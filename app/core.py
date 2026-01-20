@@ -12,7 +12,6 @@ import base64
 from typing import Dict, List
 import sys
 from pathlib import Path
-import requests  # Ensure requests is imported at the top of the file
 
 # Import unified balance utilities
 from utils import (
@@ -54,14 +53,6 @@ def _bootstrap_ca_bundle():
             ca_path = where()
         except Exception:
             ca_path = None
-
-        if not ca_path:
-            try:
-                import requests
-
-                ca_path = requests.certs.where()
-            except Exception:
-                ca_path = None
 
         if not ca_path:
             try:
@@ -172,13 +163,7 @@ def diagnose_network():
             except Exception as e:
                 f.write(f"[{timestamp}] [NETWORK_DIAG] SSL Error: {e}\n")
             
-            # Check requests session
-            try:
-                session = requests.Session()
-                f.write(f"[{timestamp}] [NETWORK_DIAG] Requests version: {requests.__version__}\n")
-                f.write(f"[{timestamp}] [NETWORK_DIAG] Requests verify SSL: True (default)\n")
-            except Exception as e:
-                f.write(f"[{timestamp}] [NETWORK_DIAG] Requests Error: {e}\n")
+            # Requests診断は削除（lunalibのみ使用）
     except Exception as diag_err:
         # Silently fail
         pass
@@ -317,8 +302,14 @@ class LunaWalletApp:
             debug_log(f"[STORAGE] type={storage_type} data_dir={self._get_data_directory()} flet_storage={flet_storage}")
             try:
                 import lunalib
-                debug_log(f"[LUNALIB] version={getattr(lunalib, '__version__', 'unknown')}")
-                ver = getattr(lunalib, '__version__', '0')
+                pkg_version = None
+                try:
+                    from importlib.metadata import version as _pkg_version
+                    pkg_version = _pkg_version("lunalib")
+                except Exception:
+                    pkg_version = None
+                debug_log(f"[LUNALIB] __version__={getattr(lunalib, '__version__', 'unknown')} installed={pkg_version or 'unknown'}")
+                ver = pkg_version or getattr(lunalib, '__version__', '0')
                 def _parse_ver(v):
                     parts = []
                     for p in str(v).split('.'):
@@ -327,6 +318,8 @@ class LunaWalletApp:
                         except Exception:
                             parts.append(0)
                     return tuple(parts)
+                if pkg_version and getattr(lunalib, '__version__', None) and pkg_version != getattr(lunalib, '__version__'):
+                    debug_log(f"[LUNALIB][WARN] version mismatch: __version__={getattr(lunalib, '__version__')} installed={pkg_version}")
                 if _parse_ver(ver) < (1, 9, 3):
                     debug_log("[LUNALIB][WARN] version < 1.9.3 detected; build may miss pending/scan behavior")
             except Exception:
@@ -396,7 +389,39 @@ class LunaWalletApp:
         self.integrity_check_interval_seconds = 300  # 5 minutes
         self.last_integrity_check_time = 0
         self._inactivity_monitor_started = False
+        self.start_blockchain_monitor()
+    def start_blockchain_monitor(self, interval=10):
+        """Start a background thread to monitor blockchain changes every `interval` seconds.
+        改良版: キャッシュが遅れている場合もすべてのブロックを順次処理する。"""
+        import threading, time
+        def monitor():
+            last_height = None
+            while True:
+                try:
+                    if hasattr(self, 'blockchain_manager') and self.blockchain_manager:
+                        latest_block = self.blockchain_manager.get_latest_block()
+                        latest_height = latest_block.get('index', 0) if latest_block else 0
+                        if last_height is None:
+                            # 初回は最新ブロックで初期化（catch-upはしない）
+                            last_height = latest_height
+                        elif latest_height > last_height:
+                            print(f"[MONITOR] Blockchain changed: {last_height} -> {latest_height}")
+                            # すべての未処理ブロックを順次処理
+                            for h in range(last_height + 1, latest_height + 1):
+                                try:
+                                    self.handle_blockchain_update(h - 1, h)
+                                except Exception as e:
+                                    print(f"[MONITOR] Error processing block {h}: {e}")
+                            last_height = latest_height
+                except Exception as e:
+                    print(f"[MONITOR] Error: {e}")
+                time.sleep(interval)
+        threading.Thread(target=monitor, daemon=True).start()
 
+    def handle_blockchain_update(self, old_height, new_height):
+        """Download/process new blocks or transactions. Customize as needed."""
+        print(f"[MONITOR] Handling blockchain update from {old_height} to {new_height}")
+        # Add your download/processing logic here
     def _register_activity(self, *_args, **_kwargs):
         """Update last activity time for inactivity auto-lock."""
         self.last_activity_time = time.time()
@@ -411,14 +436,6 @@ class LunaWalletApp:
                 ca_path = where()
             except Exception:
                 ca_path = None
-
-            if not ca_path:
-                try:
-                    import requests
-
-                    ca_path = requests.certs.where()
-                except Exception:
-                    ca_path = None
 
             if not ca_path:
                 try:
@@ -531,7 +548,7 @@ class LunaWalletApp:
             notification_panel = ft.Container(
                 content=notification_content,
                 bgcolor=bg_color,
-                padding=ft.padding.symmetric(horizontal=15, vertical=8),
+                padding=ft.Padding.symmetric(horizontal=15, vertical=8),
                 height=45,
                 width=float('inf')
             )
@@ -915,6 +932,171 @@ class LunaWalletApp:
             print(f"DEBUG: Failed to load all transactions: {e}")
         return transactions
 
+    def get_cached_transactions_for_addresses(self, wallet_addresses: List[str]) -> Dict[str, List[Dict]]:
+        """Return cached transactions for addresses using lunalib cache only (no network)."""
+        results: Dict[str, List[Dict]] = {addr: [] for addr in wallet_addresses}
+        try:
+            if not wallet_addresses:
+                return results
+            if not hasattr(self, 'blockchain_manager') or not self.blockchain_manager:
+                return results
+            cache = getattr(self.blockchain_manager, 'cache', None)
+            if not cache:
+                return results
+            cached_height = cache.get_highest_cached_height()
+            if cached_height is None or cached_height < 0:
+                return results
+
+            def _normalize(addr: str) -> str:
+                if not addr:
+                    return ''
+                addr_str = str(addr).strip("'\" ").lower()
+                return addr_str[4:] if addr_str.startswith('lun_') else addr_str
+
+            normalized_map: Dict[str, str] = {}
+            for addr in wallet_addresses:
+                norm = _normalize(addr)
+                if norm:
+                    normalized_map[norm] = addr
+
+            def _add_tx(target_addr: str, tx: Dict):
+                if target_addr in results:
+                    results[target_addr].append(tx)
+
+            batch_size = 200
+            for start in range(0, cached_height + 1, batch_size):
+                end = min(start + batch_size - 1, cached_height)
+                blocks = cache.get_block_range(start, end)
+                for block in blocks:
+                    if not isinstance(block, dict):
+                        continue
+                    block_height = block.get('index') or block.get('height') or 0
+                    block_hash = block.get('hash') or ''
+                    timestamp = block.get('timestamp')
+
+                    # Block mining reward
+                    miner_norm = _normalize(block.get('miner', ''))
+                    if miner_norm in normalized_map:
+                        target_addr = normalized_map[miner_norm]
+                        reward_amount = float(block.get('reward', 0) or 0)
+                        if reward_amount > 0:
+                            _add_tx(target_addr, {
+                                'type': 'reward',
+                                'from': 'network',
+                                'to': target_addr,
+                                'amount': reward_amount,
+                                'block_height': block_height,
+                                'timestamp': timestamp,
+                                'hash': f"reward_{block_height}_{block_hash[:8]}",
+                                'status': 'confirmed',
+                                'direction': 'incoming',
+                                'effective_amount': reward_amount,
+                                'fee': 0,
+                            })
+
+                    # Regular transactions
+                    for tx_index, tx in enumerate(block.get('transactions', []) or []):
+                        if not isinstance(tx, dict):
+                            continue
+                        tx_type = (tx.get('type') or 'transfer').lower()
+                        from_norm = _normalize(tx.get('from') or tx.get('sender') or '')
+                        to_norm = _normalize(tx.get('to') or tx.get('receiver') or '')
+                        amount = float(tx.get('amount', 0) or 0)
+                        fee = float(tx.get('fee', 0) or tx.get('gas', 0) or 0)
+
+                        # Explicit reward transactions
+                        if tx_type == 'reward' and to_norm in normalized_map:
+                            target_addr = normalized_map[to_norm]
+                            enhanced = tx.copy()
+                            enhanced.update({
+                                'block_height': block_height,
+                                'status': 'confirmed',
+                                'tx_index': tx_index,
+                                'direction': 'incoming',
+                                'effective_amount': amount,
+                                'fee': 0,
+                            })
+                            enhanced.setdefault('from', 'network')
+                            _add_tx(target_addr, enhanced)
+                            continue
+
+                        # Incoming
+                        if to_norm in normalized_map:
+                            target_addr = normalized_map[to_norm]
+                            enhanced = tx.copy()
+                            enhanced.update({
+                                'block_height': block_height,
+                                'status': 'confirmed',
+                                'tx_index': tx_index,
+                                'direction': 'incoming',
+                                'effective_amount': amount,
+                                'amount': amount,
+                                'fee': fee,
+                            })
+                            _add_tx(target_addr, enhanced)
+
+                        # Outgoing
+                        if from_norm in normalized_map:
+                            target_addr = normalized_map[from_norm]
+                            enhanced = tx.copy()
+                            enhanced.update({
+                                'block_height': block_height,
+                                'status': 'confirmed',
+                                'tx_index': tx_index,
+                                'direction': 'outgoing',
+                                'effective_amount': -(amount + fee),
+                                'amount': amount,
+                                'fee': fee,
+                            })
+                            _add_tx(target_addr, enhanced)
+            return results
+        except Exception as e:
+            print(f"DEBUG: get_cached_transactions_for_addresses failed: {e}")
+            return results
+
+    def get_cached_transactions_for_address(self, wallet_address: str) -> List[Dict]:
+        """Return cached transactions for a single address using lunalib cache only."""
+        try:
+            results = self.get_cached_transactions_for_addresses([wallet_address])
+            return results.get(wallet_address, []) if isinstance(results, dict) else []
+        except Exception as e:
+            print(f"DEBUG: get_cached_transactions_for_address failed: {e}")
+            return []
+
+    def schedule_catchup_scan_from_cache(self):
+        """Scan from last cached height to latest height and refresh UI."""
+        if getattr(self, '_catchup_scan_in_progress', False):
+            return
+
+        def _catchup():
+            try:
+                self._catchup_scan_in_progress = True
+                if not hasattr(self, 'wallet_core') or not self.wallet_core:
+                    return
+                wallet_addresses = list(getattr(self.wallet_core, 'wallets', {}).keys())
+                if not wallet_addresses:
+                    return
+
+                if not hasattr(self, 'blockchain_manager') or not self.blockchain_manager:
+                    return
+                cache = getattr(self.blockchain_manager, 'cache', None)
+                cached_height = cache.get_highest_cached_height() if cache else -1
+                latest_block = self.blockchain_manager.get_latest_block()
+                latest_height = latest_block.get('index', 0) if latest_block else 0
+
+                if cached_height >= latest_height:
+                    return
+
+                effective_start_height = max(0, cached_height + 1)
+                self._perform_incremental_scan(wallet_addresses, effective_start_height, latest_height)
+                self.last_scanned_block = max(self.last_scanned_block, latest_height)
+            except Exception as e:
+                print(f"DEBUG: schedule_catchup_scan_from_cache failed: {e}")
+            finally:
+                self._catchup_scan_in_progress = False
+
+        threading.Thread(target=_catchup, daemon=True).start()
+
     def _ensure_data_directory(self):
         """Ensure data directory exists"""
         data_dir = self._get_data_directory()
@@ -1217,16 +1399,58 @@ class LunaWalletApp:
                 self.refs['progress_sync'].current.visible = True
             if 'lbl_sync_status' in self.refs and self.refs['lbl_sync_status'].current:
                 self.refs['lbl_sync_status'].current.value = f"Status: {message}"
+            if hasattr(self, 'wallet_page') and self.wallet_page:
+                if hasattr(self.wallet_page, 'show_sync_status'):
+                    try:
+                        self.wallet_page.show_sync_status(message, progress)
+                    except Exception:
+                        pass
             self.update_refs()
 
     def on_transaction_received(self):
-        """Handle incoming transactions with auto-save"""
+        """Handle incoming transactions: キャッシュへ即時追加し、残高・UIを即時更新。"""
+        # tx, wallet_addrは外部から渡すことを想定（既存互換のため引数なしでも動作）
+        import inspect
+        tx = None
+        wallet_addr = None
+        # 呼び出し元がtx, wallet_addrを渡している場合は取得
+        frame = inspect.currentframe()
+        try:
+            args, _, _, values = inspect.getargvalues(frame)
+            if 'tx' in values:
+                tx = values['tx']
+            if 'wallet_addr' in values:
+                wallet_addr = values['wallet_addr']
+        except Exception:
+            pass
+        # 1. 受信トランザクションをキャッシュへ追加
+        if tx and wallet_addr:
+            try:
+                self._store_transaction(wallet_addr, tx)
+                # 残高キャッシュも即時更新（必要に応じて）
+                if hasattr(self, 'wallet_balances_cache'):
+                    bal = self.wallet_balances_cache.get(wallet_addr, 0)
+                    # txのvalueやtypeに応じて加算/減算（例: 入金なら加算、出金なら減算）
+                    if 'amount' in tx:
+                        # ここは実際の仕様に合わせて調整
+                        bal += tx.get('amount', 0)
+                        self.wallet_balances_cache[wallet_addr] = bal
+            except Exception as e:
+                print(f"DEBUG: Failed to cache new transaction: {e}")
+
+        # 2. UIを即時リフレッシュ
         if hasattr(self, 'wallet_page') and self.wallet_page:
             if hasattr(self.wallet_page, 'refresh_transaction_history'):
                 try:
                     self.wallet_page.refresh_transaction_history()
                 except Exception as e:
                     print(f"DEBUG: Error refreshing transaction history: {e}")
+            if hasattr(self.wallet_page, '_update_wallet_data_ui_only'):
+                try:
+                    self.wallet_page._update_wallet_data_ui_only()
+                except Exception as e:
+                    print(f"DEBUG: Error updating wallet data UI: {e}")
+
         self.show_snackbar("New transaction received", "success")
 
         # Play transaction sound (if not just played as reward)
@@ -1692,7 +1916,7 @@ class LunaWalletApp:
         print("DEBUG: on_export_key called")
         export_key_page = ExportKeyPage(
             self,
-            on_back=self.show_wallet_page
+            on_back=lambda: self.show_wallet_page(reuse=True)
         )
         self.current_page = export_key_page.create()
         self.page.controls.clear()
@@ -1975,15 +2199,15 @@ class LunaWalletApp:
 
         threading.Thread(target=initial_scan_thread, daemon=True).start()
 
-    def _update_scan_loading(self, text):
-        """Update scan overlay text without toggling visibility."""
+    def _update_scan_loading(self, text, progress: float = None):
+        """Update scan overlay text/progress without toggling visibility."""
         try:
             if hasattr(self, 'wallet_page') and self.wallet_page:
                 if hasattr(self.wallet_page, 'show_sync_status'):
                     if hasattr(self, 'page') and self.page and hasattr(self.page, 'run_thread'):
-                        self.page.run_thread(self.wallet_page.show_sync_status, text)
+                        self.page.run_thread(self.wallet_page.show_sync_status, text, progress)
                     else:
-                        self.wallet_page.show_sync_status(text)
+                        self.wallet_page.show_sync_status(text, progress)
         except Exception as e:
             print(f"DEBUG: Error updating scan loading text: {e}")
 
@@ -2084,11 +2308,10 @@ class LunaWalletApp:
             
             # Check what's already cached to avoid redundant scanning
             cached_height = self.blockchain_manager.cache.get_highest_cached_height()
-            
-            # Determine start height for incremental scan (only new blocks since last scan)
-            effective_start_height = max(self.last_scanned_block + 1, cached_height + 1)
-            
-            # If everything is already cached and scanned, no need to scan
+
+            # 修正: 必ずcached+1からlatest_heightまでスキャンする（キャッシュが遅れている場合も対応）
+            effective_start_height = cached_height + 1
+            # 範囲逆転防止: latest_height < cached_height の場合は何もしない
             if effective_start_height > latest_height:
                 try:
                     from app.debug_logger import debug_log
@@ -2096,7 +2319,7 @@ class LunaWalletApp:
                 except Exception:
                     pass
                 return  # No new blocks to scan
-            
+
             print(f"DEBUG: Incremental scan - checking blocks {effective_start_height} to {latest_height}")
             try:
                 from app.debug_logger import debug_log
@@ -2127,7 +2350,8 @@ class LunaWalletApp:
             _hide_scan_loading()
 
     def _integrity_check_base_url(self, peer_latest_block: dict):
-        """Check base URL after peer sync to verify chain integrity."""
+        """Check local node's latest block vs peer's latest block using lunalib only."""
+        import time
         try:
             if is_web():
                 return
@@ -2135,10 +2359,7 @@ class LunaWalletApp:
             if (now - self.last_integrity_check_time) < self.integrity_check_interval_seconds:
                 return
 
-            base_url = getattr(self, "integrity_base_url", None)
-            if not base_url:
-                return
-
+            # Get peer's latest block info
             peer_height = None
             peer_hash = None
             if isinstance(peer_latest_block, list) and peer_latest_block:
@@ -2147,46 +2368,41 @@ class LunaWalletApp:
                 peer_height = peer_latest_block.get("index") or peer_latest_block.get("height")
                 peer_hash = peer_latest_block.get("hash") or peer_latest_block.get("block_hash")
 
-            resp = requests.get(base_url, timeout=10)
-            if resp.status_code != 200:
-                print(f"[INTEGRITY] Base URL check failed: {resp.status_code}")
+            # Get local node's latest block using lunalib
+            if not hasattr(self, "blockchain_manager") or not self.blockchain_manager:
+                print("[INTEGRITY] No blockchain_manager available for integrity check.")
                 return
-
-            data = resp.json()
-            base_block = None
-            if isinstance(data, list) and data:
-                base_block = data[-1]
-            elif isinstance(data, dict):
-                if isinstance(data.get("latest_block"), dict):
-                    base_block = data.get("latest_block")
-                elif isinstance(data.get("block"), dict):
-                    base_block = data.get("block")
-                elif isinstance(data.get("blocks"), list) and data.get("blocks"):
-                    base_block = data.get("blocks")[-1]
-                elif isinstance(data.get("data"), list) and data.get("data"):
-                    base_block = data.get("data")[-1]
-
-            if not isinstance(base_block, dict):
-                print("[INTEGRITY] Base URL response did not contain a block")
+            local_block = self.blockchain_manager.get_latest_block()
+            if not local_block:
+                print("[INTEGRITY] Could not get local latest block from lunalib.")
                 return
+            local_height = local_block.get("index") or local_block.get("height")
+            local_hash = local_block.get("hash") or local_block.get("block_hash")
 
-            base_height = base_block.get("index") or base_block.get("height")
-            base_hash = base_block.get("hash") or base_block.get("block_hash")
-
-            if peer_height is not None and base_height is not None:
-                if int(peer_height) != int(base_height):
-                    print(f"[INTEGRITY] Height mismatch: peers={peer_height}, base={base_height}")
+            # Compare
+            if peer_height is not None and local_height is not None:
+                ui_refresh_needed = False
+                if int(peer_height) != int(local_height):
+                    print(f"[INTEGRITY] Height mismatch: peer={peer_height}, local={local_height}")
                     self.show_snackbar("Integrity check: height mismatch", "warning")
-                elif peer_hash and base_hash and str(peer_hash) != str(base_hash):
+                    ui_refresh_needed = True
+                elif peer_hash and local_hash and str(peer_hash) != str(local_hash):
                     print(f"[INTEGRITY] Hash mismatch at height {peer_height}")
                     self.show_snackbar("Integrity check: hash mismatch", "warning")
+                    ui_refresh_needed = True
                 else:
-                    print("[INTEGRITY] Base URL matches peer latest block")
-
+                    print("[INTEGRITY] Local node matches peer latest block")
+                if ui_refresh_needed:
+                    # サイドバー・カード・履歴を即時リフレッシュ
+                    self.refresh_wallet_list()
+                    if hasattr(self, 'wallet_page') and self.wallet_page:
+                        if hasattr(self.wallet_page, 'refresh_transaction_history'):
+                            self.wallet_page.refresh_transaction_history()
+                        if hasattr(self.wallet_page, '_update_wallet_data_ui_only'):
+                            self.wallet_page._update_wallet_data_ui_only()
             self.last_integrity_check_time = now
         except Exception as e:
-            print(f"[INTEGRITY] Check failed: {e}")
-
+            print(f"[INTEGRITY] Error in lunalib-only integrity check: {e}")
     def _perform_full_blockchain_scan(self, wallet_addresses, latest_height):
         """Perform complete blockchain scan from genesis using batch API"""
         try:
@@ -2196,7 +2412,7 @@ class LunaWalletApp:
                 debug_log(f"[SCAN] full_scan start wallets={len(wallet_addresses)} latest_height={latest_height}")
             except Exception:
                 pass
-            self._update_scan_loading(f"Scanning Transactions (multi-scan 0-{latest_height})...")
+            self._update_scan_loading(f"Scanning Transactions (multi-scan 0-{latest_height})...", progress=0)
             
             # Use new batch method: scan_transactions_for_addresses(addresses: List[str])
             # Returns Dict[str, List[Dict]] where keys are addresses
@@ -2207,30 +2423,18 @@ class LunaWalletApp:
                 debug_log(f"[SCAN] full_scan result keys={list(all_transactions.keys())[:3]} total_keys={len(all_transactions)}")
             except Exception:
                 pass
-            self._update_scan_loading("Processing scanned transactions...")
+            self._update_scan_loading("Processing scanned transactions...", progress=5)
             
-            # ALSO get sent transactions for each wallet, as scan_transactions_for_addresses might only get incoming
-            for wallet_addr in wallet_addresses:
-                try:
-                    sent_txs = self.blockchain_manager.get_sent_transactions(wallet_addr)
-                    if sent_txs:
-                        print(f"DEBUG: Found {len(sent_txs)} sent transactions for {wallet_addr[:12]}")
-                        # Add these to the all_transactions dict if not already present
-                        wallet_addr_lower = wallet_addr.lower()
-                        if wallet_addr_lower not in all_transactions:
-                            all_transactions[wallet_addr_lower] = []
-                        
-                        existing_tx_ids = {tx.get('transaction_id') for tx in all_transactions[wallet_addr_lower]}
-                        for tx in sent_txs:
-                            if tx.get('transaction_id') not in existing_tx_ids:
-                                all_transactions[wallet_addr_lower].append(tx)
-                except Exception as e:
-                    print(f"DEBUG: Error getting sent transactions for {wallet_addr[:12]}: {e}")
-
             # Process transactions for each wallet
             wallet_txs_count = {addr: {'reward': 0, 'transfer': 0, 'other': 0} for addr in wallet_addresses}
                 
-            for wallet_addr in wallet_addresses:
+            total_wallets = max(1, len(wallet_addresses))
+            for idx, wallet_addr in enumerate(wallet_addresses):
+                try:
+                    progress_pct = ((idx + 1) / total_wallets) * 100
+                    self._update_scan_loading(f"Processing wallets ({idx + 1}/{total_wallets})...", progress=progress_pct)
+                except Exception:
+                    pass
                 wallet_addr_lower = wallet_addr.lower()
                 wallet_txs = all_transactions.get(wallet_addr_lower, []) or all_transactions.get(wallet_addr, [])
                     
@@ -2299,6 +2503,7 @@ class LunaWalletApp:
             self._detect_new_incoming_transactions(wallet_addresses)
             
             # Refresh UI after full scan complete
+            self._update_scan_loading("Finalizing...", progress=100)
             self._refresh_ui_after_scan(force_update=True)
             try:
                 from app.debug_logger import debug_log
@@ -2331,6 +2536,7 @@ class LunaWalletApp:
             
             # Use new batch method to scan all wallets at once
             _safe_print(f"[OK] Using batch scan_transactions_for_addresses() for new blocks {start_height}-{latest_height}")
+            self._update_scan_loading(f"Scanning new blocks ({start_height}-{latest_height})...", progress=0)
             all_transactions = self.blockchain_manager.scan_transactions_for_addresses(
                 wallet_addresses,
                 start_height=start_height,
@@ -2342,31 +2548,13 @@ class LunaWalletApp:
             except Exception:
                 pass
 
-            # ALSO fetch sent transactions for each wallet in this height range
-            for wallet_addr in wallet_addresses:
+            total_wallets = max(1, len(wallet_addresses))
+            for idx, wallet_addr in enumerate(wallet_addresses):
                 try:
-                    sent_txs = self.blockchain_manager.get_sent_transactions(
-                        wallet_addr,
-                        start_height=start_height,
-                        end_height=latest_height
-                    )
-                    if sent_txs:
-                        wallet_addr_lower = wallet_addr.lower()
-                        if wallet_addr_lower not in all_transactions:
-                            all_transactions[wallet_addr_lower] = []
-
-                        existing_tx_ids = {
-                            tx.get('transaction_id') or tx.get('hash')
-                            for tx in all_transactions[wallet_addr_lower]
-                        }
-                        for tx in sent_txs:
-                            tx_id = tx.get('transaction_id') or tx.get('hash')
-                            if tx_id and tx_id not in existing_tx_ids:
-                                all_transactions[wallet_addr_lower].append(tx)
-                except Exception as e:
-                    print(f"DEBUG: Error getting sent transactions for {wallet_addr[:12]}: {e}")
-                
-            for wallet_addr in wallet_addresses:
+                    progress_pct = ((idx + 1) / total_wallets) * 100
+                    self._update_scan_loading(f"Processing wallets ({idx + 1}/{total_wallets})...", progress=progress_pct)
+                except Exception:
+                    pass
                 wallet_addr_lower = wallet_addr.lower()
                 wallet_txs = all_transactions.get(wallet_addr_lower, []) or all_transactions.get(wallet_addr, [])
                     
@@ -2439,9 +2627,10 @@ class LunaWalletApp:
             # Detect new incoming transactions and play sound
             self._detect_new_incoming_transactions(wallet_addresses)
             
-            # Only update UI - balances already updated incrementally
+            # Always reload from cache and refresh UI after cache updates
+            self._update_scan_loading("Finalizing...", progress=100)
+            self._refresh_ui_after_scan(force_update=True)
             if new_transactions_found:
-                self._refresh_ui_after_scan(force_update=True)
                 self.show_snackbar("New transactions detected!", "success")
             try:
                 from app.debug_logger import debug_log
@@ -2752,7 +2941,7 @@ class LunaWalletApp:
                 print(f">>> [5] Updating transaction history...")
                 if hasattr(self.wallet_page, 'refresh_transaction_history'):
                     try:
-                        self.wallet_page.refresh_transaction_history()
+                        self.wallet_page.refresh_transaction_history(force_scan=True)
                     except Exception as e:
                         print(f"DEBUG: Error refreshing transaction history: {e}")
                 

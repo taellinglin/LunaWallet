@@ -58,6 +58,8 @@ class WalletPage:
         self.address_text = ft.Text("", size=12, color="#f8d7da")
         # Sync status UI (inline, non-blocking)
         self.refs['sync_text'] = ft.Ref[ft.Text]()
+        self.refs['sync_percent'] = ft.Ref[ft.Text]()
+        self.refs['sync_progress'] = ft.Ref[ft.ProgressBar]()
         self.refs['sync_banner'] = ft.Ref[ft.Container]()
         self.sync_status_bar = self.create_sync_status_bar()
         # Create balance card and store in ref
@@ -90,7 +92,7 @@ class WalletPage:
                 ft.Container(
                     content=ft.Column(
                         [
-                            ft.ProgressRing(width=48, height=48, stroke_width=5, color="#dc3545"),
+                            ft.ProgressRing(width=240, value=None, color="#dc3545", bgcolor="#5c2e2e"),
                             ft.Text("Loading...", size=16, weight="bold", color="#f8d7da"),
                         ],
                         horizontal_alignment=ft.CrossAxisAlignment.CENTER,
@@ -278,8 +280,18 @@ class WalletPage:
         # Create sidebar
         sidebar = self._create_sidebar()
         
-        # Populate sidebar with wallets from app.wallet_core
-        self._populate_sidebar_wallets()
+        # Populate sidebar with wallets from app.wallet_core (placeholders first)
+        self._populate_sidebar_wallets(show_placeholders=True)
+
+        # Refresh balances in background after initial render
+        def refresh_sidebar_balances():
+            try:
+                self._refresh_sidebar_wallets()
+                if hasattr(self.app, 'page') and self.app.page:
+                    self.app.page.update()
+            except Exception as e:
+                print(f"DEBUG: Error refreshing sidebar balances: {e}")
+        threading.Thread(target=refresh_sidebar_balances, daemon=True).start()
         
         # Create main wallet content
         wallet_content = self._create_wallet_content()
@@ -418,7 +430,7 @@ class WalletPage:
             bgcolor="#2c1a1a"
         )
     
-    def _populate_sidebar_wallets(self):
+    def _populate_sidebar_wallets(self, show_placeholders: bool = False):
         """Populate the sidebar with wallets using direct transaction tally for balances"""
         try:
             if 'sidebar_wallets_list' not in self.refs:
@@ -439,12 +451,16 @@ class WalletPage:
             wallet_dict = getattr(self.app.wallet_core, "wallets", {})
             for address, wdata in wallet_dict.items():
                 # 残高をトランザクション履歴から計算
-                confirmed_balance, pending_balance = self._calculate_balance_from_transactions(address)
+                if show_placeholders:
+                    confirmed_balance, pending_balance = None, None
+                else:
+                    confirmed_balance, pending_balance = self._get_wallet_balances(address, use_lunalib_cache=True)
+                total_balance = None if confirmed_balance is None or pending_balance is None else (confirmed_balance + pending_balance)
                 label = wdata.get("label", address[:8] + "..." + address[-6:] if len(address) > 16 else address)
                 wallet_item = self._create_sidebar_wallet_item({
                     'address': address,
                     'label': label,
-                    'balance': confirmed_balance + pending_balance,
+                    'balance': total_balance,
                     'confirmed_balance': confirmed_balance,
                     'pending_balance': pending_balance
                 }, len(sidebar_list.controls))
@@ -504,7 +520,7 @@ class WalletPage:
                         current_addr = getattr(self.app.wallet_core, 'current_wallet_address', None)
                         for address, wallet_data in self.app.wallet_core.wallets.items():
                             # Always recalc balances from transactions to avoid stale/zero values
-                            confirmed_balance, pending_balance = self._calculate_balance_from_transactions(address)
+                            confirmed_balance, pending_balance = self._calculate_balance_from_transactions(address, use_lunalib_cache=True)
                             existing_wallet = None
                             for w in sidebar_list.controls:
                                 if hasattr(w, 'data'):
@@ -611,7 +627,7 @@ class WalletPage:
                         wallet_address = wallet_item.data.get('address')
                         if wallet_address:
                             # Get fresh balances for this wallet (recalculate from transactions)
-                            confirmed_balance, pending_balance = self._get_wallet_balances(wallet_address)
+                            confirmed_balance, pending_balance = self._get_wallet_balances(wallet_address, use_lunalib_cache=True)
                             
                             # Update the sidebar item display
                             self._update_sidebar_wallet_display(wallet_item, confirmed_balance, pending_balance)
@@ -627,8 +643,8 @@ class WalletPage:
             import traceback
             traceback.print_exc()
     
-    def _calculate_balance_from_transactions(self, wallet_address):
-        """Calculate balance from loaded transaction history"""
+    def _calculate_balance_from_transactions(self, wallet_address, use_lunalib_cache: bool = False):
+        """Calculate balance from loaded transaction history (lunalib cache optional)"""
         try:
             confirmed_balance = 0.0
             pending_balance = 0.0
@@ -644,15 +660,29 @@ class WalletPage:
                                 return int(block.get('index', 0) or 0)
                         if hasattr(self.app.blockchain_manager, 'get_blockchain_height'):
                             return int(self.app.blockchain_manager.get_blockchain_height() or 0)
+                        if hasattr(self.app.blockchain_manager, 'cache'):
+                            cached_height = self.app.blockchain_manager.cache.get_highest_cached_height()
+                            if isinstance(cached_height, int) and cached_height >= 0:
+                                return cached_height
                 except Exception:
                     pass
                 return None
 
             latest_height = _get_latest_height()
             
-            # Get all transactions for this wallet from storage (preferred)
+            # Get all transactions for this wallet
             all_txs = []
-            if hasattr(self.app, 'get_wallet_transactions'):
+
+            # Prefer lunalib cache when requested (cache-only, no network)
+            if use_lunalib_cache and hasattr(self.app, 'get_cached_transactions_for_address'):
+                try:
+                    all_txs = self.app.get_cached_transactions_for_address(wallet_address)
+                    print(f"DEBUG: Lunalib cache-only returned {len(all_txs)} transactions")
+                except Exception as cache_scan_err:
+                    print(f"DEBUG: Lunalib cache-only error: {cache_scan_err}")
+
+            # Fallback to storage only when cache is NOT requested
+            if not use_lunalib_cache and not all_txs and hasattr(self.app, 'get_wallet_transactions'):
                 try:
                     all_txs = self.app.get_wallet_transactions(wallet_address)
                     print(f"DEBUG: Storage returned {len(all_txs)} transactions")
@@ -660,7 +690,7 @@ class WalletPage:
                     print(f"DEBUG: Error getting transactions from storage: {storage_err}")
 
             # Fallback to legacy database if needed
-            if not all_txs and hasattr(self.app, 'database'):
+            if not use_lunalib_cache and not all_txs and hasattr(self.app, 'database'):
                 try:
                     # IMPORTANT: Prefer get_all_transactions to avoid 100-tx limit
                     db_methods = ['get_all_transactions', 'get_transactions', 'get_wallet_transactions']
@@ -717,7 +747,8 @@ class WalletPage:
             # Calculate confirmed balance
             for tx in all_txs:
                 status_raw = tx.get('status', None)
-                tx_status = str(status_raw).lower() if status_raw is not None else 'confirmed'
+                # Cache-only mode: trust chain confirmations, ignore stored status flags
+                tx_status = 'confirmed' if use_lunalib_cache else (str(status_raw).lower() if status_raw is not None else 'confirmed')
                 block_height = tx.get('block_height', None)
                 confirmations = None
                 if block_height is not None and latest_height is not None:
@@ -725,7 +756,7 @@ class WalletPage:
                         confirmations = max(0, int(latest_height) - int(block_height) + 1)
                     except Exception:
                         confirmations = None
-                is_low_confirm = confirmations is not None and confirmations < min_confirmations
+                is_low_confirm = confirmations is not None and confirmations < min_confirmations and latest_height is not None and int(block_height) <= int(latest_height)
                 if tx_status in ('pending', 'unconfirmed', 'mempool') or is_low_confirm:
                     # Treat as pending until min confirmations reached
                     tx_from = tx.get('from', tx.get('from_address', '')).lower()
@@ -818,14 +849,33 @@ class WalletPage:
             traceback.print_exc()
             return None, None
     
-    def _get_wallet_balances(self, wallet_address):
-        """Get balance by directly tallying from all transactions (DB+pending)."""
+    def _get_wallet_balances(self, wallet_address, use_lunalib_cache: bool = True):
+        """Get balance by directly tallying from all transactions (lunalib cache preferred)."""
         self._begin_loading_hold("Scanning Transactions...")
         try:
-            confirmed, pending = self._calculate_balance_from_transactions(wallet_address)
+            confirmed, pending = self._calculate_balance_from_transactions(wallet_address, use_lunalib_cache=use_lunalib_cache)
+            if use_lunalib_cache and hasattr(self.app, 'schedule_catchup_scan_from_cache'):
+                try:
+                    self.app.schedule_catchup_scan_from_cache()
+                except Exception as scan_err:
+                    print(f"DEBUG: schedule_catchup_scan_from_cache failed: {scan_err}")
             return confirmed or 0.0, pending or 0.0
         finally:
             self._end_loading_hold()
+
+    def _get_cached_wallet_balances(self, wallet_address):
+        """Get cached balances from wallet_core without scanning."""
+        try:
+            if hasattr(self.app, 'wallet_core') and self.app.wallet_core:
+                wallets = getattr(self.app.wallet_core, 'wallets', None)
+                if isinstance(wallets, dict) and wallet_address in wallets:
+                    wallet = wallets.get(wallet_address, {}) or {}
+                    confirmed = wallet.get('confirmed_balance', wallet.get('balance', None))
+                    pending = wallet.get('pending_balance', None)
+                    return confirmed, pending
+        except Exception as e:
+            print(f"DEBUG: Error getting cached balances: {e}")
+        return None, None
     
     def _create_sidebar_wallet_item(self, wallet, index):
         """Create wallet item for sidebar"""
@@ -956,14 +1006,14 @@ class WalletPage:
                 return
 
             # Refresh transaction history for the newly selected wallet
-            self.refresh_transaction_history()
+            self.refresh_transaction_history(cache_only=True)
 
             # --- START: Sidebar Highlight Logic ---
             self._apply_sidebar_selection_highlight()
             # --- END: Sidebar Highlight Logic ---
 
-            # 残高・UIは選択ウォレットのみlunalibから取得し、サイドバーとカードを即時更新（他は更新しない）
-            confirmed_balance, pending_balance = self._get_wallet_balances(selected_address)
+            # 残高・UIは選択ウォレットのキャッシュのみ参照し、即時更新（スキャンなし）
+            confirmed_balance, pending_balance = self._get_cached_wallet_balances(selected_address)
             # サイドバー該当項目のみ更新
             if 'sidebar_wallets_list' in self.refs and self.refs['sidebar_wallets_list'].current:
                 sidebar_list = self.refs['sidebar_wallets_list'].current
@@ -972,7 +1022,7 @@ class WalletPage:
                         self._update_sidebar_wallet_display(control, confirmed_balance, pending_balance)
                         break
             # ウォレットカードも同じ値で更新
-            self._update_balance_display_ui(confirmed_balance, pending_balance, selected_address)
+            self.update_balance_card(confirmed_balance, pending_balance)
 
             # バックグラウンドで選択状態のみ保存（スキャンはしない）
             def background_operations():
@@ -1147,12 +1197,20 @@ class WalletPage:
             ref=self.refs['sync_banner'],
             content=ft.Row(
                 [
-                    ft.ProgressRing(width=16, height=16, stroke_width=3, color="#dc3545"),
                     ft.Text(
                         "Syncing...",
                         ref=self.refs['sync_text'],
                         size=12,
                         color="#f8d7da",
+                    ),
+                    ft.Container(
+                        content=ft.ProgressBar(
+                            ref=self.refs['sync_progress'],
+                            value=None,
+                            color="#dc3545",
+                            bgcolor="#5c2e2e",
+                        ),
+                        expand=True,
                     ),
                 ],
                 spacing=8,
@@ -1165,10 +1223,20 @@ class WalletPage:
             visible=False,
         )
 
-    def show_sync_status(self, text="Syncing..."):
+    def show_sync_status(self, text="Syncing...", progress: float = None):
         try:
             if 'sync_text' in self.refs and self.refs['sync_text'].current:
-                self.refs['sync_text'].current.value = text
+                if progress is None:
+                    self.refs['sync_text'].current.value = text
+                else:
+                    pct = max(0.0, min(100.0, float(progress)))
+                    self.refs['sync_text'].current.value = f"{text} ({pct:.0f}%)"
+            if 'sync_progress' in self.refs and self.refs['sync_progress'].current:
+                if progress is None:
+                    self.refs['sync_progress'].current.value = None
+                else:
+                    pct = max(0.0, min(100.0, float(progress)))
+                    self.refs['sync_progress'].current.value = pct / 100.0
             if 'sync_banner' in self.refs and self.refs['sync_banner'].current:
                 self.refs['sync_banner'].current.visible = True
             if hasattr(self.app, 'page') and self.app.page:
@@ -1178,6 +1246,8 @@ class WalletPage:
 
     def hide_sync_status(self):
         try:
+            if 'sync_progress' in self.refs and self.refs['sync_progress'].current:
+                self.refs['sync_progress'].current.value = None
             if 'sync_banner' in self.refs and self.refs['sync_banner'].current:
                 self.refs['sync_banner'].current.visible = False
             if hasattr(self.app, 'page') and self.app.page:
@@ -1323,7 +1393,7 @@ class WalletPage:
         except Exception as e:
             print(f"Error checking transaction involvement: {e}")
             return False
-    def refresh_transaction_history(self, force_scan: bool = False):
+    def refresh_transaction_history(self, force_scan: bool = False, cache_only: bool = False):
         """Load and display transaction history for CURRENT wallet only"""
         def load_transactions():
             overlay_was_visible = bool(getattr(getattr(self, "loading_overlay", None), "visible", False))
@@ -1342,76 +1412,64 @@ class WalletPage:
                         self.app.page.run_thread(show_no_wallet)
                     return
 
-                if not overlay_was_visible:
+                if not overlay_was_visible and not cache_only:
                     self._begin_loading_hold("Scanning Transactions...")
                 
                 print(f"\n=== LOADING TRANSACTIONS FOR {current_address[:12]}... ===")
                 
-                # Try to get transactions from various sources
+                # Try to get transactions from lunalib cache first (no storage/DB)
                 all_transactions = []
-                
-                # Method 1: Try storage-backed history (most reliable, persistent)
-                if hasattr(self.app, 'get_wallet_transactions'):
-                    try:
-                        all_transactions = self.app.get_wallet_transactions(current_address)
-                        if all_transactions:
-                            print(f"DEBUG: Loaded {len(all_transactions)} transactions from storage")
-                    except Exception as e:
-                        print(f"DEBUG: Error loading from storage: {e}")
-
-                # Method 2: Try database (legacy)
-                if not all_transactions and hasattr(self.app, 'database'):
-                    try:
-                        # IMPORTANT: Try get_all_transactions FIRST because get_wallet_transactions
-                        # has a 100-transaction limit in lunalib. Always prefer get_all_transactions.
-                        db_methods = ['get_all_transactions', 'get_transactions', 'get_wallet_transactions']
-                        for method in db_methods:
-                            if hasattr(self.app.database, method):
-                                try:
-                                    if method == 'get_all_transactions':
-                                        all_txs = getattr(self.app.database, method)()
-                                        print(f"DEBUG: Database returned {len(all_txs)} total transactions (NO LIMIT)")
-
-                                        # Defer filtering to unified wallet-involvement check
-                                        all_transactions = all_txs
-                                        if all_transactions:
-                                            break
-                                    else:
-                                        # These methods should return filtered transactions
-                                        all_transactions = getattr(self.app.database, method)(current_address)
-                                        if all_transactions:
-                                            print(f"DEBUG: Loaded {len(all_transactions)} transactions via {method}")
-                                            break
-                                except Exception as e:
-                                    print(f"DEBUG: Error with database method {method}: {e}")
-                                    continue
-                    except Exception as e:
-                        print(f"DEBUG: Error loading from database: {e}")
-                
-                # Method 3: Try blockchain manager (for confirmed transactions only)
-                should_scan = True
                 try:
-                    if not force_scan and hasattr(self.app, 'initial_scan_complete') and self.app.initial_scan_complete:
-                        last_ui_scan = getattr(self.app, 'last_ui_scan_time', 0)
-                        interval = getattr(self.app, 'ui_scan_interval_seconds', 300)
-                        if (time.time() - last_ui_scan) < interval:
-                            should_scan = False
-                            print(f"DEBUG: Skipping UI blockchain scan (cooldown {interval}s)")
-                except Exception as scan_gate_err:
-                    print(f"DEBUG: UI scan gate error: {scan_gate_err}")
+                    if hasattr(self.app, 'get_cached_transactions_for_address'):
+                        all_transactions = self.app.get_cached_transactions_for_address(current_address)
+                        print(f"DEBUG: Lunalib cache-only returned {len(all_transactions)} transactions")
+                except Exception as cache_err:
+                    print(f"DEBUG: Lunalib cache-only error: {cache_err}")
 
-                if not all_transactions and should_scan and hasattr(self.app, 'blockchain_manager'):
+                # Method 2: Try blockchain manager scan against cache if needed
+                if not cache_only:
+                    should_scan = True
                     try:
-                        all_transactions = self.app.blockchain_manager.scan_transactions_for_address(current_address)
-                        print(f"DEBUG: Found {len(all_transactions)} transactions from blockchain manager")
+                        if not force_scan and hasattr(self.app, 'initial_scan_complete') and self.app.initial_scan_complete:
+                            last_ui_scan = getattr(self.app, 'last_ui_scan_time', 0)
+                            interval = getattr(self.app, 'ui_scan_interval_seconds', 300)
+                            if (time.time() - last_ui_scan) < interval:
+                                should_scan = False
+                                print(f"DEBUG: Skipping UI blockchain scan (cooldown {interval}s)")
+                    except Exception as scan_gate_err:
+                        print(f"DEBUG: UI scan gate error: {scan_gate_err}")
+
+                    if (force_scan or not all_transactions) and should_scan and hasattr(self.app, 'blockchain_manager'):
                         try:
-                            self.app.last_ui_scan_time = time.time()
-                        except Exception:
-                            pass
-                    except Exception as e:
-                        print(f"DEBUG: Error loading from blockchain: {e}")
+                            end_height = None
+                            try:
+                                if hasattr(self.app.blockchain_manager, 'cache'):
+                                    cached_height = self.app.blockchain_manager.cache.get_highest_cached_height()
+                                    if isinstance(cached_height, int) and cached_height >= 0:
+                                        end_height = cached_height
+                                        print(f"DEBUG: Using lunalib cache height {cached_height} for scan")
+                            except Exception as cache_err:
+                                print(f"DEBUG: Cache height read error: {cache_err}")
+
+                            if end_height is not None:
+                                all_transactions = self.app.blockchain_manager.scan_transactions_for_address(
+                                    current_address,
+                                    start_height=0,
+                                    end_height=end_height
+                                )
+                            else:
+                                all_transactions = self.app.blockchain_manager.scan_transactions_for_address(current_address)
+                            print(f"DEBUG: Found {len(all_transactions)} transactions from blockchain manager")
+                            try:
+                                self.app.last_ui_scan_time = time.time()
+                            except Exception:
+                                pass
+                        except Exception as e:
+                            print(f"DEBUG: Error loading from blockchain: {e}")
+                else:
+                    print("DEBUG: Cache-only mode: skipping blockchain scan")
                 
-                print(f"DEBUG: Total transactions from database: {len(all_transactions)}")
+                print(f"DEBUG: Total transactions from lunalib: {len(all_transactions)}")
                 
                 # Filter transactions specifically for the current wallet
                 filtered_transactions = []
@@ -1422,12 +1480,38 @@ class WalletPage:
                 print(f"DEBUG: After filtering database: {len(filtered_transactions)} transactions")
                 
                 # IMPORTANT: Also load pending transactions from mempool that aren't in the database yet
-                if hasattr(self.app, 'get_mempool_manager'):
-                    try:
-                        print(f"DEBUG: Loading pending transactions from mempool for {current_address[:12]}...")
-                        mempool_mgr = self.app.get_mempool_manager()
-                        if mempool_mgr:
-                            pending_txs = mempool_mgr.get_pending_transactions(current_address)
+                if not cache_only:
+                    if hasattr(self.app, 'get_mempool_manager'):
+                        try:
+                            print(f"DEBUG: Loading pending transactions from mempool for {current_address[:12]}...")
+                            mempool_mgr = self.app.get_mempool_manager()
+                            if mempool_mgr:
+                                pending_txs = mempool_mgr.get_pending_transactions(current_address)
+                                print(f"DEBUG: mempool_manager.get_pending_transactions() returned: {type(pending_txs)}")
+                                if pending_txs:
+                                    print(f"DEBUG: Found {len(pending_txs)} pending transactions in mempool")
+                                    for tx in pending_txs:
+                                        # Add pending status if not already present
+                                        if 'status' not in tx or tx.get('status') != 'pending':
+                                            tx['status'] = 'pending'
+                                        # Check if this transaction is already in our list (avoid duplicates)
+                                        tx_hash = tx.get('hash', '')
+                                        already_exists = any(t.get('hash') == tx_hash for t in filtered_transactions)
+                                        if not already_exists:
+                                            filtered_transactions.append(tx)
+                                            print(f"  Added pending: {tx_hash[:8]}... (status=pending)")
+                                else:
+                                    print(f"DEBUG: No pending transactions in mempool (returned: {pending_txs})")
+                            else:
+                                print(f"DEBUG: mempool_manager is None")
+                        except Exception as e:
+                            print(f"DEBUG: Error loading pending transactions: {e}")
+                            import traceback
+                            traceback.print_exc()
+                    elif hasattr(self.app, 'mempool_manager') and self.app.mempool_manager:
+                        try:
+                            print(f"DEBUG: Loading pending transactions from mempool for {current_address[:12]}...")
+                            pending_txs = self.app.mempool_manager.get_pending_transactions(current_address)
                             print(f"DEBUG: mempool_manager.get_pending_transactions() returned: {type(pending_txs)}")
                             if pending_txs:
                                 print(f"DEBUG: Found {len(pending_txs)} pending transactions in mempool")
@@ -1443,69 +1527,60 @@ class WalletPage:
                                         print(f"  Added pending: {tx_hash[:8]}... (status=pending)")
                             else:
                                 print(f"DEBUG: No pending transactions in mempool (returned: {pending_txs})")
-                        else:
-                            print(f"DEBUG: mempool_manager is None")
-                    except Exception as e:
-                        print(f"DEBUG: Error loading pending transactions: {e}")
-                        import traceback
-                        traceback.print_exc()
-                elif hasattr(self.app, 'mempool_manager') and self.app.mempool_manager:
-                    try:
-                        print(f"DEBUG: Loading pending transactions from mempool for {current_address[:12]}...")
-                        pending_txs = self.app.mempool_manager.get_pending_transactions(current_address)
-                        print(f"DEBUG: mempool_manager.get_pending_transactions() returned: {type(pending_txs)}")
-                        if pending_txs:
-                            print(f"DEBUG: Found {len(pending_txs)} pending transactions in mempool")
-                            for tx in pending_txs:
-                                # Add pending status if not already present
-                                if 'status' not in tx or tx.get('status') != 'pending':
-                                    tx['status'] = 'pending'
-                                # Check if this transaction is already in our list (avoid duplicates)
-                                tx_hash = tx.get('hash', '')
-                                already_exists = any(t.get('hash') == tx_hash for t in filtered_transactions)
-                                if not already_exists:
-                                    filtered_transactions.append(tx)
-                                    print(f"  Added pending: {tx_hash[:8]}... (status=pending)")
-                        else:
-                            print(f"DEBUG: No pending transactions in mempool (returned: {pending_txs})")
-                    except Exception as e:
-                        print(f"DEBUG: Error loading pending transactions: {e}")
-                        import traceback
-                        traceback.print_exc()
+                        except Exception as e:
+                            print(f"DEBUG: Error loading pending transactions: {e}")
+                            import traceback
+                            traceback.print_exc()
+                    else:
+                        print(f"DEBUG: mempool_manager not available")
                 else:
-                    print(f"DEBUG: mempool_manager not available")
+                    print("DEBUG: Cache-only mode: skipping mempool")
                 
                 print(f"DEBUG: Total transactions (confirmed + pending): {len(filtered_transactions)}")
 
                 # Mark low-confirmation transactions as pending in UI
-                try:
-                    latest_height = None
-                    if hasattr(self.app, 'blockchain_manager') and self.app.blockchain_manager:
-                        if hasattr(self.app.blockchain_manager, 'get_latest_block'):
-                            block = self.app.blockchain_manager.get_latest_block()
-                            if block and isinstance(block, dict):
-                                latest_height = int(block.get('index', 0) or 0)
-                        if latest_height is None and hasattr(self.app.blockchain_manager, 'get_blockchain_height'):
-                            latest_height = int(self.app.blockchain_manager.get_blockchain_height() or 0)
-                    if latest_height is not None:
-                        for tx in filtered_transactions:
-                            block_height = tx.get('block_height', None)
-                            if block_height is None:
-                                continue
-                            try:
-                                confirmations = max(0, int(latest_height) - int(block_height) + 1)
-                                if confirmations < 6:
-                                    tx['status'] = 'pending'
-                            except Exception:
-                                continue
-                except Exception as e:
-                    print(f"DEBUG: Error marking low-confirmation txs: {e}")
+                if not cache_only:
+                    try:
+                        latest_height = None
+                        if hasattr(self.app, 'blockchain_manager') and self.app.blockchain_manager:
+                            if hasattr(self.app.blockchain_manager, 'get_latest_block'):
+                                block = self.app.blockchain_manager.get_latest_block()
+                                if block and isinstance(block, dict):
+                                    latest_height = int(block.get('index', 0) or 0)
+                            if latest_height is None and hasattr(self.app.blockchain_manager, 'get_blockchain_height'):
+                                latest_height = int(self.app.blockchain_manager.get_blockchain_height() or 0)
+                        if latest_height is not None:
+                            for tx in filtered_transactions:
+                                block_height = tx.get('block_height', None)
+                                if block_height is None:
+                                    continue
+                                try:
+                                    confirmations = max(0, int(latest_height) - int(block_height) + 1)
+                                    if confirmations < 6:
+                                        tx['status'] = 'pending'
+                                except Exception:
+                                    continue
+                    except Exception as e:
+                        print(f"DEBUG: Error marking low-confirmation txs: {e}")
                 
                 # Sort by timestamp (newest first) and show ALL transactions (no limit)
                 filtered_transactions.sort(key=lambda x: x.get('timestamp', 0), reverse=True)
                 
-                # Note: Balance recalculation is now done in _on_wallet_select() instead
-                # to avoid duplicate sidebar refreshes during wallet selection
+                # Update balances using the same cache-backed data
+                try:
+                    if cache_only:
+                        confirmed_balance, pending_balance = self._get_cached_wallet_balances(current_address)
+                        self.update_balance_card(confirmed_balance, pending_balance)
+                    else:
+                        confirmed_balance, pending_balance = self._get_wallet_balances(current_address, use_lunalib_cache=True)
+                        if hasattr(self.app.wallet_core, 'wallets') and current_address in self.app.wallet_core.wallets:
+                            self.app.wallet_core.wallets[current_address]['available_balance'] = confirmed_balance
+                            self.app.wallet_core.wallets[current_address]['balance'] = confirmed_balance + pending_balance
+                            self.app.wallet_core.wallets[current_address]['pending_balance'] = pending_balance
+                            self.app.wallet_core.wallets[current_address]['confirmed_balance'] = confirmed_balance
+                        self._update_balance_display_ui(confirmed_balance, pending_balance, current_address)
+                except Exception as bal_err:
+                    print(f"DEBUG: Balance update failed in refresh_transaction_history: {bal_err}")
                 
                 def update_ui():
                     self.transaction_list_view.controls.clear()
@@ -1531,7 +1606,7 @@ class WalletPage:
             finally:
                 if not overlay_was_visible and hasattr(self.app, 'page'):
                     self.app.page.run_thread(self.hide_loading)
-                if not overlay_was_visible:
+                if not overlay_was_visible and not cache_only:
                     self._end_loading_hold()
         
         threading.Thread(target=load_transactions, daemon=True).start()
@@ -2052,12 +2127,19 @@ class WalletPage:
                         except:
                             stats.append(self.create_stat_item("❓", "Unknown", "Network"))
 
-                        # Peers数（lunalib.core.p2p経由）
+                        # P2P status + Peers
                         try:
-                            if hasattr(self.app, 'blockchain_manager'):
+                            if hasattr(self.app, 'blockchain_service') and hasattr(self.app.blockchain_service, 'get_p2p_status'):
+                                p2p = self.app.blockchain_service.get_p2p_status()
+                                status_text = "On" if p2p.get("running") else "Off"
+                                stats.append(self.create_stat_item("🧭", status_text, "P2P"))
+                                peer_count = p2p.get("peers", "?")
+                                stats.append(self.create_stat_item("🌐", str(peer_count), "Peers"))
+                            elif hasattr(self.app, 'blockchain_manager'):
                                 peer_count = self.app.blockchain_manager.get_peer_count()
                                 stats.append(self.create_stat_item("🌐", str(peer_count), "Peers"))
                         except Exception as e:
+                            stats.append(self.create_stat_item("🧭", "?", "P2P"))
                             stats.append(self.create_stat_item("🌐", "?", "Peers"))
                         
                         # Wallet count
@@ -2285,33 +2367,18 @@ class WalletPage:
                         except Exception as e:
                             print(f"DEBUG: Balance recalculation failed in update_wallet_data: {e}")
 
-                        # Use cached balance from wallet_info (don't hardcode to 0)
-                        balance = wallet_info.get('balance', wallet_info.get('confirmed_balance', None))
-                        pending_balance = wallet_info.get('pending_balance', 0)
-
-
-
-                        address = wallet_info.get('address', 'No wallet')
-                        label = wallet_info.get('label', 'Wallet')
-                        
-                        # Display balance or placeholder if not yet calculated
-                        if balance is not None:
-                            self.balance_text.value = f"{balance:.6f} LKC"
-                            self.balance_text.color = "#ffffff"
+                        # Keep display consistent: show confirmed as main balance, pending separately
+                        current_address = wallet_info.get('address') or getattr(self.app.wallet_core, 'current_wallet_address', None)
+                        if current_address:
+                            confirmed_balance = wallet_info.get('confirmed_balance', None)
+                            pending_balance = wallet_info.get('pending_balance', None)
+                            self._update_balance_display_ui(confirmed_balance, pending_balance, current_address)
                         else:
+                            # No address, show placeholder
                             self.balance_text.value = "--.-- LKC"
                             self.balance_text.color = "#999999"
-                        self.balance_text.update()
-                        
-                        if pending_balance !=  0:
-                            sign = "+" if pending_balance > 0 else ""
-                            self.pending_balance_text.value = f"Pending Balance: {sign}{pending_balance:.6f}"
-                        else:
                             self.pending_balance_text.value = ""
-                        self.pending_balance_text.update()
-                        
-                        self.address_text.value = f"{label}: {address[:12]}...{address[-6:]}" if len(address) > 20 else address
-                        self.address_text.update()
+                            self.address_text.value = "No wallet"
                     else:
                         # No wallet info yet, show placeholder
                         self.balance_text.value = "--.-- LKC"

@@ -1,6 +1,5 @@
 import flet as ft
 from utils import calculate_wallet_balances
-import requests
 import threading
 
 class SendPage:
@@ -184,6 +183,42 @@ class SendPage:
             error_msg = f"Wallet preparation error: {str(e)}"
             print(f"DEBUG: {error_msg}")
             return False, error_msg
+
+    def _should_try_direct_broadcast(self, message) -> bool:
+        text = str(message or "")
+        return (
+            "Failed to decode JSON object" in text
+            or "invalid start byte" in text
+            or "utf-8" in text
+        )
+
+    def _broadcast_transaction_direct(self, transaction: dict, mempool_url: str):
+        try:
+            import httpx
+            headers = {
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "Accept-Encoding": "identity",
+            }
+            response = httpx.post(mempool_url, json=transaction, headers=headers, timeout=30.0)
+            status = response.status_code
+            try:
+                payload = response.json()
+            except Exception:
+                payload = {"raw": response.text}
+
+            if status >= 400:
+                return False, f"HTTP {status}: {payload}"
+
+            if isinstance(payload, dict):
+                if payload.get("success") is True:
+                    return True, payload.get("message") or "Broadcasted"
+                if payload.get("success") is False:
+                    return False, payload.get("error") or str(payload)
+
+            return True, str(payload)
+        except Exception as e:
+            return False, f"Direct broadcast error: {e}"
     def get_available_balance(self):
         """Get current wallet available balance from transactions (bypassing LunaLib WalletManager)"""
         try:
@@ -334,66 +369,6 @@ class SendPage:
         print("=" * 50)
         return True
     
-    def _test_endpoint_connectivity(self, endpoint):
-        """Test if mempool endpoint is reachable and responsive"""
-        from app.core import _global_trace
-        try:
-            _global_trace(f"ENDPOINT TEST - Testing: {endpoint}", "SEND")
-            
-            # Test simple GET request to endpoint
-            response = requests.head(endpoint, timeout=5, verify=True)
-            _global_trace(f"ENDPOINT TEST - Status Code: {response.status_code}", "SEND")
-            
-            if response.status_code == 200 or response.status_code == 405:  # 405 = Method Not Allowed (OK for HEAD)
-                _global_trace(f"ENDPOINT TEST - Endpoint is reachable", "SEND")
-                return True
-            else:
-                _global_trace(f"ENDPOINT TEST - Unexpected status: {response.status_code}", "SEND_ERROR")
-                return False
-        except Exception as conn_err:
-            _global_trace(f"ENDPOINT TEST - Connection error: {str(conn_err)}", "SEND_ERROR")
-            import traceback
-            _global_trace(f"ENDPOINT TEST - Traceback: {traceback.format_exc()[:300]}", "SEND_ERROR")
-            return False
-    
-    def _test_direct_http_request(self, endpoint, tx_data):
-        """Test sending transaction data directly via HTTP to the correct mempool endpoint"""
-        from app.core import _global_trace
-        import json
-        try:
-            # Use the correct mempool/add endpoint
-            url = f"{endpoint}/mempool/add"
-            _global_trace(f"DIRECT HTTP TEST - POST to {url}", "SEND")
-            
-            headers = {'Content-Type': 'application/json'}
-            
-            # Send transaction to mempool
-            response = requests.post(
-                url,
-                json=tx_data,
-                headers=headers,
-                timeout=10,
-                verify=True
-            )
-            _global_trace(f"DIRECT HTTP TEST - Status: {response.status_code}", "SEND")
-            
-            # Check if response is JSON
-            if response.headers.get('content-type', '').startswith('application/json'):
-                try:
-                    resp_json = response.json()
-                    _global_trace(f"DIRECT HTTP TEST - Response: {json.dumps(resp_json)[:200]}", "SEND")
-                    return True, response.status_code, response.text
-                except:
-                    _global_trace(f"DIRECT HTTP TEST - Could not parse JSON: {response.text[:100]}", "SEND_ERROR")
-                    return False, response.status_code, response.text
-            else:
-                _global_trace(f"DIRECT HTTP TEST - Non-JSON response (type: {response.headers.get('content-type')})", "SEND_ERROR")
-                return False, response.status_code, response.text
-        except Exception as req_err:
-            _global_trace(f"DIRECT HTTP TEST - Failed: {str(req_err)}", "SEND_ERROR")
-            import traceback
-            _global_trace(f"DIRECT HTTP TEST - Traceback: {traceback.format_exc()[:400]}", "SEND_ERROR")
-            return False, None, str(req_err)
     
     def send_transaction(self, e):
         """Send transaction using the updated LunaWallet system"""
@@ -486,9 +461,6 @@ class SendPage:
                 mempool_url = "https://bank.linglin.art/mempool/add"
                 _global_trace(f"NETWORK - Using base endpoint: {network_endpoints[0]}, Mempool: {mempool_url}, Environment: {'BUILD' if hasattr(self.app, 'is_build_version') else 'DEV'}", "SEND")
                 
-                # Test endpoint connectivity before creating transaction
-                self._test_endpoint_connectivity(network_endpoints[0])
-                
                 tx_manager = TransactionManager(network_endpoints=network_endpoints)
                 
                 # Create transaction
@@ -534,60 +506,22 @@ class SendPage:
                 print("[SEND] Transaction validated")
                 _global_trace(f"VALIDATION OK - TX: {tx_hash}, Recipient: {recipient}", "SEND")
                 
-                # DIAGNOSTIC: Test direct HTTP call to verify mempool endpoint works
-                _global_trace(f"DIAGNOSTIC - Testing direct HTTP to mempool endpoint", "SEND")
-                direct_ok, direct_status, direct_resp = self._test_direct_http_request("https://bank.linglin.art", transaction)
-                _global_trace(f"DIAGNOSTIC - Direct HTTP Result: OK={direct_ok}, Status={direct_status}", "SEND")
-                
-                # Broadcast transaction - try lunalib first, fallback to direct HTTP if it fails
+                # Broadcast transaction via lunalib only
                 print("[SEND] Broadcasting transaction...")
                 try:
                     # Log transaction inputs for mempool debugging
                     _global_trace(f"PRE-BROADCAST - Wallet Balance Available: {available_balance}, TX Amount + Fee: {amount + tx_fee}", "SEND")
                     
-                    # Try using TransactionManager's send_transaction first
+                    # Try using TransactionManager's send_transaction
                     _global_trace(f"BROADCAST - Attempting via TransactionManager", "SEND")
                     success, broadcast_message = tx_manager.send_transaction(transaction)
                     print(f"[SEND] TransactionManager result: success={success}, message={broadcast_message}")
-                    
-                    # If TransactionManager fails, fall back to direct HTTP
-                    if not success:
-                        _global_trace(f"BROADCAST - TransactionManager failed, falling back to direct HTTP", "SEND")
-                        print("[SEND] Falling back to direct HTTP POST...")
-                        
-                        import json as json_module
-                        url = "https://bank.linglin.art/mempool/add"
-                        headers = {'Content-Type': 'application/json'}
-                        
-                        _global_trace(f"BROADCAST - Direct HTTP POST to {url}", "SEND")
-                        response = requests.post(
-                            url,
-                            json=transaction,
-                            headers=headers,
-                            timeout=10,
-                            verify=True
-                        )
-                        
-                        _global_trace(f"BROADCAST - Direct HTTP Response Status: {response.status_code}", "SEND")
-                        
-                        # Check if successful
-                        if response.status_code == 201 or response.status_code == 200:
-                            try:
-                                resp_data = response.json()
-                                if resp_data.get('success'):
-                                    success = True
-                                    broadcast_message = f"Transaction added to mempool: {resp_data.get('transaction_hash', tx_hash)[:20]}"
-                                    _global_trace(f"BROADCAST - Direct HTTP Success: {json_module.dumps(resp_data)[:200]}", "SEND")
-                                else:
-                                    broadcast_message = resp_data.get('message', 'Unknown error')
-                            except:
-                                broadcast_message = response.text
-                        else:
-                            try:
-                                resp_data = response.json()
-                                broadcast_message = resp_data.get('error', response.text)
-                            except:
-                                broadcast_message = f"HTTP {response.status_code}: {response.text[:100]}"
+
+                    if not success and self._should_try_direct_broadcast(broadcast_message):
+                        _global_trace("BROADCAST - Decode error detected, trying direct POST", "SEND")
+                        success, direct_message = self._broadcast_transaction_direct(transaction, mempool_url)
+                        broadcast_message = direct_message
+                        print(f"[SEND] Direct broadcast result: success={success}, message={broadcast_message}")
                     
                     print(f"[SEND] Final broadcast result: success={success}, message={broadcast_message}")
                     

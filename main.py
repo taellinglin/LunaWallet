@@ -612,7 +612,7 @@ if __name__ == "__main__":
             print(f"DEBUG: Wallet load attempt failed: {e}")
             return False
 
-    def show_wallet_page(self):
+    def show_wallet_page(self, reuse: bool = False):
         """Display the main wallet page or wallet index for mobile."""
         try:
             print("DEBUG: show_wallet_page called")
@@ -627,6 +627,18 @@ if __name__ == "__main__":
                         f.write(msg + "\n")
                 except Exception:
                     pass
+
+            # Fast path: reuse existing wallet page view when available
+            if reuse and hasattr(self, "wallet_page_view") and self.wallet_page_view:
+                self.current_page = self.wallet_page_view
+                if hasattr(self, 'page') and self.page:
+                    try:
+                        self.page.clean()
+                    except Exception:
+                        self.page.controls.clear()
+                    self.page.add(self.current_page)
+                    self.page.update()
+                return
 
             self.show_snackbar("Loading wallet page...", "info")
             _trace("[WALLET_PAGE] begin create")
@@ -667,6 +679,7 @@ if __name__ == "__main__":
             self.wallet_page = wallet_page
             try:
                 self.current_page = wallet_page.create()
+                self.wallet_page_view = self.current_page
                 _trace("[WALLET_PAGE] create succeeded")
                 self.show_snackbar("Wallet page created", "success")
             except Exception as create_err:
@@ -768,7 +781,7 @@ if __name__ == "__main__":
         try:
             export_key_page = ExportKeyPage(
                 self,
-                on_back=self.show_wallet_page
+                on_back=lambda: self.show_wallet_page(reuse=True)
             )
             self.current_page = export_key_page.create()
             self.page.controls.clear()
@@ -1644,40 +1657,23 @@ if __name__ == "__main__":
                 original_txs = original_scan(address, start_height, end_height)
                 print(f"Original scan found: {len(original_txs)} transactions")
                 
-                # Now do a direct query to get all transactions
+                # Get blocks and scan manually (lunalib only)
                 all_txs = []
+                print("Scanning blocks manually via lunalib...")
                 
-                # Method 1: Try direct API endpoint for transactions
-                try:
-                    response = requests.get(
-                        f"https://bank.linglin.art/transactions/address/{address}",
-                        timeout=30
-                    )
-                    if response.status_code == 200:
-                        api_txs = response.json()
-                        if isinstance(api_txs, list):
-                            all_txs.extend(api_txs)
-                            print(f"Direct API found: {len(api_txs)} transactions")
-                except:
-                    pass
-                
-                # Method 2: Get blocks and scan manually
-                if len(all_txs) == 0:
-                    print("No direct API results, scanning blocks manually...")
+                # Get blockchain height
+                latest_block = self.blockchain_manager.get_latest_block()
+                if latest_block:
+                    latest_height = latest_block.get('index', 0)
+                    print(f"Latest block: #{latest_height}")
                     
-                    # Get blockchain height
-                    latest_block = self.blockchain_manager.get_latest_block()
-                    if latest_block:
-                        latest_height = latest_block.get('index', 0)
-                        print(f"Latest block: #{latest_height}")
-                        
-                        # Scan recent blocks (last 1000)
-                        start = max(0, latest_height - 1000)
-                        for height in range(start, latest_height + 1):
-                            block = self.blockchain_manager.get_block(height)
-                            if block:
-                                txs = self.enhanced_find_txs_in_block(block, address)
-                                all_txs.extend(txs)
+                    # Scan recent blocks (last 1000)
+                    start = max(0, latest_height - 1000)
+                    for height in range(start, latest_height + 1):
+                        block = self.blockchain_manager.get_block(height)
+                        if block:
+                            txs = self.enhanced_find_txs_in_block(block, address)
+                            all_txs.extend(txs)
                 
                 # Process all transactions to add direction info
                 processed_txs = []
