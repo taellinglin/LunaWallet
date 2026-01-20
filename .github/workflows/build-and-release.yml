@@ -176,7 +176,6 @@ jobs:
   release:
     needs: [build-windows, build-macos, build-linux]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
     steps:
       - uses: actions/checkout@v4
       - name: Export VERSION
@@ -204,13 +203,17 @@ jobs:
           timeout_minutes: 10
           max_attempts: 3
           retry_on: error
-          working_directory: ${{ github.workspace }}
           command: |
             set -euo pipefail
-            tag="${GITHUB_REF_NAME}"
+            cd "$GITHUB_WORKSPACE"
+            if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+              tag="${GITHUB_REF_NAME}"
+            else
+              tag="v${VERSION}"
+            fi
             release_name="LunaWallet-v${VERSION}"
             if ! gh release view "$tag" >/dev/null 2>&1; then
-              gh release create "$tag" --title "$release_name" --notes "Automated release"
+              gh release create "$tag" --title "$release_name" --notes "Automated release" --target "$GITHUB_SHA"
             fi
             gh release upload "$tag" build/*.zip --clobber
         env:
