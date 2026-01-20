@@ -203,9 +203,23 @@ jobs:
           timeout_minutes: 10
           max_attempts: 3
           retry_on: error
+          shell: bash
           command: |
             set -euo pipefail
             cd "$GITHUB_WORKSPACE"
+            if [ -z "${VERSION:-}" ]; then
+              VERSION=$(python - <<'PY'
+import re
+p = open('version_info.txt', encoding='utf-8').read()
+m = re.search(r"ProductVersion', u'([^']+)'", p)
+v = m.group(1) if m else '0.0.0'
+parts = v.split('.')
+if len(parts) == 4 and parts[-1] == '0':
+    v = '.'.join(parts[:-1])
+print(v)
+PY
+)
+            fi
             if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
               tag="${GITHUB_REF_NAME}"
             else
