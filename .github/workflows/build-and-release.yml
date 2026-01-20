@@ -41,16 +41,25 @@ jobs:
         shell: cmd
       - name: Build Windows binary
         run: flet build windows
+      - name: Set VERSION
+        run: |
+          $content = Get-Content "version_info.txt" -Raw
+          $match = [regex]::Match($content, "ProductVersion', u'([^']+)'")
+          $version = if ($match.Success) { $match.Groups[1].Value } else { "0.0.0" }
+          $parts = $version.Split('.')
+          if ($parts.Length -eq 4 -and $parts[3] -eq '0') { $version = "$($parts[0]).$($parts[1]).$($parts[2])" }
+          "VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append
+        shell: powershell
       - name: Package Windows build
         run: |
-          if (Test-Path "build\\windows.zip") { Remove-Item "build\\windows.zip" }
-          Compress-Archive -Path "build\\windows" -DestinationPath "build\\windows.zip"
+          if (Test-Path "build\\LunaWallet-$env:VERSION-Windows.zip") { Remove-Item "build\\LunaWallet-$env:VERSION-Windows.zip" }
+          Compress-Archive -Path "build\\windows" -DestinationPath "build\\LunaWallet-$env:VERSION-Windows.zip"
         shell: powershell
       - name: Upload Windows Artifact
         uses: actions/upload-artifact@v4
         with:
           name: windows
-          path: build/LunaWallet-1.0.0-Windows.zip
+          path: build/LunaWallet-${{ env.VERSION }}-Windows.zip
 
   build-macos:
     runs-on: macos-latest
@@ -71,15 +80,52 @@ jobs:
         run: echo "$HOME/flutter/bin" >> $GITHUB_PATH
       - name: Build macOS binary
         run: flet build macos
+      - name: Set VERSION
+        run: |
+          python - <<'PY'
+          import re
+          p = open('version_info.txt', encoding='utf-8').read()
+          m = re.search(r"ProductVersion', u'([^']+)'", p)
+          v = m.group(1) if m else '0.0.0'
+          parts = v.split('.')
+          if len(parts) == 4 and parts[-1] == '0':
+              v = '.'.join(parts[:-1])
+          print(f"VERSION={v}")
+          PY
+        shell: bash
+      - name: Export VERSION
+        run: |
+          echo "$(python - <<'PY'
+          import re
+          p = open('version_info.txt', encoding='utf-8').read()
+          m = re.search(r"ProductVersion', u'([^']+)'", p)
+          v = m.group(1) if m else '0.0.0'
+          parts = v.split('.')
+          if len(parts) == 4 and parts[-1] == '0':
+              v = '.'.join(parts[:-1])
+          print(f"VERSION={v}")
+          PY
+          )" >> $GITHUB_ENV
       - name: Package macOS build
         run: |
           cd build
-          zip -r LunaWallet-1.0.0-Macos.zip macos
+          if [ -d "macos/LunaWallet.app" ]; then
+            zip -r "LunaWallet-${VERSION}-Macos.zip" "macos/LunaWallet.app"
+          elif [ -d "macos/Build/Products/Release" ]; then
+            APP_PATH=$(find macos/Build/Products/Release -maxdepth 1 -name "*.app" | head -n 1)
+            if [ -n "$APP_PATH" ]; then
+              zip -r "LunaWallet-${VERSION}-Macos.zip" "$APP_PATH"
+            else
+              zip -r "LunaWallet-${VERSION}-Macos.zip" macos
+            fi
+          else
+            zip -r "LunaWallet-${VERSION}-Macos.zip" macos
+          fi
       - name: Upload macOS Artifact
         uses: actions/upload-artifact@v4
         with:
           name: macos
-          path: build/LunaWallet-1.0.0-Macos.zip
+          path: build/LunaWallet-${{ env.VERSION }}-Macos.zip
 
   build-linux:
     runs-on: ubuntu-latest
@@ -104,21 +150,48 @@ jobs:
         run: flutter --version
       - name: Build Linux binary
         run: flet build linux
+      - name: Export VERSION
+        run: |
+          python - <<'PY'
+          import re
+          p = open('version_info.txt', encoding='utf-8').read()
+          m = re.search(r"ProductVersion', u'([^']+)'", p)
+          v = m.group(1) if m else '0.0.0'
+          parts = v.split('.')
+          if len(parts) == 4 and parts[-1] == '0':
+              v = '.'.join(parts[:-1])
+          print(f"VERSION={v}")
+          PY
+          | tee -a $GITHUB_ENV
       - name: Package Linux build
         run: |
           cd build
-          zip -r linux.zip linux
+          zip -r "LunaWallet-${VERSION}-Linux.zip" linux
       - name: Upload Linux Artifact
         uses: actions/upload-artifact@v4
         with:
           name: linux
-          path: build/LunaWallet-1.0.0-Linux.zip
+          path: build/LunaWallet-${{ env.VERSION }}-Linux.zip
 
   release:
     needs: [build-windows, build-macos, build-linux]
     runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
     steps:
       - uses: actions/checkout@v4
+      - name: Export VERSION
+        run: |
+          python - <<'PY'
+          import re
+          p = open('version_info.txt', encoding='utf-8').read()
+          m = re.search(r"ProductVersion', u'([^']+)'", p)
+          v = m.group(1) if m else '0.0.0'
+          parts = v.split('.')
+          if len(parts) == 4 and parts[-1] == '0':
+              v = '.'.join(parts[:-1])
+          print(f"VERSION={v}")
+          PY
+          | tee -a $GITHUB_ENV
       - uses: actions/download-artifact@v4
         with:
           path: build
@@ -135,7 +208,7 @@ jobs:
           command: |
             set -euo pipefail
             tag="${GITHUB_REF_NAME}"
-            release_name="LunaWallet-${GITHUB_REF_NAME}"
+            release_name="LunaWallet-v${VERSION}"
             if ! gh release view "$tag" >/dev/null 2>&1; then
               gh release create "$tag" --title "$release_name" --notes "Automated release"
             fi
