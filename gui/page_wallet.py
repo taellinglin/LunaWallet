@@ -757,7 +757,13 @@ class WalletPage:
                         confirmations = max(0, int(latest_height) - int(block_height) + 1)
                     except Exception:
                         confirmations = None
-                is_low_confirm = confirmations is not None and confirmations < min_confirmations and latest_height is not None and int(block_height) <= int(latest_height)
+                is_low_confirm = (
+                    (not use_lunalib_cache)
+                    and confirmations is not None
+                    and confirmations < min_confirmations
+                    and latest_height is not None
+                    and int(block_height) <= int(latest_height)
+                )
                 if tx_status in ('pending', 'unconfirmed', 'mempool') or is_low_confirm:
                     # Treat as pending until min confirmations reached
                     tx_from = tx.get('from', tx.get('from_address', '')).lower()
@@ -1504,10 +1510,14 @@ class WalletPage:
                 print(f"DEBUG: Total transactions from lunalib: {len(all_transactions)}")
                 
                 # Filter transactions specifically for the current wallet
-                filtered_transactions = []
-                for tx in all_transactions:
-                    if self._transaction_involves_wallet(tx, current_address):
-                        filtered_transactions.append(tx)
+                if use_wallet_manager:
+                    # WalletStateManager already scopes to the requested address
+                    filtered_transactions = list(all_transactions or [])
+                else:
+                    filtered_transactions = []
+                    for tx in all_transactions:
+                        if self._transaction_involves_wallet(tx, current_address):
+                            filtered_transactions.append(tx)
                 
                 print(f"DEBUG: After filtering database: {len(filtered_transactions)} transactions")
                 

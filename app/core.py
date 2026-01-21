@@ -1809,6 +1809,27 @@ class LunaWalletApp:
                 return
 
             # Create the wallet page with all necessary callbacks
+            try:
+                if hasattr(self, 'wallet_core') and self.wallet_core and hasattr(self.wallet_core, 'wallets'):
+                    wallets_dict = self.wallet_core.wallets if isinstance(self.wallet_core.wallets, dict) else {}
+                    if wallets_dict:
+                        current_addr = getattr(self.wallet_core, 'current_wallet_address', None)
+                        if not current_addr or current_addr not in wallets_dict:
+                            addresses = list(wallets_dict.keys())
+                            idx = getattr(self, 'selected_wallet_index', 0) if isinstance(getattr(self, 'selected_wallet_index', 0), int) else 0
+                            if idx < 0 or idx >= len(addresses):
+                                idx = 0
+                            default_addr = addresses[idx]
+                            if hasattr(self.wallet_core, 'switch_wallet'):
+                                try:
+                                    self.wallet_core.switch_wallet(default_addr)
+                                except Exception:
+                                    self.wallet_core.current_wallet_address = default_addr
+                            else:
+                                self.wallet_core.current_wallet_address = default_addr
+            except Exception as addr_err:
+                print(f"[WALLET_PAGE] default wallet selection failed: {addr_err}")
+
             wallet_page = WalletPage(
                 app=self,
                 on_send=self.on_send_transaction,
@@ -2226,7 +2247,12 @@ class LunaWalletApp:
                         print(f"DEBUG: Blockchain already up to date (height={cached_height})")
                     else:
                         self._update_scan_loading("Syncing Transactions (lunalib)...")
-                        self._sync_wallets_with_lunalib()
+                        sync_ok = self._sync_wallets_with_lunalib()
+                        if sync_ok:
+                            try:
+                                self._refresh_ui_after_scan(force_update=True)
+                            except Exception as refresh_err:
+                                print(f"DEBUG: refresh after initial lunalib sync failed: {refresh_err}")
                         self.last_scanned_block = latest_height
                     self._update_scan_loading("Processing results...")
                 
