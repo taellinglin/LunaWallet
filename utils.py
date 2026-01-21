@@ -24,42 +24,48 @@ except Exception:
 # Import Storage abstraction
 from app.storage import Storage, is_web
 
-# Initialize managers with corrected configurations
-try:
-    blockchain = BlockchainManager(endpoint_url="https://bank.linglin.art/api/blockchain/full")
-    print("DEBUG: BlockchainManager initialized with endpoint: https://bank.linglin.art/api/blockchain/full")
+blockchain = None
+mempool = None
+client = None
 
-    # Normalize latest block responses (some endpoints return a list)
+def _ensure_clients():
+    """Lazily initialize blockchain/mempool clients to avoid blocking UI on import."""
+    global blockchain, mempool, client
+    if blockchain is not None or mempool is not None:
+        return blockchain, mempool
     try:
-        _orig_get_latest_block = blockchain.get_latest_block
+        endpoint = os.getenv("LUNALIB_ENDPOINT_URL") or os.getenv("LUNA_NODE_URL") or os.getenv("PRIMARY_NODE_URL")
+        endpoint = endpoint or "https://bank.linglin.art/api/blockchain/full"
+        blockchain = BlockchainManager(endpoint_url=endpoint)
 
-        def _safe_get_latest_block():
-            try:
-                result = _orig_get_latest_block()
-                if isinstance(result, list) and result:
-                    return result[-1]
-                return result
-            except Exception as e:
-                print(f"DEBUG: _safe_get_latest_block error: {e}")
-                return None
+        # Normalize latest block responses (some endpoints return a list)
+        try:
+            _orig_get_latest_block = blockchain.get_latest_block
 
-        blockchain.get_latest_block = _safe_get_latest_block
-    except Exception as e:
-        print(f"DEBUG: Failed to patch get_latest_block: {e}")
-    mempool = MempoolManager(["https://bank.linglin.art"]) if MempoolManager is not None else None
-    if HybridBlockchainClient is not None:
-        client = HybridBlockchainClient(
-            "https://bank.linglin.art",
-            blockchain,
-            mempool
-        )
-        client.start()
-    else:
+            def _safe_get_latest_block():
+                try:
+                    result = _orig_get_latest_block()
+                    if isinstance(result, list) and result:
+                        return result[-1]
+                    return result
+                except Exception as e:
+                    print(f"DEBUG: _safe_get_latest_block error: {e}")
+                    return None
+
+            blockchain.get_latest_block = _safe_get_latest_block
+        except Exception as e:
+            print(f"DEBUG: Failed to patch get_latest_block: {e}")
+
+        mempool_endpoint = os.getenv("LUNALIB_ENDPOINT_URL") or os.getenv("LUNA_NODE_URL") or os.getenv("PRIMARY_NODE_URL")
+        mempool = MempoolManager([mempool_endpoint]) if (MempoolManager is not None and mempool_endpoint) else (MempoolManager() if MempoolManager is not None else None)
+
+        # Do not auto-start HybridBlockchainClient to avoid UI hangs
         client = None
-except Exception as e:
-    print(f"ERROR: Failed to initialize blockchain client: {e}")
-    blockchain = None
-    mempool = None
+    except Exception as e:
+        print(f"ERROR: Failed to initialize blockchain client: {e}")
+        blockchain = None
+        mempool = None
+    return blockchain, mempool
 
 # ============================================================================
 # UNIFIED BALANCE CALCULATION SYSTEM
@@ -77,6 +83,8 @@ def calculate_wallet_balances(wallet_address: str) -> Dict[str, float]:
         Dict with keys: 'available', 'pending', 'total'
     """
     print(f"DEBUG: calculate_wallet_balances called for {wallet_address[:8]}")
+
+    _ensure_clients()
 
     # Get confirmed balance from blockchain transactions
 
@@ -400,6 +408,7 @@ def _calculate_pending_balance(wallet_address: str) -> float:
         Pending balance amount (can be negative for net outgoing transactions)
     """
     try:
+        _ensure_clients()
         # Try to get pending transactions for this address
         if mempool is not None and hasattr(mempool, 'get_pending_transactions_for_addresses'):
             # Use the batch method

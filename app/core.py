@@ -9,7 +9,7 @@ import json
 import shutil
 from datetime import datetime
 import base64
-from typing import Dict, List
+from typing import Dict, List, Optional
 import sys
 from pathlib import Path
 
@@ -41,6 +41,19 @@ from gui.tab_wallets import TabWallets
 
 # Import utils
 from utils import format_address, format_balance, format_timestamp, get_transaction_color, get_transaction_icon
+
+
+def _prefer_venv_site_packages():
+    """Ensure .venv site-packages take precedence over repo root for imports."""
+    try:
+        repo_root = str(Path(__file__).resolve().parents[1])
+        venv_site = str(Path(repo_root) / ".venv" / "Lib" / "site-packages")
+        if os.path.isdir(venv_site):
+            sys.path = [p for p in sys.path if p not in (venv_site, repo_root)]
+            sys.path.insert(0, venv_site)
+            sys.path.insert(1, repo_root)
+    except Exception:
+        pass
 
 
 def _bootstrap_ca_bundle():
@@ -82,6 +95,7 @@ def _bootstrap_ca_bundle():
         os.environ.pop("SSL_CERT_FILE", None)
 
 
+_prefer_venv_site_packages()
 _bootstrap_ca_bundle()
 
 # Import lunalib components
@@ -250,27 +264,17 @@ class LunaWalletApp:
             self.debug_logger = None
         
         self._log_runtime_crypto_info()
-        self._patch_lunalib_legacy_fernet()
-        self._patch_lunalib_cache()
-        # Use services instead of direct lunalib
-        self.wallet_service = WalletService()
-        self.blockchain_service = BlockchainService()
-        self.mempool_service = MempoolService()
-
-        # Keep references for backward compatibility
-        self.wallet_core = self.wallet_service.core
-        self.blockchain_manager = self.blockchain_service.manager
-        self.mempool_manager = self.mempool_service.manager
+        self.wallet_state_manager = self._ensure_wallet_state_manager()
+        self._wallet_manager_sync_started = False
+        # Defer service initialization to avoid startup hangs
+        self.wallet_service = None
+        self.blockchain_service = None
+        self.mempool_service = None
+        self.wallet_core = None
+        self.blockchain_manager = None
+        self.mempool_manager = None
+        self._services_ready = False
         self._inactivity_monitor_started = False
-        self._ensure_ca_bundle()
-
-        # Register as peer and refresh peer list (desktop only)
-        try:
-            if not is_web() and self.blockchain_service:
-                self.blockchain_service.register_as_peer()
-                self.blockchain_service.refresh_peers()
-        except Exception as e:
-            print(f"DEBUG: Peer registration/refresh skipped: {e}")
         # Initialize sound manager
         self.sound_enabled = True  # サウンドを明示的に有効化
         print(f"[SOUND] sound_enabled = {self.sound_enabled}")
@@ -606,86 +610,6 @@ class LunaWalletApp:
         except Exception as e:
             print(f"[SNACKBAR] Error closing notification: {e}")
 
-    def _patch_lunalib_cache(self):
-        """Patch lunalib cache to use our designated directory"""
-        try:
-            from lunalib.storage import cache as luna_cache
-
-            # Override the cache file path
-            original_init = luna_cache.BlockchainCache.__init__
-
-            def patched_init(self, *args, **kwargs):
-                # First run original init to set internal attributes
-                try:
-                    original_init(self, *args, **kwargs)
-                except Exception as e:
-                    print(f"DEBUG: Original BlockchainCache.__init__ failed: {e}")
-
-                # Use our cache directory
-                try:
-                    cache_file = Path(CACHE_DIR) / "blockchain_cache.db"
-                    self.cache_file = str(cache_file)
-
-                    # Ensure directory exists
-                    cache_file.parent.mkdir(parents=True, exist_ok=True)
-
-                    # Initialize/refresh the cache with our path
-                    if hasattr(self, "_init_cache"):
-                        self._init_cache()
-                except Exception as e:
-                    print(f"DEBUG: Error initializing patched cache: {e}")
-
-            # Apply the patch
-            luna_cache.BlockchainCache.__init__ = patched_init
-            print(f"DEBUG: Patched lunalib cache to use: {CACHE_DIR}")
-
-        except Exception as e:
-            print(f"DEBUG: Error patching lunalib cache: {e}")
-
-    def _patch_lunalib_legacy_fernet(self):
-        """Enable legacy Fernet token decryption if cryptography is available."""
-        try:
-            import base64
-            import hashlib
-            from lunalib.core import wallet as luna_wallet
-            try:
-                from app.debug_logger import debug_log
-                debug_log("[CRYPTO] Applying legacy Fernet patch to lunalib")
-            except Exception:
-                pass
-
-            original_decrypt = luna_wallet._decrypt_with_password
-
-            def _decrypt_with_password_patched(token, password: str) -> bytes:
-                token_bytes = luna_wallet._normalize_token_bytes(token)
-                if token_bytes.startswith(b"gAAAA"):
-                    try:
-                        from cryptography.fernet import Fernet
-
-                        key = base64.urlsafe_b64encode(
-                            hashlib.sha256(password.encode()).digest()
-                        )
-                        return Fernet(key).decrypt(token_bytes)
-                    except Exception as e:
-                        raise ValueError(
-                            f"Legacy Fernet token not supported without cryptography: {e}"
-                        )
-                return original_decrypt(token, password)
-
-            luna_wallet._decrypt_with_password = _decrypt_with_password_patched
-            print("DEBUG: Patched lunalib legacy Fernet decrypt")
-            try:
-                from app.debug_logger import debug_log
-                debug_log("[CRYPTO] Legacy Fernet patch applied successfully")
-            except Exception:
-                pass
-        except Exception as e:
-            print(f"DEBUG: Failed to patch legacy Fernet decrypt: {e}")
-            try:
-                from app.debug_logger import debug_log
-                debug_log(f"[CRYPTO] Legacy Fernet patch failed: {e}")
-            except Exception:
-                pass
 
     def _log_runtime_crypto_info(self):
         """Log crypto and lunalib runtime info for built unlock diagnostics."""
@@ -940,6 +864,28 @@ class LunaWalletApp:
                 return results
             if not hasattr(self, 'blockchain_manager') or not self.blockchain_manager:
                 return results
+
+            # Prefer lunalib's built-in scan (better reward detection)
+            try:
+                end_height = None
+                cache = getattr(self.blockchain_manager, 'cache', None)
+                if cache:
+                    cached_height = cache.get_highest_cached_height()
+                    if isinstance(cached_height, int) and cached_height >= 0:
+                        end_height = cached_height
+                scan_results = self.blockchain_manager.scan_transactions_for_addresses(
+                    wallet_addresses,
+                    start_height=0,
+                    end_height=end_height,
+                )
+                if isinstance(scan_results, dict):
+                    for addr in wallet_addresses:
+                        results[addr] = list(scan_results.get(addr, []) or [])
+                    if any(results.values()):
+                        return results
+            except Exception as scan_err:
+                print(f"DEBUG: lunalib scan_transactions_for_addresses failed: {scan_err}")
+
             cache = getattr(self.blockchain_manager, 'cache', None)
             if not cache:
                 return results
@@ -976,23 +922,33 @@ class LunaWalletApp:
 
                     # Block mining reward
                     miner_norm = _normalize(block.get('miner', ''))
-                    if miner_norm in normalized_map:
+                    reward_norm = _normalize(
+                        block.get('reward_address')
+                        or block.get('reward_to')
+                        or block.get('recipient')
+                        or ''
+                    )
+                    target_addr = None
+                    if reward_norm in normalized_map:
+                        target_addr = normalized_map[reward_norm]
+                    elif miner_norm in normalized_map:
                         target_addr = normalized_map[miner_norm]
-                        reward_amount = float(block.get('reward', 0) or 0)
-                        if reward_amount > 0:
-                            _add_tx(target_addr, {
-                                'type': 'reward',
-                                'from': 'network',
-                                'to': target_addr,
-                                'amount': reward_amount,
-                                'block_height': block_height,
-                                'timestamp': timestamp,
-                                'hash': f"reward_{block_height}_{block_hash[:8]}",
-                                'status': 'confirmed',
-                                'direction': 'incoming',
-                                'effective_amount': reward_amount,
-                                'fee': 0,
-                            })
+                    reward_amount = float(block.get('reward', 0) or 0)
+                    if target_addr and reward_amount > 0:
+                        _add_tx(target_addr, {
+                            'type': 'reward',
+                            'from': 'network',
+                            'to': target_addr,
+                            'reward_address': target_addr,
+                            'amount': reward_amount,
+                            'block_height': block_height,
+                            'timestamp': timestamp,
+                            'hash': f"reward_{block_height}_{block_hash[:8]}",
+                            'status': 'confirmed',
+                            'direction': 'incoming',
+                            'effective_amount': reward_amount,
+                            'fee': 0,
+                        })
 
                     # Regular transactions
                     for tx_index, tx in enumerate(block.get('transactions', []) or []):
@@ -1005,8 +961,9 @@ class LunaWalletApp:
                         fee = float(tx.get('fee', 0) or tx.get('gas', 0) or 0)
 
                         # Explicit reward transactions
-                        if tx_type == 'reward' and to_norm in normalized_map:
-                            target_addr = normalized_map[to_norm]
+                        reward_tx_norm = _normalize(tx.get('reward_address') or tx.get('reward_to') or '')
+                        if tx_type == 'reward' and (to_norm in normalized_map or reward_tx_norm in normalized_map):
+                            target_addr = normalized_map.get(to_norm) or normalized_map.get(reward_tx_norm)
                             enhanced = tx.copy()
                             enhanced.update({
                                 'block_height': block_height,
@@ -1016,6 +973,7 @@ class LunaWalletApp:
                                 'effective_amount': amount,
                                 'fee': 0,
                             })
+                            enhanced.setdefault('reward_address', target_addr)
                             enhanced.setdefault('from', 'network')
                             _add_tx(target_addr, enhanced)
                             continue
@@ -1049,6 +1007,45 @@ class LunaWalletApp:
                                 'fee': fee,
                             })
                             _add_tx(target_addr, enhanced)
+
+            # Merge locally stored transactions (no network) to catch missing rewards
+            try:
+                stored_txs = self.get_all_transactions()
+            except Exception:
+                stored_txs = []
+
+            if stored_txs:
+                seen_by_addr: Dict[str, set] = {addr: set() for addr in results.keys()}
+                for addr, txs in results.items():
+                    for tx in txs:
+                        tx_id = tx.get('hash') or tx.get('transaction_id')
+                        if tx_id:
+                            seen_by_addr[addr].add(str(tx_id))
+
+                for tx in stored_txs:
+                    if not isinstance(tx, dict):
+                        continue
+                    tx_type = str(tx.get('type', '')).lower()
+                    fields = [
+                        tx.get('from'), tx.get('to'), tx.get('reward_address'),
+                        tx.get('reward_to'), tx.get('recipient'), tx.get('sender'),
+                        tx.get('receiver'), tx.get('miner')
+                    ]
+                    norm_fields = {_normalize(f or '') for f in fields if f}
+                    tx_id = tx.get('hash') or tx.get('transaction_id')
+                    tx_id_str = str(tx_id) if tx_id else None
+
+                    for norm_addr, real_addr in normalized_map.items():
+                        if norm_addr and (norm_addr in norm_fields):
+                            if tx_id_str and tx_id_str in seen_by_addr[real_addr]:
+                                continue
+                            if tx_id_str:
+                                seen_by_addr[real_addr].add(tx_id_str)
+                            enriched = tx.copy()
+                            if tx_type == 'reward':
+                                enriched.setdefault('reward_address', real_addr)
+                                enriched.setdefault('from', 'network')
+                            _add_tx(real_addr, enriched)
             return results
         except Exception as e:
             print(f"DEBUG: get_cached_transactions_for_addresses failed: {e}")
@@ -1535,28 +1532,78 @@ class LunaWalletApp:
 
         self._start_inactivity_monitor()
 
-        # Check for existing wallets and show appropriate screen
-        self.initialize_wallet_state()
+        # Show lightweight loading UI first to avoid startup hangs
+        try:
+            page.controls.clear()
+            page.add(
+                ft.Container(
+                    content=ft.Column([
+                        ft.Text("Starting Luna Wallet...", size=18, weight="bold", color="#f8d7da"),
+                        ft.Text("Initializing services", size=12, color="#f8d7da"),
+                    ], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+                    alignment=ft.Alignment(0, 0),
+                    expand=True,
+                )
+            )
+            page.update()
+        except Exception:
+            pass
 
-        # If initialize_wallet_state stored state instead of showing UI, display it now
-        if self.initial_screen_state:
-            state = self.initial_screen_state
-            if state['has_existing_wallets']:
-                print("DEBUG: Showing stored unlock screen")
-                self.show_lock_page(
-                    title="Welcome Back",
-                    subtitle=f"Unlock your existing wallet\n{state['existing_wallet_address']}",
-                    wallet_exists=True,
-                    show_create=False
-                )
+        def _init_services_and_ui():
+            self._ensure_services()
+            if hasattr(self, 'page') and self.page and hasattr(self.page, 'run_thread'):
+                self.page.run_thread(self.initialize_wallet_state)
             else:
-                print("DEBUG: Showing stored create screen")
-                self.show_lock_page(
-                    title="Welcome to Luna Wallet",
-                    subtitle="Create your first wallet to get started",
-                    show_create=True,
-                    wallet_exists=False
-                )
+                self.initialize_wallet_state()
+
+            if self.initial_screen_state:
+                state = self.initial_screen_state
+                if state['has_existing_wallets']:
+                    print("DEBUG: Showing stored unlock screen")
+                    self.show_lock_page(
+                        title="Welcome Back",
+                        subtitle=f"Unlock your existing wallet\n{state['existing_wallet_address']}",
+                        wallet_exists=True,
+                        show_create=False
+                    )
+                else:
+                    print("DEBUG: Showing stored create screen")
+                    self.show_lock_page(
+                        title="Welcome to Luna Wallet",
+                        subtitle="Create your first wallet to get started",
+                        show_create=True,
+                        wallet_exists=False
+                    )
+
+        threading.Thread(target=_init_services_and_ui, daemon=True).start()
+
+    def _ensure_services(self):
+        if self._services_ready:
+            return
+        try:
+            print("DEBUG: Initializing services...")
+            self._ensure_ca_bundle()
+            self.wallet_service = self.wallet_service or WalletService()
+            self.blockchain_service = self.blockchain_service or BlockchainService()
+            self.mempool_service = self.mempool_service or MempoolService()
+
+            # Keep references for backward compatibility
+            self.wallet_core = self.wallet_service.core
+            self.blockchain_manager = self.blockchain_service.manager
+            self.mempool_manager = self.mempool_service.manager
+
+            # Register as peer and refresh peer list (desktop only)
+            try:
+                if not is_web() and self.blockchain_service:
+                    self.blockchain_service.register_as_peer()
+                    self.blockchain_service.refresh_peers()
+            except Exception as e:
+                print(f"DEBUG: Peer registration/refresh skipped: {e}")
+
+            self._services_ready = True
+            print("DEBUG: Services initialized")
+        except Exception as e:
+            print(f"DEBUG: Service initialization failed: {e}")
 
     def _set_mobile_content(self, content, transition=None):
         if transition is None:
@@ -1980,6 +2027,7 @@ class LunaWalletApp:
         """Refresh the wallet list after a new wallet is created."""
         print("DEBUG: refresh_wallet_list called")
         try:
+            self._register_wallets_with_manager()
             # Return to wallet page and refresh the sidebar
             if hasattr(self, 'wallet_page') and self.wallet_page:
                 # Refresh sidebar wallets
@@ -2079,11 +2127,7 @@ class LunaWalletApp:
                 _global_trace("Wallet unlocked successfully", "UNLOCK")
                 self.is_locked = False
                 self._play_sound("unlock")
-                
-                # Save wallet state
-                self.save_wallet_data(force_save=True)
-                _global_trace("Wallet state saved", "UNLOCK")
-                
+
                 # Clear lock page reference
                 self.current_lock_page = None
                 
@@ -2101,8 +2145,24 @@ class LunaWalletApp:
                     traceback.print_exc()
                     raise
 
-                # START INITIAL SCAN after wallet page is shown
-                self.start_initial_blockchain_scan()
+                # Defer heavy post-unlock tasks to background to speed UI
+                def _post_unlock_tasks():
+                    try:
+                        self.save_wallet_data(force_save=True)
+                        _global_trace("Wallet state saved", "UNLOCK")
+                    except Exception as e:
+                        print(f"[UNLOCK] save_wallet_data failed: {e}")
+                    try:
+                        self._register_wallets_with_manager()
+                        self._start_wallet_manager_sync()
+                    except Exception as e:
+                        print(f"[UNLOCK] wallet manager sync start failed: {e}")
+                    try:
+                        self.start_initial_blockchain_scan()
+                    except Exception as e:
+                        print(f"[UNLOCK] start_initial_blockchain_scan failed: {e}")
+
+                threading.Thread(target=_post_unlock_tasks, daemon=True).start()
 
                 # Update page
                 if hasattr(self, 'page') and self.page:
@@ -2230,17 +2290,121 @@ class LunaWalletApp:
         if hasattr(self, '_wallet_sync_helper') and self._wallet_sync_helper:
             return self._wallet_sync_helper
         try:
-            from lunalib.core.wallet_sync_helper import create_wallet_sync_helper
+            try:
+                from lunalib.core.wallet_sync_helper import create_wallet_sync_helper
+            except Exception:
+                from lunalib.core.sync_helper import create_wallet_sync_helper
             helper = create_wallet_sync_helper(self.wallet_core, self.blockchain_manager, self.mempool_manager)
             self._wallet_sync_helper = helper
             try:
-                helper.register_wallets_from_lunawallet()
+                if hasattr(helper, 'register_wallets_from_lunawallet'):
+                    helper.register_wallets_from_lunawallet()
+                elif hasattr(helper, 'register_wallets'):
+                    helper.register_wallets()
             except Exception as reg_err:
                 print(f"DEBUG: wallet sync register failed: {reg_err}")
             return helper
         except Exception as e:
             print(f"DEBUG: wallet sync helper unavailable: {e}")
             self._wallet_sync_helper = None
+            return None
+
+    def _ensure_wallet_state_manager(self):
+        if hasattr(self, 'wallet_state_manager') and self.wallet_state_manager:
+            return self.wallet_state_manager
+        try:
+            from lunalib.wallet_manager import get_wallet_manager
+            self.wallet_state_manager = get_wallet_manager()
+            return self.wallet_state_manager
+        except Exception as e:
+            print(f"DEBUG: wallet_state_manager unavailable: {e}")
+            self.wallet_state_manager = None
+            return None
+
+    def _register_wallets_with_manager(self):
+        try:
+            manager = self._ensure_wallet_state_manager()
+            if not manager or not hasattr(self, 'wallet_core') or not self.wallet_core:
+                return
+            addresses = list(getattr(self.wallet_core, 'wallets', {}).keys())
+            if addresses:
+                manager.register_wallets(addresses)
+        except Exception as e:
+            print(f"DEBUG: register_wallets_with_manager failed: {e}")
+
+    def _start_wallet_manager_sync(self):
+        if getattr(self, '_wallet_manager_sync_started', False):
+            return
+        manager = self._ensure_wallet_state_manager()
+        if not manager:
+            return
+
+        def _get_blockchain_data(addresses):
+            try:
+                end_height = None
+                cache = getattr(self.blockchain_manager, 'cache', None)
+                if cache:
+                    cached_height = cache.get_highest_cached_height()
+                    if isinstance(cached_height, int) and cached_height >= 0:
+                        end_height = cached_height
+                return self.blockchain_manager.scan_transactions_for_addresses(
+                    addresses,
+                    start_height=0,
+                    end_height=end_height,
+                )
+            except Exception as e:
+                print(f"DEBUG: wallet manager blockchain fetch failed: {e}")
+                return {addr: [] for addr in addresses}
+
+        def _get_mempool_data(addresses):
+            try:
+                if self.mempool_manager and hasattr(self.mempool_manager, 'get_pending_transactions_for_addresses'):
+                    return self.mempool_manager.get_pending_transactions_for_addresses(addresses, fetch_remote=True)
+            except Exception as e:
+                print(f"DEBUG: wallet manager mempool fetch failed: {e}")
+            return {addr: [] for addr in addresses}
+
+        manager.sync_wallets_background(_get_blockchain_data, _get_mempool_data, poll_interval=30)
+        self._wallet_manager_sync_started = True
+
+    def get_wallet_manager_transactions(self, address: str, force_sync: bool = False) -> List[Dict]:
+        manager = self._ensure_wallet_state_manager()
+        if not manager:
+            return []
+        if force_sync:
+            try:
+                addresses = list(getattr(self.wallet_core, 'wallets', {}).keys()) or [address]
+                end_height = None
+                cache = getattr(self.blockchain_manager, 'cache', None)
+                if cache:
+                    cached_height = cache.get_highest_cached_height()
+                    if isinstance(cached_height, int) and cached_height >= 0:
+                        end_height = cached_height
+                blockchain_txs = self.blockchain_manager.scan_transactions_for_addresses(
+                    addresses,
+                    start_height=0,
+                    end_height=end_height,
+                )
+                mempool_txs = {}
+                if self.mempool_manager and hasattr(self.mempool_manager, 'get_pending_transactions_for_addresses'):
+                    mempool_txs = self.mempool_manager.get_pending_transactions_for_addresses(addresses, fetch_remote=True)
+                manager.sync_wallets_from_sources(blockchain_txs, mempool_txs)
+            except Exception as e:
+                print(f"DEBUG: wallet manager force sync failed: {e}")
+        try:
+            return manager.get_transactions(address, 'all')
+        except Exception:
+            return []
+
+    def get_wallet_manager_balance(self, address: str, force_sync: bool = False) -> Optional[Dict]:
+        manager = self._ensure_wallet_state_manager()
+        if not manager:
+            return None
+        if force_sync:
+            _ = self.get_wallet_manager_transactions(address, force_sync=True)
+        try:
+            return manager.get_balance(address)
+        except Exception:
             return None
 
     def _sync_wallets_with_lunalib(self) -> bool:
@@ -2260,8 +2424,17 @@ class LunaWalletApp:
             return False
         try:
             # Refresh registered wallets each sync
-            helper.register_wallets_from_lunawallet()
-            helper.sync_wallets_now()
+            if hasattr(helper, 'register_wallets_from_lunawallet'):
+                helper.register_wallets_from_lunawallet()
+            elif hasattr(helper, 'register_wallets'):
+                helper.register_wallets()
+
+            if hasattr(helper, 'sync_wallets_now'):
+                helper.sync_wallets_now()
+            elif hasattr(helper, 'sync_wallets'):
+                helper.sync_wallets()
+            elif hasattr(helper, 'sync'):
+                helper.sync()
             return True
         except Exception as e:
             print(f"DEBUG: wallet sync helper failed: {e}")

@@ -1423,18 +1423,43 @@ class WalletPage:
                     self._begin_loading_hold("Scanning Transactions...")
                 
                 print(f"\n=== LOADING TRANSACTIONS FOR {current_address[:12]}... ===")
-                
-                # Try to get transactions from lunalib cache first (no storage/DB)
+                use_wallet_manager = False
+                manager_balance = None
                 all_transactions = []
+
+                # Prefer WalletStateManager when available (rewards-aware)
                 try:
-                    if hasattr(self.app, 'get_cached_transactions_for_address'):
-                        all_transactions = self.app.get_cached_transactions_for_address(current_address)
-                        print(f"DEBUG: Lunalib cache-only returned {len(all_transactions)} transactions")
-                except Exception as cache_err:
-                    print(f"DEBUG: Lunalib cache-only error: {cache_err}")
+                    if hasattr(self.app, 'get_wallet_manager_transactions'):
+                        all_transactions = self.app.get_wallet_manager_transactions(current_address, force_sync=False)
+                        manager_balance = self.app.get_wallet_manager_balance(current_address, force_sync=False)
+                        if all_transactions:
+                            use_wallet_manager = True
+                            print(f"DEBUG: WalletStateManager returned {len(all_transactions)} transactions")
+                except Exception as mgr_err:
+                    print(f"DEBUG: WalletStateManager error: {mgr_err}")
+
+                if not use_wallet_manager and not cache_only:
+                    try:
+                        if hasattr(self.app, 'get_wallet_manager_transactions'):
+                            all_transactions = self.app.get_wallet_manager_transactions(current_address, force_sync=True)
+                            manager_balance = self.app.get_wallet_manager_balance(current_address, force_sync=False)
+                            if all_transactions:
+                                use_wallet_manager = True
+                                print(f"DEBUG: WalletStateManager force sync returned {len(all_transactions)} transactions")
+                    except Exception as mgr_err:
+                        print(f"DEBUG: WalletStateManager force sync error: {mgr_err}")
+
+                # Try to get transactions from lunalib cache first (no storage/DB)
+                if not use_wallet_manager:
+                    try:
+                        if hasattr(self.app, 'get_cached_transactions_for_address'):
+                            all_transactions = self.app.get_cached_transactions_for_address(current_address)
+                            print(f"DEBUG: Lunalib cache-only returned {len(all_transactions)} transactions")
+                    except Exception as cache_err:
+                        print(f"DEBUG: Lunalib cache-only error: {cache_err}")
 
                 # Method 2: Try blockchain manager scan against cache if needed
-                if not cache_only:
+                if not cache_only and not use_wallet_manager:
                     should_scan = True
                     try:
                         if not force_scan and hasattr(self.app, 'initial_scan_complete') and self.app.initial_scan_complete:
@@ -1487,7 +1512,7 @@ class WalletPage:
                 print(f"DEBUG: After filtering database: {len(filtered_transactions)} transactions")
                 
                 # IMPORTANT: Also load pending transactions from mempool that aren't in the database yet
-                if not cache_only:
+                if not cache_only and not use_wallet_manager:
                     if hasattr(self.app, 'get_mempool_manager'):
                         try:
                             print(f"DEBUG: Loading pending transactions from mempool for {current_address[:12]}...")
@@ -1546,7 +1571,7 @@ class WalletPage:
                 print(f"DEBUG: Total transactions (confirmed + pending): {len(filtered_transactions)}")
 
                 # Mark low-confirmation transactions as pending in UI
-                if not cache_only:
+                if not cache_only and not use_wallet_manager:
                     try:
                         latest_height = None
                         if hasattr(self.app, 'blockchain_manager') and self.app.blockchain_manager:
@@ -1575,7 +1600,19 @@ class WalletPage:
                 
                 # Update balances using the same cache-backed data
                 try:
-                    if cache_only:
+                    if use_wallet_manager and manager_balance:
+                        confirmed_balance = float(manager_balance.get('confirmed_balance', 0) or 0)
+                        pending_in = float(manager_balance.get('pending_incoming', 0) or 0)
+                        pending_out = float(manager_balance.get('pending_outgoing', 0) or 0)
+                        pending_balance = pending_in - pending_out
+                        self.update_balance_card(confirmed_balance, pending_balance)
+                        if hasattr(self.app.wallet_core, 'wallets') and current_address in self.app.wallet_core.wallets:
+                            self.app.wallet_core.wallets[current_address]['available_balance'] = confirmed_balance
+                            self.app.wallet_core.wallets[current_address]['balance'] = confirmed_balance + pending_balance
+                            self.app.wallet_core.wallets[current_address]['pending_balance'] = pending_balance
+                            self.app.wallet_core.wallets[current_address]['confirmed_balance'] = confirmed_balance
+                        self._update_balance_display_ui(confirmed_balance, pending_balance, current_address)
+                    elif cache_only:
                         confirmed_balance, pending_balance = self._get_cached_wallet_balances(current_address)
                         self.update_balance_card(confirmed_balance, pending_balance)
                     else:

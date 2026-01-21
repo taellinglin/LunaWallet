@@ -223,6 +223,11 @@ class CreateWalletPage:
         def create_and_unlock():
             try:
                 print("DEBUG: Starting wallet creation...")
+                try:
+                    if hasattr(self.app, '_ensure_services'):
+                        self.app._ensure_services()
+                except Exception as svc_err:
+                    print(f"DEBUG: Service init failed before wallet creation: {svc_err}")
                 # Create the wallet
                 wallet_data = self.app.wallet_core.create_wallet(wallet_name, password)
                 print(f"DEBUG: Wallet creation result: {wallet_data}")
@@ -271,9 +276,9 @@ class CreateWalletPage:
                 print(f"DEBUG: Exception in wallet creation: {str(ex)}")
                 import traceback
                 traceback.print_exc()
-                def show_error():
+                def show_error(err=ex):
                     self._show_loading_state(False)
-                    self.app.show_snackbar(f"Error creating wallet: {str(ex)}", "error")
+                    self.app.show_snackbar(f"Error creating wallet: {str(err)}", "error")
                 if hasattr(self.app, 'page') and self.app.page:
                     self.app.page.run_thread(show_error)
                 else:

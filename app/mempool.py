@@ -1,5 +1,7 @@
 # app/mempool.py
 
+import os
+
 try:
     from lunalib.core.mempool import MempoolManager
 except Exception:
@@ -7,7 +9,9 @@ except Exception:
 
 class MempoolService:
     def __init__(self):
-        self.manager = MempoolManager() if MempoolManager is not None else None
+        endpoint = os.getenv("LUNALIB_ENDPOINT_URL") or os.getenv("LUNA_NODE_URL") or os.getenv("PRIMARY_NODE_URL")
+        endpoints = [endpoint] if endpoint else None
+        self.manager = MempoolManager(network_endpoints=endpoints) if MempoolManager is not None else None
 
     def get_pending_transactions(self, address):
         """指定アドレスの未承認トランザクションを取得"""

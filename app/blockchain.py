@@ -4,12 +4,15 @@ from lunalib.core.blockchain import BlockchainManager
 from lunalib.core.p2p import P2PClient
 import threading
 import os
+import time
 
 class BlockchainService:
 
     def __init__(self, endpoint_url="https://bank.linglin.art"):
+        env_endpoint = os.getenv("LUNALIB_ENDPOINT_URL") or os.getenv("LUNA_NODE_URL") or os.getenv("PRIMARY_NODE_URL")
+        endpoint_url = env_endpoint or endpoint_url
         self.endpoint_url = endpoint_url.rstrip("/")
-        self.manager = BlockchainManager(endpoint_url=endpoint_url)
+        self.manager = BlockchainManager(endpoint_url=self.endpoint_url)
         self.peers = []
         self.p2p_client = None
         self.p2p_enabled = str(os.getenv("LUNALIB_P2P_ENABLED", "")).strip().lower() in ("1", "true", "yes")
@@ -54,18 +57,7 @@ class BlockchainService:
                 self.p2p_client.peer_seed_urls = []
             except Exception:
                 pass
-            if self.p2p_skip_empty_peers:
-                try:
-                    original_update = self.p2p_client._update_peer_list
-
-                    def _safe_update_peer_list():
-                        if not self.p2p_client.peer_seed_urls and not self.p2p_client.peers:
-                            return []
-                        return original_update()
-
-                    self.p2p_client._update_peer_list = _safe_update_peer_list
-                except Exception:
-                    pass
+            # Use lunalib's built-in peer update behavior
         if start_in_background and not getattr(self.p2p_client, 'is_running', False):
             threading.Thread(target=self.p2p_client.start, daemon=True).start()
 
