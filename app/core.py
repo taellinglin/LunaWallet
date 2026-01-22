@@ -2075,6 +2075,11 @@ class LunaWalletApp:
         """Unlock existing wallet with password using LunaWallet core methods"""
         try:
             print("[UNLOCK] Starting unlock process...")
+            # Ensure SM4 wallet encryption is used (lunalib 2.4.0+)
+            try:
+                os.environ.setdefault("LUNALIB_WALLET_CIPHER", "sm4")
+            except Exception:
+                pass
             try:
                 if hasattr(self, 'storage') and self.storage and hasattr(self.storage, 'db_path'):
                     print(f"[UNLOCK] Storage DB path: {self.storage.db_path}")
@@ -2125,7 +2130,11 @@ class LunaWalletApp:
                         debug_log(f"[UNLOCK] wallet={wallet_address[:12]} token_prefix={prefix}")
                     except Exception:
                         pass
-                    unlock_success = self.wallet_core.unlock_wallet(wallet_address, password)
+                    unlock_result = self.wallet_core.unlock_wallet(wallet_address, password)
+                    if isinstance(unlock_result, dict):
+                        unlock_success = bool(unlock_result.get("success", False))
+                    else:
+                        unlock_success = bool(unlock_result)
                     if unlock_success:
                                     # Ensure balance fields exist
                         wallet_obj = self.wallet_core.wallets.get(wallet_address)

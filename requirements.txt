@@ -3,7 +3,7 @@ cryptography>=42.0.5,<43
 requests
 qrcode
 pillow
-lunalib==2.2.2
+lunalib==2.4.1
 pyperclip
 base58
 tqdm
