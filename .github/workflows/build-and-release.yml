@@ -219,7 +219,13 @@ jobs:
             if ! gh release view "$tag" >/dev/null 2>&1; then
               gh release create "$tag" --title "$release_name" --notes "Automated release" --target "$GITHUB_SHA"
             fi
-            gh release upload "$tag" build/*.zip --clobber
+            mapfile -t files < <(find build -maxdepth 2 -name "*.zip" -print)
+            if [ ${#files[@]} -eq 0 ]; then
+              echo "No zip artifacts found under build/"
+              ls -la build || true
+              exit 1
+            fi
+            gh release upload "$tag" "${files[@]}" --clobber
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
