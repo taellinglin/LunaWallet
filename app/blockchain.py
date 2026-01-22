@@ -12,7 +12,15 @@ class BlockchainService:
         env_endpoint = os.getenv("LUNALIB_ENDPOINT_URL") or os.getenv("LUNA_NODE_URL") or os.getenv("PRIMARY_NODE_URL")
         endpoint_url = env_endpoint or endpoint_url
         self.endpoint_url = endpoint_url.rstrip("/")
-        self.manager = BlockchainManager(endpoint_url=self.endpoint_url)
+        max_workers = None
+        try:
+            max_workers = int(os.getenv("LUNALIB_SCAN_WORKERS", "0") or 0)
+        except Exception:
+            max_workers = 0
+        if max_workers and max_workers > 0:
+            self.manager = BlockchainManager(endpoint_url=self.endpoint_url, max_workers=max_workers)
+        else:
+            self.manager = BlockchainManager(endpoint_url=self.endpoint_url)
         self.peers = []
         self.p2p_client = None
         self.p2p_enabled = str(os.getenv("LUNALIB_P2P_ENABLED", "")).strip().lower() in ("1", "true", "yes")

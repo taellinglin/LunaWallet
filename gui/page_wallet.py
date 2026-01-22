@@ -1380,7 +1380,10 @@ class WalletPage:
             wallet_lower = wallet_address.lower()
             
             # Check all possible address fields
-            address_fields = ['from', 'to', 'reward_address', 'recipient', 'sender', 'receiver']
+            address_fields = [
+                'from', 'to', 'reward_address', 'reward_to', 'recipient',
+                'sender', 'receiver', 'miner', 'miner_address'
+            ]
             
             for field in address_fields:
                 field_value = tx_data.get(field, '')
@@ -1391,8 +1394,14 @@ class WalletPage:
             tx_type = tx_data.get('type', '')
             if tx_type == 'reward':
                 # For mining rewards, check if the reward is for this wallet
-                reward_address = tx_data.get('reward_address', '')
-                if reward_address.lower() == wallet_lower:
+                reward_address = (
+                    tx_data.get('reward_address')
+                    or tx_data.get('reward_to')
+                    or tx_data.get('miner')
+                    or tx_data.get('miner_address')
+                    or ''
+                )
+                if str(reward_address).lower() == wallet_lower:
                     return True
             
             return False

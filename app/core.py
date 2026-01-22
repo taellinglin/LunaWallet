@@ -2427,7 +2427,27 @@ class LunaWalletApp:
             except Exception as e:
                 print(f"DEBUG: wallet manager force sync failed: {e}")
         try:
-            return manager.get_transactions(address, 'all')
+            # Use wallet_manager categories to omit GTX_Genesis from history
+            transfers = manager.get_transactions(address, 'transfers')
+            rewards = manager.get_transactions(address, 'rewards')
+            combined = []
+            seen = set()
+            for tx in (transfers or []):
+                tx_hash = tx.get('hash')
+                if tx_hash and tx_hash in seen:
+                    continue
+                if tx_hash:
+                    seen.add(tx_hash)
+                combined.append(tx)
+            for tx in (rewards or []):
+                tx_hash = tx.get('hash')
+                if tx_hash and tx_hash in seen:
+                    continue
+                if tx_hash:
+                    seen.add(tx_hash)
+                combined.append(tx)
+            combined.sort(key=lambda x: x.get('timestamp', 0), reverse=True)
+            return combined
         except Exception:
             return []
 
