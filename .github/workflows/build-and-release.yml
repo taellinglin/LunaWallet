@@ -218,7 +218,21 @@ jobs:
               ls -la build || true
               exit 1
             fi
-            gh release upload "$tag" "${files[@]}" --clobber
+            uploaded_files=()
+            for f in "${files[@]}"; do
+              size=$(stat -c%s "$f" || echo 0)
+              if [ "$size" -gt 2147483648 ]; then
+                echo "Asset too large, splitting: $f ($size bytes)"
+                split_dir="${f}.parts"
+                mkdir -p "$split_dir"
+                split -b 1900m -d -a 3 "$f" "$split_dir/$(basename "$f").part"
+                mapfile -t parts < <(find "$split_dir" -type f -print | sort)
+                uploaded_files+=("${parts[@]}")
+              else
+                uploaded_files+=("$f")
+              fi
+            done
+            gh release upload "$tag" "${uploaded_files[@]}" --clobber
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -232,6 +232,7 @@ class CreateWalletPage:
                 try:
                     import os
                     os.environ.setdefault("LUNALIB_WALLET_CIPHER", "sm4")
+                    os.environ.setdefault("LUNALIB_SM4_USE_GPU", "1")
                 except Exception:
                     pass
                 # Create the wallet

@@ -7,6 +7,7 @@ import time
 import os
 import json
 import shutil
+import re
 from datetime import datetime
 import base64
 from typing import Dict, List, Optional
@@ -866,17 +867,17 @@ class LunaWalletApp:
                 return results
 
             # Prefer lunalib's built-in scan (better reward detection)
+            ends_height = None
+            if hasattr(self.blockchain_manager, 'get_blockchain_height'):
+                try:
+                    ends_height = int(self.blockchain_manager.get_blockchain_height() or 0)
+                except Exception:
+                    ends_height = None
             try:
-                end_height = None
-                cache = getattr(self.blockchain_manager, 'cache', None)
-                if cache:
-                    cached_height = cache.get_highest_cached_height()
-                    if isinstance(cached_height, int) and cached_height >= 0:
-                        end_height = cached_height
                 scan_results = self.blockchain_manager.scan_transactions_for_addresses(
                     wallet_addresses,
                     start_height=0,
-                    end_height=end_height,
+                    end_height=ends_height,
                 )
                 if isinstance(scan_results, dict):
                     for addr in wallet_addresses:
@@ -885,13 +886,6 @@ class LunaWalletApp:
                         return results
             except Exception as scan_err:
                 print(f"DEBUG: lunalib scan_transactions_for_addresses failed: {scan_err}")
-
-            cache = getattr(self.blockchain_manager, 'cache', None)
-            if not cache:
-                return results
-            cached_height = cache.get_highest_cached_height()
-            if cached_height is None or cached_height < 0:
-                return results
 
             def _normalize(addr: str) -> str:
                 if not addr:
@@ -908,144 +902,134 @@ class LunaWalletApp:
             def _add_tx(target_addr: str, tx: Dict):
                 if target_addr in results:
                     results[target_addr].append(tx)
+            def _process_block(block: Dict):
+                if not isinstance(block, dict):
+                    return
+                block_height = block.get('index') or block.get('height') or 0
+                block_hash = block.get('hash') or ''
+                timestamp = block.get('timestamp')
 
+                # Block mining reward
+                miner_norm = _normalize(block.get('miner') or block.get('mined_by') or block.get('miner_address') or block.get('mined_by_address') or '')
+                reward_amount = self._parse_scan_amount(block.get('reward', 0) or 0)
+                if miner_norm in normalized_map and reward_amount > 0:
+                    target_addr = normalized_map[miner_norm]
+                    _add_tx(target_addr, {
+                        'type': 'reward',
+                        'from': 'network',
+                        'to': target_addr,
+                        'reward_address': target_addr,
+                        'amount': reward_amount,
+                        'block_height': block_height,
+                        'timestamp': timestamp,
+                        'hash': f"reward_{block_height}_{block_hash[:8]}",
+                        'status': 'confirmed',
+                        'direction': 'incoming',
+                        'effective_amount': reward_amount,
+                        'fee': 0,
+                    })
+
+                # Regular transactions + rewards + GTX_Genesis
+                for tx_index, tx in enumerate(block.get('transactions', []) or []):
+                    if not isinstance(tx, dict):
+                        continue
+                    tx_type = (tx.get('type') or 'transfer').lower()
+                    from_norm = _normalize(tx.get('from') or tx.get('sender') or '')
+                    to_norm = _normalize(tx.get('to') or tx.get('receiver') or '')
+
+                    if tx_type == 'reward':
+                        reward_to = tx.get('to') or tx.get('receiver') or tx.get('issued_to') or tx.get('owner_address') or tx.get('to_address')
+                        reward_norm = _normalize(reward_to or '')
+                        if reward_norm in normalized_map:
+                            target_addr = normalized_map[reward_norm]
+                            amount = self._parse_scan_amount(tx.get('amount', tx.get('denomination', 0) or 0) or 0)
+                            enhanced = tx.copy()
+                            enhanced.update({
+                                'type': 'reward',
+                                'from': enhanced.get('from', 'network'),
+                                'to': reward_to or target_addr,
+                                'block_height': block_height,
+                                'timestamp': enhanced.get('timestamp', timestamp),
+                                'hash': enhanced.get('hash') or f"reward_{block_height}_{tx_index}",
+                                'status': 'confirmed',
+                                'tx_index': tx_index,
+                                'direction': 'incoming',
+                                'effective_amount': amount,
+                                'amount': amount,
+                                'fee': 0,
+                                'reward_address': target_addr,
+                            })
+                            _add_tx(target_addr, enhanced)
+                        continue
+
+                    if tx_type == 'gtx_genesis':
+                        reward_to = tx.get('issued_to') or tx.get('owner_address') or tx.get('to') or tx.get('receiver') or tx.get('to_address')
+                        reward_norm = _normalize(reward_to or '')
+                        if reward_norm in normalized_map:
+                            target_addr = normalized_map[reward_norm]
+                            amount = self._parse_scan_amount(tx.get('amount', tx.get('denomination', 0) or 0) or 0)
+                            enhanced = tx.copy()
+                            enhanced.update({
+                                'type': 'reward',
+                                'from': 'network',
+                                'to': reward_to or target_addr,
+                                'block_height': block_height,
+                                'timestamp': enhanced.get('timestamp', timestamp),
+                                'hash': enhanced.get('hash') or f"genesis_reward_{block_height}_{tx_index}",
+                                'status': 'confirmed',
+                                'tx_index': tx_index,
+                                'direction': 'incoming',
+                                'effective_amount': amount,
+                                'amount': amount,
+                                'fee': 0,
+                                'reward_address': target_addr,
+                                'original_type': 'gtx_genesis',
+                            })
+                            _add_tx(target_addr, enhanced)
+                        continue
+
+                    # Transfers
+                    amount = self._parse_scan_amount(tx.get('amount', 0) or 0)
+                    fee = self._parse_scan_amount(tx.get('fee', 0) or tx.get('gas', 0) or 0)
+                    if to_norm in normalized_map:
+                        target_addr = normalized_map[to_norm]
+                        enhanced = tx.copy()
+                        enhanced.update({
+                            'block_height': block_height,
+                            'status': 'confirmed',
+                            'tx_index': tx_index,
+                            'direction': 'incoming',
+                            'effective_amount': amount,
+                            'amount': amount,
+                            'fee': fee,
+                        })
+                        _add_tx(target_addr, enhanced)
+                    if from_norm in normalized_map:
+                        target_addr = normalized_map[from_norm]
+                        enhanced = tx.copy()
+                        enhanced.update({
+                            'block_height': block_height,
+                            'status': 'confirmed',
+                            'tx_index': tx_index,
+                            'direction': 'outgoing',
+                            'effective_amount': -(amount + fee),
+                            'amount': amount,
+                            'fee': fee,
+                        })
+                        _add_tx(target_addr, enhanced)
+
+            cache = getattr(self.blockchain_manager, 'cache', None)
+            if not cache:
+                return results
+            cached_height = cache.get_highest_cached_height()
+            if cached_height is None or cached_height < 0:
+                return results
             batch_size = 200
             for start in range(0, cached_height + 1, batch_size):
                 end = min(start + batch_size - 1, cached_height)
                 blocks = cache.get_block_range(start, end)
                 for block in blocks:
-                    if not isinstance(block, dict):
-                        continue
-                    block_height = block.get('index') or block.get('height') or 0
-                    block_hash = block.get('hash') or ''
-                    timestamp = block.get('timestamp')
-
-                    # Block mining reward
-                    miner_norm = _normalize(block.get('miner', ''))
-                    reward_norm = _normalize(
-                        block.get('reward_address')
-                        or block.get('reward_to')
-                        or block.get('recipient')
-                        or ''
-                    )
-                    target_addr = None
-                    if reward_norm in normalized_map:
-                        target_addr = normalized_map[reward_norm]
-                    elif miner_norm in normalized_map:
-                        target_addr = normalized_map[miner_norm]
-                    reward_amount = float(block.get('reward', 0) or 0)
-                    if target_addr and reward_amount > 0:
-                        _add_tx(target_addr, {
-                            'type': 'reward',
-                            'from': 'network',
-                            'to': target_addr,
-                            'reward_address': target_addr,
-                            'amount': reward_amount,
-                            'block_height': block_height,
-                            'timestamp': timestamp,
-                            'hash': f"reward_{block_height}_{block_hash[:8]}",
-                            'status': 'confirmed',
-                            'direction': 'incoming',
-                            'effective_amount': reward_amount,
-                            'fee': 0,
-                        })
-
-                    # Regular transactions
-                    for tx_index, tx in enumerate(block.get('transactions', []) or []):
-                        if not isinstance(tx, dict):
-                            continue
-                        tx_type = (tx.get('type') or 'transfer').lower()
-                        from_norm = _normalize(tx.get('from') or tx.get('sender') or '')
-                        to_norm = _normalize(tx.get('to') or tx.get('receiver') or '')
-                        amount = float(tx.get('amount', 0) or 0)
-                        fee = float(tx.get('fee', 0) or tx.get('gas', 0) or 0)
-
-                        # Explicit reward transactions
-                        reward_tx_norm = _normalize(tx.get('reward_address') or tx.get('reward_to') or '')
-                        if tx_type == 'reward' and (to_norm in normalized_map or reward_tx_norm in normalized_map):
-                            target_addr = normalized_map.get(to_norm) or normalized_map.get(reward_tx_norm)
-                            enhanced = tx.copy()
-                            enhanced.update({
-                                'block_height': block_height,
-                                'status': 'confirmed',
-                                'tx_index': tx_index,
-                                'direction': 'incoming',
-                                'effective_amount': amount,
-                                'fee': 0,
-                            })
-                            enhanced.setdefault('reward_address', target_addr)
-                            enhanced.setdefault('from', 'network')
-                            _add_tx(target_addr, enhanced)
-                            continue
-
-                        # Incoming
-                        if to_norm in normalized_map:
-                            target_addr = normalized_map[to_norm]
-                            enhanced = tx.copy()
-                            enhanced.update({
-                                'block_height': block_height,
-                                'status': 'confirmed',
-                                'tx_index': tx_index,
-                                'direction': 'incoming',
-                                'effective_amount': amount,
-                                'amount': amount,
-                                'fee': fee,
-                            })
-                            _add_tx(target_addr, enhanced)
-
-                        # Outgoing
-                        if from_norm in normalized_map:
-                            target_addr = normalized_map[from_norm]
-                            enhanced = tx.copy()
-                            enhanced.update({
-                                'block_height': block_height,
-                                'status': 'confirmed',
-                                'tx_index': tx_index,
-                                'direction': 'outgoing',
-                                'effective_amount': -(amount + fee),
-                                'amount': amount,
-                                'fee': fee,
-                            })
-                            _add_tx(target_addr, enhanced)
-
-            # Merge locally stored transactions (no network) to catch missing rewards
-            try:
-                stored_txs = self.get_all_transactions()
-            except Exception:
-                stored_txs = []
-
-            if stored_txs:
-                seen_by_addr: Dict[str, set] = {addr: set() for addr in results.keys()}
-                for addr, txs in results.items():
-                    for tx in txs:
-                        tx_id = tx.get('hash') or tx.get('transaction_id')
-                        if tx_id:
-                            seen_by_addr[addr].add(str(tx_id))
-
-                for tx in stored_txs:
-                    if not isinstance(tx, dict):
-                        continue
-                    tx_type = str(tx.get('type', '')).lower()
-                    fields = [
-                        tx.get('from'), tx.get('to'), tx.get('reward_address'),
-                        tx.get('reward_to'), tx.get('recipient'), tx.get('sender'),
-                        tx.get('receiver'), tx.get('miner')
-                    ]
-                    norm_fields = {_normalize(f or '') for f in fields if f}
-                    tx_id = tx.get('hash') or tx.get('transaction_id')
-                    tx_id_str = str(tx_id) if tx_id else None
-
-                    for norm_addr, real_addr in normalized_map.items():
-                        if norm_addr and (norm_addr in norm_fields):
-                            if tx_id_str and tx_id_str in seen_by_addr[real_addr]:
-                                continue
-                            if tx_id_str:
-                                seen_by_addr[real_addr].add(tx_id_str)
-                            enriched = tx.copy()
-                            if tx_type == 'reward':
-                                enriched.setdefault('reward_address', real_addr)
-                                enriched.setdefault('from', 'network')
-                            _add_tx(real_addr, enriched)
+                    _process_block(block)
             return results
         except Exception as e:
             print(f"DEBUG: get_cached_transactions_for_addresses failed: {e}")
@@ -1592,6 +1576,15 @@ class LunaWalletApp:
             self.blockchain_manager = self.blockchain_service.manager
             self.mempool_manager = self.mempool_service.manager
 
+            # Optional one-time cache reset
+            try:
+                if str(os.getenv("LUNALIB_RESET_CACHE", "")).strip() in ("1", "true", "yes"):
+                    if self.blockchain_service and hasattr(self.blockchain_service, "reset_cache"):
+                        if self.blockchain_service.reset_cache():
+                            print("DEBUG: Blockchain cache reset (forced)")
+            except Exception as e:
+                print(f"DEBUG: Cache reset skipped: {e}")
+
             # Register as peer and refresh peer list (desktop only)
             try:
                 if not is_web() and self.blockchain_service:
@@ -2078,6 +2071,7 @@ class LunaWalletApp:
             # Ensure SM4 wallet encryption is used (lunalib 2.4.0+)
             try:
                 os.environ.setdefault("LUNALIB_WALLET_CIPHER", "sm4")
+                os.environ.setdefault("LUNALIB_SM4_USE_GPU", "1")
             except Exception:
                 pass
             try:
@@ -2188,7 +2182,10 @@ class LunaWalletApp:
                     except Exception as e:
                         print(f"[UNLOCK] wallet manager sync start failed: {e}")
                     try:
-                        self.start_initial_blockchain_scan()
+                        if str(os.getenv("LUNALIB_FORCE_RESCAN", "")).strip().lower() in ("1", "true", "yes"):
+                            self.force_rescan_blockchain()
+                        else:
+                            self.start_initial_blockchain_scan()
                     except Exception as e:
                         print(f"[UNLOCK] start_initial_blockchain_scan failed: {e}")
 
@@ -2367,6 +2364,199 @@ class LunaWalletApp:
         except Exception as e:
             print(f"DEBUG: register_wallets_with_manager failed: {e}")
 
+    def _normalize_scan_address(self, addr: str) -> str:
+        if not addr:
+            return ''
+        addr_str = str(addr).strip("'\" ").lower()
+        return addr_str[4:] if addr_str.startswith('lun_') else addr_str
+
+    def _parse_scan_amount(self, value, default: float = 0.0) -> float:
+        if value is None:
+            return default
+        if isinstance(value, (int, float)):
+            try:
+                return float(value)
+            except Exception:
+                return default
+        try:
+            return float(value)
+        except Exception:
+            text = str(value)
+            match = re.search(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?", text)
+            if match:
+                try:
+                    return float(match.group(0))
+                except Exception:
+                    return default
+        return default
+
+    def _scan_reward_like_transactions_for_addresses(self, addresses: List[str], start_height: int = 0, end_height: Optional[int] = None) -> Dict[str, List[Dict]]:
+        """Scan blocks for reward-like txs, including GTX_Genesis payouts to our wallets."""
+        results: Dict[str, List[Dict]] = {addr: [] for addr in addresses}
+        if not addresses or not hasattr(self, 'blockchain_manager') or not self.blockchain_manager:
+            return results
+
+        normalized_map = {self._normalize_scan_address(a): a for a in addresses if self._normalize_scan_address(a)}
+        if not normalized_map:
+            return results
+
+        if end_height is None:
+            try:
+                end_height = int(self.blockchain_manager.get_blockchain_height() or 0)
+            except Exception:
+                end_height = -1
+        try:
+            end_height = int(end_height)
+        except Exception:
+            end_height = -1
+        if end_height < start_height:
+            return results
+
+        seen: Dict[str, set] = {addr: set() for addr in addresses}
+        batch_size = 100
+        for batch_start in range(start_height, end_height + 1, batch_size):
+            batch_end = min(batch_start + batch_size - 1, end_height)
+            try:
+                blocks = self.blockchain_manager.get_blocks_range(batch_start, batch_end)
+            except Exception:
+                blocks = []
+            for block in blocks:
+                if not isinstance(block, dict):
+                    continue
+                block_height = block.get('index') or block.get('height') or 0
+                block_hash = block.get('hash') or ''
+                timestamp = block.get('timestamp')
+
+                # Block mining reward from metadata
+                miner_raw = block.get('miner') or block.get('mined_by') or block.get('miner_address') or block.get('mined_by_address')
+                miner_norm = self._normalize_scan_address(miner_raw or '')
+                reward_amount = self._parse_scan_amount(block.get('reward', 0) or 0)
+                if miner_norm in normalized_map and reward_amount > 0:
+                    target_addr = normalized_map[miner_norm]
+                    reward_hash = f"reward_{block_height}_{block_hash[:8]}"
+                    if reward_hash not in seen[target_addr]:
+                        seen[target_addr].add(reward_hash)
+                        results[target_addr].append({
+                            'type': 'reward',
+                            'from': 'network',
+                            'to': target_addr,
+                            'reward_address': target_addr,
+                            'amount': reward_amount,
+                            'block_height': block_height,
+                            'timestamp': timestamp,
+                            'hash': reward_hash,
+                            'status': 'confirmed',
+                            'direction': 'incoming',
+                            'effective_amount': reward_amount,
+                            'fee': 0,
+                        })
+
+                for tx_index, tx in enumerate(block.get('transactions', []) or []):
+                    if not isinstance(tx, dict):
+                        continue
+                    tx_type = (tx.get('type') or 'transfer').lower()
+
+                    if tx_type == 'reward':
+                        reward_to = tx.get('to') or tx.get('receiver') or tx.get('issued_to') or tx.get('owner_address') or tx.get('to_address')
+                        reward_norm = self._normalize_scan_address(reward_to or '')
+                        if reward_norm in normalized_map:
+                            target_addr = normalized_map[reward_norm]
+                            amount = self._parse_scan_amount(tx.get('amount', tx.get('denomination', 0) or 0) or 0)
+                            reward_hash = tx.get('hash') or f"reward_{block_height}_{tx_index}"
+                            if reward_hash not in seen[target_addr]:
+                                seen[target_addr].add(reward_hash)
+                                enhanced = tx.copy()
+                                enhanced.update({
+                                    'type': 'reward',
+                                    'from': enhanced.get('from', 'network'),
+                                    'to': reward_to or target_addr,
+                                    'block_height': block_height,
+                                    'timestamp': enhanced.get('timestamp', timestamp),
+                                    'hash': reward_hash,
+                                    'status': 'confirmed',
+                                    'tx_index': tx_index,
+                                    'direction': 'incoming',
+                                    'effective_amount': amount,
+                                    'amount': amount,
+                                    'fee': 0,
+                                    'reward_address': target_addr,
+                                })
+                                results[target_addr].append(enhanced)
+                        continue
+
+                    if tx_type == 'gtx_genesis':
+                        reward_to = tx.get('issued_to') or tx.get('owner_address') or tx.get('to') or tx.get('receiver') or tx.get('to_address')
+                        reward_norm = self._normalize_scan_address(reward_to or '')
+                        if reward_norm in normalized_map:
+                            target_addr = normalized_map[reward_norm]
+                            amount = self._parse_scan_amount(tx.get('amount', tx.get('denomination', 0) or 0) or 0)
+                            reward_hash = tx.get('hash') or f"genesis_reward_{block_height}_{tx_index}"
+                            if reward_hash not in seen[target_addr]:
+                                seen[target_addr].add(reward_hash)
+                                enhanced = tx.copy()
+                                enhanced.update({
+                                    'type': 'reward',
+                                    'from': 'network',
+                                    'to': reward_to or target_addr,
+                                    'block_height': block_height,
+                                    'timestamp': enhanced.get('timestamp', timestamp),
+                                    'hash': reward_hash,
+                                    'status': 'confirmed',
+                                    'tx_index': tx_index,
+                                    'direction': 'incoming',
+                                    'effective_amount': amount,
+                                    'amount': amount,
+                                    'fee': 0,
+                                    'reward_address': target_addr,
+                                    'original_type': 'gtx_genesis',
+                                })
+                                results[target_addr].append(enhanced)
+
+        return results
+
+    def _get_blockchain_txs_with_fallback(self, addresses: List[str], end_height: Optional[int] = None) -> Dict[str, List[Dict]]:
+        results = self.blockchain_manager.scan_transactions_for_addresses(
+            addresses,
+            start_height=0,
+            end_height=end_height,
+        )
+        if isinstance(results, dict):
+            for addr in addresses:
+                if results.get(addr):
+                    continue
+                try:
+                    per_addr = self.blockchain_manager.scan_transactions_for_address(
+                        addr,
+                        start_height=0,
+                        end_height=end_height,
+                    )
+                    if per_addr:
+                        results[addr] = per_addr
+                except Exception:
+                    pass
+        else:
+            results = {addr: [] for addr in addresses}
+
+        # If no rewards detected, do a one-time reward-like scan (GTX_Genesis -> reward)
+        if not getattr(self, '_reward_like_scan_attempted', False):
+            has_rewards = False
+            for txs in results.values():
+                if any((tx.get('type') or '').lower() == 'reward' for tx in (txs or [])):
+                    has_rewards = True
+                    break
+            if not has_rewards:
+                self._reward_like_scan_attempted = True
+                try:
+                    reward_results = self._scan_reward_like_transactions_for_addresses(addresses, start_height=0, end_height=None)
+                    if isinstance(reward_results, dict):
+                        for addr, txs in reward_results.items():
+                            if txs:
+                                results.setdefault(addr, []).extend(txs)
+                except Exception as scan_err:
+                    print(f"DEBUG: reward-like scan failed: {scan_err}")
+
+        return results
+
     def _start_wallet_manager_sync(self):
         if getattr(self, '_wallet_manager_sync_started', False):
             return
@@ -2380,13 +2570,12 @@ class LunaWalletApp:
                 cache = getattr(self.blockchain_manager, 'cache', None)
                 if cache:
                     cached_height = cache.get_highest_cached_height()
-                    if isinstance(cached_height, int) and cached_height >= 0:
+                    if isinstance(cached_height, int) and cached_height > 0:
                         end_height = cached_height
-                return self.blockchain_manager.scan_transactions_for_addresses(
-                    addresses,
-                    start_height=0,
-                    end_height=end_height,
-                )
+                results = self._get_blockchain_txs_with_fallback(addresses, end_height=end_height)
+                if isinstance(results, dict) and not any(results.values()):
+                    return self.get_cached_transactions_for_addresses(addresses)
+                return results
             except Exception as e:
                 print(f"DEBUG: wallet manager blockchain fetch failed: {e}")
                 return {addr: [] for addr in addresses}
@@ -2413,13 +2602,11 @@ class LunaWalletApp:
                 cache = getattr(self.blockchain_manager, 'cache', None)
                 if cache:
                     cached_height = cache.get_highest_cached_height()
-                    if isinstance(cached_height, int) and cached_height >= 0:
+                    if isinstance(cached_height, int) and cached_height > 0:
                         end_height = cached_height
-                blockchain_txs = self.blockchain_manager.scan_transactions_for_addresses(
-                    addresses,
-                    start_height=0,
-                    end_height=end_height,
-                )
+                blockchain_txs = self._get_blockchain_txs_with_fallback(addresses, end_height=end_height)
+                if isinstance(blockchain_txs, dict) and not any(blockchain_txs.values()):
+                    blockchain_txs = self.get_cached_transactions_for_addresses(addresses)
                 mempool_txs = {}
                 if self.mempool_manager and hasattr(self.mempool_manager, 'get_pending_transactions_for_addresses'):
                     mempool_txs = self.mempool_manager.get_pending_transactions_for_addresses(addresses, fetch_remote=True)
@@ -2461,6 +2648,43 @@ class LunaWalletApp:
             return manager.get_balance(address)
         except Exception:
             return None
+
+    def force_rescan_blockchain(self):
+        """Force a full blockchain rescan for all wallets."""
+        try:
+            if hasattr(self, 'blockchain_service') and self.blockchain_service:
+                if hasattr(self.blockchain_service, 'reset_cache'):
+                    self.blockchain_service.reset_cache()
+            manager = self._ensure_wallet_state_manager()
+            if manager and hasattr(manager, 'clear_all_caches'):
+                manager.clear_all_caches()
+
+            if not hasattr(self, 'wallet_core') or not self.wallet_core:
+                return
+            addresses = list(getattr(self.wallet_core, 'wallets', {}).keys())
+            if not addresses or not hasattr(self, 'blockchain_manager') or not self.blockchain_manager:
+                return
+
+            latest_block = self.blockchain_manager.get_latest_block()
+            end_height = latest_block.get('index', 0) if latest_block else None
+            if end_height is None:
+                end_height = self.blockchain_manager.get_blockchain_height()
+
+            blockchain_txs = self._get_blockchain_txs_with_fallback(addresses, end_height=end_height)
+            mempool_txs = {}
+            if self.mempool_manager and hasattr(self.mempool_manager, 'get_pending_transactions_for_addresses'):
+                mempool_txs = self.mempool_manager.get_pending_transactions_for_addresses(addresses, fetch_remote=True)
+            if manager:
+                manager.sync_wallets_from_sources(blockchain_txs, mempool_txs)
+
+            self.last_scanned_block = end_height or 0
+            self.initial_scan_complete = True
+            try:
+                self._refresh_ui_after_scan(force_update=True)
+            except Exception:
+                pass
+        except Exception as e:
+            print(f"DEBUG: force_rescan_blockchain failed: {e}")
 
     def _sync_wallets_with_lunalib(self) -> bool:
         try:

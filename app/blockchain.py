@@ -114,3 +114,51 @@ class BlockchainService:
             return bool(self.p2p_client)
         except Exception:
             return False
+
+    def reset_cache(self) -> bool:
+        """Delete local blockchain cache so it will be re-downloaded."""
+        try:
+            cache = getattr(self.manager, 'cache', None)
+            if not cache:
+                return False
+            cache_file = getattr(cache, 'cache_file', None)
+            cache_dir = getattr(cache, 'cache_dir', None)
+
+            # Known default cache locations
+            candidate_dirs = []
+            if cache_dir:
+                candidate_dirs.append(cache_dir)
+            candidate_dirs.append(os.path.join(os.path.expanduser("~"), ".luna_wallet"))
+            candidate_dirs.append(os.path.join(os.path.expanduser("~"), ".lunalib", "cache"))
+            flet_storage = os.getenv("FLET_APP_STORAGE")
+            if flet_storage:
+                candidate_dirs.append(os.path.join(flet_storage, "luna_wallet"))
+
+            candidate_files = []
+            if cache_file:
+                candidate_files.append(cache_file)
+            for d in candidate_dirs:
+                candidate_files.append(os.path.join(d, "blockchain_cache.db"))
+                candidate_files.append(os.path.join(d, "blockchain_cache.db-wal"))
+                candidate_files.append(os.path.join(d, "blockchain_cache.db-shm"))
+
+            for path in candidate_files:
+                try:
+                    if path and os.path.exists(path):
+                        os.remove(path)
+                except Exception:
+                    pass
+
+            # Reinitialize cache after deletion
+            try:
+                if hasattr(cache, '_init_cache'):
+                    cache._init_cache()
+                else:
+                    from lunalib.storage.cache import BlockchainCache
+                    self.manager.cache = BlockchainCache(cache_dir=cache_dir)
+            except Exception:
+                pass
+
+            return True
+        except Exception:
+            return False

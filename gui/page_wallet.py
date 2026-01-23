@@ -1013,7 +1013,7 @@ class WalletPage:
                 return
 
             # Refresh transaction history for the newly selected wallet
-            self.refresh_transaction_history(cache_only=True)
+            self.refresh_transaction_history(cache_only=False)
 
             # --- START: Sidebar Highlight Logic ---
             self._apply_sidebar_selection_highlight()
