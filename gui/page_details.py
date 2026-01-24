@@ -1,6 +1,7 @@
 import flet as ft
 from datetime import datetime
 import time
+from utils import format_amount
 
 class TransactionDetailsPage:
     def __init__(self, app, transaction_data, on_back=None):
@@ -129,14 +130,14 @@ class TransactionDetailsPage:
                 ]),
                 ft.Container(height=10),
                 ft.Text(
-                    f"'{'+' if is_incoming else '-'}{amount:.6f} LKC'",
+                    f"'{format_amount(amount)} LKC'",
                     size=20,
                     weight="bold",
                     color=color
                 ),
                 ft.Row([
                     ft.Text(f"{tx_type.title()} - {direction}", size=12, color="#a8a8a8", expand=True),
-                    ft.Text(f"Fee: {fee:.6f} LKC", size=12, color="#a8a8a8"),
+                    ft.Text(f"Fee: {format_amount(fee)} LKC", size=12, color="#a8a8a8"),
                 ])
             ]),
             padding=15,
@@ -368,7 +369,7 @@ class TransactionDetailsPage:
         tx = self.transaction_data
         share_text = f"""
 Transaction Details:
-Amount: {tx.get('amount', 0):.6f} LKC
+Amount: {format_amount(tx.get('amount', 0))} LKC
 Type: {tx.get('type', 'transfer')}
 From: {tx.get('from', 'Unknown')}
 To: {tx.get('to', 'Unknown')}

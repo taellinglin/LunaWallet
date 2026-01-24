@@ -6,6 +6,25 @@ import shutil
 sys.path.insert(0, os.path.dirname(__file__))
 
 
+def _ensure_flet_storage_dir():
+    """Set FLET_APP_STORAGE to a writable path on Linux if missing."""
+    if os.getenv("FLET_APP_STORAGE"):
+        return
+    try:
+        if sys.platform.startswith("linux"):
+            base_dir = os.getenv("XDG_DATA_HOME")
+            if not base_dir:
+                base_dir = os.path.join(os.path.expanduser("~"), ".local", "share")
+            storage_dir = os.path.join(base_dir, "LunaWallet")
+            os.makedirs(storage_dir, exist_ok=True)
+            os.environ["FLET_APP_STORAGE"] = storage_dir
+    except Exception:
+        pass
+
+
+_ensure_flet_storage_dir()
+
+
 def _ensure_lunalib_on_path():
     """Ensure lunalib is discoverable on Android APK runtime."""
     try:

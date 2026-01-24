@@ -21,6 +21,12 @@ class BlockchainService:
             self.manager = BlockchainManager(endpoint_url=self.endpoint_url, max_workers=max_workers)
         else:
             self.manager = BlockchainManager(endpoint_url=self.endpoint_url)
+        self.disable_endpoint_calls = str(os.getenv("LUNA_DISABLE_ENDPOINT_CALLS", "1")).strip().lower() in ("1", "true", "yes")
+        if self.disable_endpoint_calls:
+            try:
+                self._patch_endpoint_calls()
+            except Exception:
+                pass
         self.peers = []
         self.p2p_client = None
         self.p2p_enabled = str(os.getenv("LUNALIB_P2P_ENABLED", "")).strip().lower() in ("1", "true", "yes")
@@ -40,10 +46,62 @@ class BlockchainService:
                 self._ensure_p2p_client(start_in_background=True)
             except Exception:
                 pass
+    def _patch_endpoint_calls(self):
+        """Disable direct HTTP endpoint calls that cause 404s by using cache-only fallbacks."""
+        try:
+            self._orig_get_latest_block = getattr(self.manager, "get_latest_block", None)
+            self._orig_get_block = getattr(self.manager, "get_block", None)
+        except Exception:
+            self._orig_get_latest_block = None
+            self._orig_get_block = None
+
+        def _cached_latest_block():
+            cache = getattr(self.manager, "cache", None)
+            if cache and hasattr(cache, "get_highest_cached_height"):
+                try:
+                    height = cache.get_highest_cached_height()
+                    if isinstance(height, int) and height >= 0:
+                        return {"index": height}
+                except Exception:
+                    pass
+            return None
+
+        def _cached_get_block(height):
+            cache = getattr(self.manager, "cache", None)
+            if cache and hasattr(cache, "get_block"):
+                try:
+                    return cache.get_block(height)
+                except Exception:
+                    return None
+            return None
+
+        if self._orig_get_latest_block:
+            self.manager.get_latest_block = _cached_latest_block
+        if self._orig_get_block:
+            self.manager.get_block = _cached_get_block
+
     def get_latest_block(self):
+        if self.disable_endpoint_calls:
+            cache = getattr(self.manager, "cache", None)
+            if cache and hasattr(cache, "get_highest_cached_height"):
+                try:
+                    height = cache.get_highest_cached_height()
+                    if isinstance(height, int) and height >= 0:
+                        return {"index": height}
+                except Exception:
+                    pass
+            return None
         return self.manager.get_latest_block()
 
     def get_block(self, height):
+        if self.disable_endpoint_calls:
+            cache = getattr(self.manager, "cache", None)
+            if cache and hasattr(cache, "get_block"):
+                try:
+                    return cache.get_block(height)
+                except Exception:
+                    return None
+            return None
         return self.manager.get_block(height)
 
     def scan_transactions_for_address(self, address, start_height=0, end_height=None):

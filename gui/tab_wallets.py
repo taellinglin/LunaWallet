@@ -1,6 +1,6 @@
 import flet as ft
 from typing import List, Dict
-from utils import calculate_wallet_balances
+from utils import calculate_wallet_balances, format_amount
 from app.storage import is_web
 try:
     from lunalib.core.mempool import MempoolManager
@@ -376,8 +376,8 @@ class TabWallets:
         
         # Format balance display
         if cached_confirmed is not None and cached_pending is not None:
-            confirmed_str = f"{cached_confirmed:.6f}"
-            pending_str = f"{cached_pending:.6f}"
+            confirmed_str = format_amount(cached_confirmed)
+            pending_str = format_amount(cached_pending)
             balance_display = f"Available: {confirmed_str} LKC | Pending: {pending_str} LKC"
         else:
             balance_display = "Balance: Loading..."

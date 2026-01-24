@@ -1,5 +1,6 @@
 import base64
 import io
+import os
 import time
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
@@ -37,6 +38,7 @@ def _ensure_clients():
         endpoint = os.getenv("LUNALIB_ENDPOINT_URL") or os.getenv("LUNA_NODE_URL") or os.getenv("PRIMARY_NODE_URL")
         endpoint = endpoint or "https://bank.linglin.art/api/blockchain/full"
         blockchain = BlockchainManager(endpoint_url=endpoint)
+        disable_endpoint_calls = str(os.getenv("LUNA_DISABLE_ENDPOINT_CALLS", "1")).strip().lower() in ("1", "true", "yes")
 
         # Normalize latest block responses (some endpoints return a list)
         try:
@@ -44,6 +46,13 @@ def _ensure_clients():
 
             def _safe_get_latest_block():
                 try:
+                    if disable_endpoint_calls:
+                        cache = getattr(blockchain, "cache", None)
+                        if cache and hasattr(cache, "get_highest_cached_height"):
+                            height = cache.get_highest_cached_height()
+                            if isinstance(height, int) and height >= 0:
+                                return {"index": height}
+                        return None
                     result = _orig_get_latest_block()
                     if isinstance(result, list) and result:
                         return result[-1]
@@ -55,6 +64,24 @@ def _ensure_clients():
             blockchain.get_latest_block = _safe_get_latest_block
         except Exception as e:
             print(f"DEBUG: Failed to patch get_latest_block: {e}")
+
+        if disable_endpoint_calls:
+            try:
+                _orig_get_block = getattr(blockchain, "get_block", None)
+
+                def _safe_get_block(height):
+                    cache = getattr(blockchain, "cache", None)
+                    if cache and hasattr(cache, "get_block"):
+                        try:
+                            return cache.get_block(height)
+                        except Exception:
+                            return None
+                    return None
+
+                if _orig_get_block:
+                    blockchain.get_block = _safe_get_block
+            except Exception:
+                pass
 
         mempool_endpoint = os.getenv("LUNALIB_ENDPOINT_URL") or os.getenv("LUNA_NODE_URL") or os.getenv("PRIMARY_NODE_URL")
         mempool = MempoolManager([mempool_endpoint]) if (MempoolManager is not None and mempool_endpoint) else (MempoolManager() if MempoolManager is not None else None)
@@ -477,7 +504,7 @@ def update_all_wallet_balances(wallets: Dict, database=None, mempool_manager=Non
     return wallets
 
 
-def format_balance_display(available: float, pending: float = None, decimals: int = 6) -> Tuple[str, str]:
+def format_balance_display(available: float, pending: float = None, decimals: int = 2) -> Tuple[str, str]:
     """
     Format balances for UI display.
     
@@ -489,10 +516,10 @@ def format_balance_display(available: float, pending: float = None, decimals: in
     Returns:
         Tuple of (available_text, pending_text)
     """
-    available_text = f"{available:.{decimals}f} LKC"
+    available_text = f"{format_amount(available, decimals=decimals)} LKC"
     
     if pending is not None:
-        pending_text = f"{pending:.{decimals}f} LKC"
+        pending_text = f"{format_amount(pending, decimals=decimals)} LKC"
     else:
         pending_text = "0.000000 LKC"
     
@@ -511,7 +538,11 @@ def get_balance_summary(available: float, pending: float) -> str:
         Summary string
     """
     total = available + pending
-    return f"Available: {available:.6f} LKC | Pending: {pending:.6f} LKC | Total: {total:.6f} LKC"
+    return (
+        f"Available: {format_amount(available)} LKC | "
+        f"Pending: {format_amount(pending)} LKC | "
+        f"Total: {format_amount(total)} LKC"
+    )
 
 def generate_qr_code(data: str, size: int = 200) -> str:
     """Generate QR code as base64 string using lunalib wallet"""
@@ -528,9 +559,20 @@ def format_address(address: str, prefix_length: int = 8, suffix_length: int = 6)
         return address
     return f"{address[:prefix_length]}...{address[-suffix_length:]}"
 
-def format_balance(balance: float, decimals: int = 6) -> str:
-    """Format balance with specified decimal places"""
-    return f"{balance:.{decimals}f}"
+def format_amount(value: float, decimals: int = 2, show_sign: bool = False) -> str:
+    """Format numeric amounts with commas and fixed decimals."""
+    try:
+        number = float(value)
+    except Exception:
+        number = 0.0
+    if show_sign:
+        return f"{number:+,.{decimals}f}"
+    return f"{number:,.{decimals}f}"
+
+def format_balance(balance: float, decimals: int = 2, with_unit: bool = False, show_sign: bool = False) -> str:
+    """Format balance with commas, optional unit, and optional sign."""
+    formatted = format_amount(balance, decimals=decimals, show_sign=show_sign)
+    return f"{formatted} LKC" if with_unit else formatted
 
 def format_timestamp(timestamp: float, format_str: str = "%Y-%m-%d %H:%M") -> str:
     """Format timestamp to readable string"""
@@ -767,9 +809,6 @@ def get_p2p_status(self) -> Dict:
 
 
 # Additional utilities
-def format_balance(amount):
-    return f"{float(amount):,.6f} LKC"
-
 def format_address(address):
     return address[:6] + "..." + address[-6:] if address else ""
 

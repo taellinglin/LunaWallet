@@ -5,7 +5,7 @@ console = Console()
 import threading
 from datetime import datetime
 import time
-from utils import calculate_wallet_balances
+from utils import calculate_wallet_balances, format_amount
 import json
 import os
 
@@ -563,14 +563,14 @@ class WalletPage:
                 balance_display = "--.--"
                 balance_color = "#999999"
             else:
-                balance_display = f"{confirmed_balance:.6f}"
+                balance_display = format_amount(confirmed_balance)
                 balance_color = "#f8d7da"
             
             if pending_balance is None:
                 pending_display = "--.--"
                 pending_color = "#999999"
             else:
-                pending_display = f"{pending_balance:+.6f}"
+                pending_display = format_amount(pending_balance)
                 pending_color = "#00ff00" if pending_balance > 0 else ("#ff4444" if pending_balance < 0 else "#ffd700")
             
             # Get the content column
@@ -633,7 +633,7 @@ class WalletPage:
                             # Update the sidebar item display
                             self._update_sidebar_wallet_display(wallet_item, confirmed_balance, pending_balance)
                             
-                            print(f"✓ Updated {wallet_address[:12]}... in sidebar: {confirmed_balance:.6f} LKC")
+                            print(f"✓ Updated {wallet_address[:12]}... in sidebar: {format_amount(confirmed_balance)} LKC")
                 except Exception as e:
                     print(f"DEBUG: Error updating individual wallet in sidebar: {e}")
             
@@ -847,7 +847,7 @@ class WalletPage:
             
             confirmed_balance = max(0.0, confirmed_balance)
             
-            print(f"DEBUG: Calculated balance - confirmed={confirmed_balance:.6f}, pending={pending_balance:.6f}")
+            print(f"DEBUG: Calculated balance - confirmed={format_amount(confirmed_balance)}, pending={format_amount(pending_balance)}")
             return confirmed_balance, pending_balance
             
         except Exception as e:
@@ -907,14 +907,14 @@ class WalletPage:
             balance_display = "--.--"
             balance_color = "#999999"
         else:
-            balance_display = f"{confirmed:.6f}"
+            balance_display = format_amount(confirmed)
             balance_color = "#f8d7da"
         
         if pending is None:
             pending_display = "--.--"
             pending_color = "#999999"
         else:
-            pending_display = f"{pending:+.6f}"
+            pending_display = format_amount(pending)
             pending_color = "#00ff00" if pending > 0 else ("#ff4444" if pending < 0 else "#ffd700")
         
         if self.sidebar_collapsed:
@@ -1104,7 +1104,7 @@ class WalletPage:
                 self.balance_text.color = "#999999"
             else:
                 try:
-                    self.balance_text.value = f"{float(confirmed):.6f} LKC"
+                    self.balance_text.value = f"{format_amount(float(confirmed))} LKC"
                     self.balance_text.color = "#f8d7da"
                 except Exception:
                     self.balance_text.value = "--.-- LKC"
@@ -1114,7 +1114,7 @@ class WalletPage:
                 self.pending_balance_text.color = "#999999"
             else:
                 try:
-                    self.pending_balance_text.value = f"Pending: {float(pending):+.6f}"
+                    self.pending_balance_text.value = f"Pending: {format_amount(float(pending))}"
                     self.pending_balance_text.color = "#00ff00" if float(pending) > 0 else ("#ff4444" if float(pending) < 0 else "#ffd700")
                 except Exception:
                     self.pending_balance_text.value = "--.-- LKC"
@@ -1765,8 +1765,8 @@ class WalletPage:
             ab = available_balance if available_balance is not None else 0.0
             pb = pending_balance if pending_balance is not None else 0.0
             # Update balance text
-            self.balance_text.value = f"{ab:.6f} LKC"
-            self.pending_balance_text.value = f"{pb:+.6f} LKC"
+            self.balance_text.value = f"{format_amount(ab)} LKC"
+            self.pending_balance_text.value = f"{format_amount(pb)} LKC"
             # Color pending balance
             if pb > 0:
                 self.pending_balance_text.color = "#00ff00"  # Green
@@ -1922,7 +1922,7 @@ class WalletPage:
                             reward_item = ft.Container(
                                     content=ft.ListTile(
                                         leading=ft.Icon(ft.Icons.ATTACH_MONEY, color="#00ff00", size=16),
-                                        title=ft.Text(f"+{original_tx.get('amount', 0):.6f} LKC", 
+                                        title=ft.Text(f"{format_amount(original_tx.get('amount', 0))} LKC", 
                                             color="#00ff00", size=12, weight="bold"),
                                         subtitle=ft.Text(orig_date_str, size=10, color="#888888"),
                                         on_click=lambda e, tx=original_tx: self._show_transaction_details(tx),
@@ -1953,7 +1953,7 @@ class WalletPage:
                             size=20
                         ),
                         title=ft.Row([
-                            ft.Text(f"+{amount:.6f} LKC × {original_count}", 
+                            ft.Text(f"{format_amount(amount)} LKC × {original_count}", 
                                 color=amount_color, 
                                 size=14,
                                 weight="bold",
@@ -1995,8 +1995,8 @@ class WalletPage:
         is_incoming = self._is_incoming_transaction(tx_data, current_address)
         
         # Format amount with color and prefix
-        amount_color = "#00ff00" if is_incoming else "#ff4444"
-        amount_prefix = "+" if is_incoming else "-"
+        amount_color = "#40cc40" if is_incoming else "#db3939"
+        amount_prefix = ""
         
         # Format date
         try:
@@ -2031,7 +2031,7 @@ class WalletPage:
                     size=20
                 ),
                 title=ft.Row([
-                    ft.Text(f"{amount_prefix}{amount:.6f} LKC", 
+                    ft.Text(f"{amount_prefix}{format_amount(abs(amount))} LKC", 
                         color=amount_color, 
                         size=14,
                         weight="bold",
