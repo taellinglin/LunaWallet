@@ -79,7 +79,7 @@ jobs:
       - name: Add Flutter to PATH
         run: echo "$HOME/flutter/bin" >> $GITHUB_PATH
       - name: Build macOS binary
-        run: flet build macos
+        run: bash build_macos.sh
       - name: Set VERSION
         run: |
           python - <<'PY'
