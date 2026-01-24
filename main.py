@@ -12,6 +12,17 @@ def _ensure_flet_storage_dir():
         return
     try:
         if sys.platform.startswith("linux"):
+            # Ensure Flet home exists to avoid MissingPlatformDirectoryException
+            flet_home = os.getenv("FLET_HOME")
+            if not flet_home:
+                flet_home = os.path.join(os.path.expanduser("~"), ".flet")
+                os.environ["FLET_HOME"] = flet_home
+            os.makedirs(flet_home, exist_ok=True)
+
+            # WSL hint (harmless on non-WSL, but helps if running under WSL)
+            if "microsoft" in " ".join(platform.uname()).lower():
+                os.environ["FLET_WSL"] = "true"
+
             base_dir = os.getenv("XDG_DATA_HOME")
             if not base_dir:
                 base_dir = os.path.join(os.path.expanduser("~"), ".local", "share")
