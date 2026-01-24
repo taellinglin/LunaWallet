@@ -22,6 +22,33 @@ def _ensure_flet_storage_dir():
         pass
 
 
+def _ensure_xdg_user_dirs():
+    """Ensure XDG user dirs exist on Linux to avoid MissingPlatformDirectoryException."""
+    try:
+        if not sys.platform.startswith("linux"):
+            return
+        home_dir = os.path.expanduser("~")
+        if not home_dir:
+            return
+        config_dir = os.path.join(home_dir, ".config")
+        user_dirs_file = os.path.join(config_dir, "user-dirs.dirs")
+        documents_dir = os.path.join(home_dir, "Documents")
+
+        if not os.path.isdir(documents_dir):
+            os.makedirs(documents_dir, exist_ok=True)
+
+        if not os.path.isfile(user_dirs_file):
+            os.makedirs(config_dir, exist_ok=True)
+            with open(user_dirs_file, "w", encoding="utf-8") as f:
+                f.write('XDG_DOCUMENTS_DIR="$HOME/Documents"\n')
+
+        # Also set env for current process/session
+        os.environ.setdefault("XDG_DOCUMENTS_DIR", documents_dir)
+    except Exception:
+        pass
+
+
+_ensure_xdg_user_dirs()
 _ensure_flet_storage_dir()
 
 
