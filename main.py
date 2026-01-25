@@ -2,8 +2,49 @@ import os
 import sys
 import threading
 import shutil
+import platform
 # Ensure local packages (./cryptography, ./certifi) shadow site-packages
 sys.path.insert(0, os.path.dirname(__file__))
+
+# Prevent leaking paths from other projects (e.g., via PYTHONPATH)
+os.environ.pop("PYTHONPATH", None)
+
+
+def _prune_foreign_venv_paths():
+    """Remove unrelated/old venv paths from sys.path (e.g., other projects)."""
+    try:
+        current_venv = os.environ.get("VIRTUAL_ENV")
+        keep_prefixes = []
+        if current_venv:
+            keep_prefixes.append(os.path.normpath(current_venv))
+        # Always keep current interpreter prefixes
+        keep_prefixes.extend([os.path.normpath(sys.prefix), os.path.normpath(sys.base_prefix)])
+
+        cleaned = []
+        for p in sys.path:
+            if not p:
+                cleaned.append(p)
+                continue
+            norm = os.path.normpath(p)
+
+            # Drop anything under /Programs/ that isn't this project
+            if "/Programs/" in norm.replace("\\", "/") and "LunaWallet" not in norm:
+                continue
+
+            # Drop obvious foreign/old venvs
+            if ".venv.old" in norm or "Gambler" in norm:
+                continue
+
+            # If it looks like a venv site-packages and it's not current, drop it
+            if ("site-packages" in norm or "dist-packages" in norm) and keep_prefixes:
+                if not any(norm.startswith(k) for k in keep_prefixes):
+                    continue
+
+            cleaned.append(p)
+
+        sys.path[:] = cleaned
+    except Exception:
+        pass
 
 
 def _ensure_flet_storage_dir():
@@ -59,6 +100,7 @@ def _ensure_xdg_user_dirs():
         pass
 
 
+_prune_foreign_venv_paths()
 _ensure_xdg_user_dirs()
 _ensure_flet_storage_dir()
 
@@ -290,9 +332,11 @@ if __name__ == "__main__":
             return
             
         try:
-            # Use Flet audio for mobile compatibility
+            # Use Flet audio for mobile compatibility (if available)
+            if not hasattr(ft, "Audio"):
+                print("Sound error: Flet Audio not available on this platform")
+                return
             if sound_type == "transaction":
-                # You can use Flet's Audio control for mobile
                 audio = ft.Audio(
                     src="transaction.wav",
                     autoplay=True,

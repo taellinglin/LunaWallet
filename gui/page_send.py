@@ -334,7 +334,7 @@ class SendPage:
         print("=" * 50)
         
         if not hasattr(self.app, 'wallet_core') or not self.app.wallet_core:
-            print("❌ No wallet_core found")
+            print("Error: No wallet_core found")
             return False
             
         wallet = self.app.wallet_core

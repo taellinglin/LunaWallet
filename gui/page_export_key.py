@@ -156,12 +156,12 @@ class ExportKeyPage:
                     self.app.page.update()
                     self.app.show_snackbar("✅ Private key retrieved", "success")
                 else:
-                    self.app.show_snackbar("❌ Failed to export private key - wrong password?", "error")
+                    self.app.show_snackbar("Failed to export private key - wrong password?", "error")
             else:
-                self.app.show_snackbar("❌ Export not supported", "error")
+                self.app.show_snackbar("Export not supported", "error")
                 
         except Exception as ex:
-            self.app.show_snackbar(f"❌ Error: {str(ex)}", "error")
+            self.app.show_snackbar(f"Error: {str(ex)}", "error")
     
     def copy_private_key(self, e):
         if self.private_key_display.value:
@@ -219,7 +219,7 @@ class ExportKeyPage:
                     print(f"DEBUG: Pyperclip error: {e2}")
                     def show_error():
                         try:
-                            self.app.show_snackbar("❌ Could not copy to clipboard", "error")
+                            self.app.show_snackbar("Could not copy to clipboard", "error")
                         except Exception as e:
                             print(f"DEBUG: Error in snackbar callback: {e}")
                     

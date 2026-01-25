@@ -15,6 +15,14 @@ if not AUDIO_BACKEND and platform.system() == 'Windows':
     except ImportError:
         pass
 
+# On Linux, try simpleaudio if available
+if not AUDIO_BACKEND and platform.system() == 'Linux':
+    try:
+        import simpleaudio  # noqa: F401
+        AUDIO_BACKEND = 'simpleaudio'
+    except ImportError:
+        pass
+
 # For Flet/mobile apps, check if flet is available
 FLET_AVAILABLE = False
 try:
@@ -40,6 +48,9 @@ class SoundManager:
         elif self.is_mobile and FLET_AVAILABLE:
             self.initialized = True
             print(f"DEBUG: SoundManager initialized for mobile/Flet")
+        elif self.backend == 'simpleaudio':
+            self.initialized = True
+            print(f"DEBUG: SoundManager initialized with simpleaudio backend (Linux)")
         else:
             print(f"DEBUG: No audio backend available")
     
@@ -86,6 +97,8 @@ class SoundManager:
             
             if self.backend == 'winsound':
                 return self._play_with_winsound(sound_path, async_play)
+            elif self.backend == 'simpleaudio':
+                return self._play_with_simpleaudio(sound_path, async_play)
             elif self.is_mobile and FLET_AVAILABLE:
                 return self._play_with_flet(sound_path, async_play)
             else:
@@ -143,6 +156,32 @@ class SoundManager:
             return False
         except Exception as e:
             print(f"DEBUG: Error playing with Flet: {e}")
+            return False
+
+    def _play_with_simpleaudio(self, sound_path, async_play=True):
+        """Play sound using simpleaudio - Linux (and cross-platform)"""
+        try:
+            import simpleaudio
+
+            def play():
+                try:
+                    wave_obj = simpleaudio.WaveObject.from_wave_file(sound_path)
+                    play_obj = wave_obj.play()
+                    play_obj.wait_done()
+                    print("DEBUG: Sound played successfully with simpleaudio")
+                except Exception as e:
+                    print(f"DEBUG: Error in simpleaudio playback: {e}")
+
+            if async_play:
+                thread = threading.Thread(target=play)
+                thread.daemon = True
+                thread.start()
+            else:
+                play()
+
+            return True
+        except Exception as e:
+            print(f"DEBUG: Error playing with simpleaudio: {e}")
             return False
     
     def play_send_sound(self):

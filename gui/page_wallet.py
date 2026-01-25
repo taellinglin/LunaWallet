@@ -1,4 +1,5 @@
 import flet as ft
+from gui.icon_utils import icon_label, feather_icon
 from tqdm import tqdm
 from rich.console import Console
 console = Console()
@@ -1297,7 +1298,7 @@ class WalletPage:
         return ft.Container(
             content=ft.Row([
                 ft.ElevatedButton(
-                    "📤 Send",
+                    content=icon_label("send", "Send", size=14, color="#ffffff", text_size=12),
                     on_click=lambda e: self.on_send(),
                     style=ft.ButtonStyle(
                         color="#ffffff",
@@ -1309,7 +1310,7 @@ class WalletPage:
                     expand=True
                 ),
                 ft.ElevatedButton(
-                    "📥 Receive",
+                    content=icon_label("download", "Receive", size=14, color="#ffffff", text_size=12),
                     on_click=lambda e: self.on_receive(),
                     style=ft.ButtonStyle(
                         color="#ffffff",
@@ -1321,7 +1322,7 @@ class WalletPage:
                     expand=True
                 ),
                 ft.ElevatedButton(
-                    "🔑 Key",
+                    content=icon_label("key", "Key", size=14, color="#ffffff", text_size=12),
                     on_click=lambda e: self.on_export_key(),
                     style=ft.ButtonStyle(
                         color="#ffffff",
@@ -1350,7 +1351,17 @@ class WalletPage:
         return ft.Container(
             content=ft.Column([
                 ft.Row([
-                    ft.Text("📊 Recent Transactions", size=16, weight="bold", color="#f8d7da", expand=True),
+                    ft.Container(
+                        content=icon_label(
+                            "list",
+                            "Recent Transactions",
+                            size=16,
+                            color="#f8d7da",
+                            text_size=16,
+                            text_weight=ft.FontWeight.BOLD,
+                        ),
+                        expand=True,
+                    ),
                     ft.IconButton(
                         icon=ft.Icons.REFRESH,
                         icon_color="#f8d7da",
@@ -1881,7 +1892,7 @@ class WalletPage:
             
             # Status indicator
             status_color = "#00ff00" if status == 'confirmed' else "#ffd700"
-            status_text = "✓" if status == 'confirmed' else "⏳"
+            status_icon_name = "check-circle" if status == 'confirmed' else "clock"
             
             # Create description for compressed rewards
             reward_address = tx_data.get('reward_address', tx_data.get('to', 'Unknown'))
@@ -1958,7 +1969,7 @@ class WalletPage:
                                 size=14,
                                 weight="bold",
                                 expand=True),
-                            ft.Text(status_text, color=status_color, size=12),
+                            feather_icon(status_icon_name, size=12, color=status_color),
                         ]),
                         subtitle=ft.Row([
                             ft.Text(date_str, size=11, color="#a8a8a8", expand=True),
@@ -2006,7 +2017,7 @@ class WalletPage:
         
         # Status indicator
         status_color = "#00ff00" if status == 'confirmed' else "#ffd700"
-        status_text = "✓" if status == 'confirmed' else "⏳"
+        status_icon_name = "check-circle" if status == 'confirmed' else "clock"
         
         # Create description based on transaction type
         if tx_type == 'reward':
@@ -2036,7 +2047,7 @@ class WalletPage:
                         size=14,
                         weight="bold",
                         expand=True),
-                    ft.Text(status_text, color=status_color, size=12),
+                    feather_icon(status_icon_name, size=12, color=status_color),
                 ]),
                 subtitle=ft.Row([
                     ft.Text(date_str, size=11, color="#a8a8a8", expand=True),
@@ -2173,54 +2184,54 @@ class WalletPage:
                         try:
                             if hasattr(self.app, 'blockchain_manager'):
                                 height = self.app.blockchain_manager.get_blockchain_height()
-                                stats.append(self.create_stat_item("📦", f"{height}", "Height"))
+                                stats.append(self.create_stat_item("package", f"{height}", "Height"))
                             else:
-                                stats.append(self.create_stat_item("📦", "0", "Height"))
+                                stats.append(self.create_stat_item("package", "0", "Height"))
                         except:
-                            stats.append(self.create_stat_item("📦", "0", "Height"))
+                            stats.append(self.create_stat_item("package", "0", "Height"))
                         
 
                         # Network status - check the connection
                         try:
                             network_status = self._check_network_status()
                             if network_status['connected']:
-                                stats.append(self.create_stat_item("🟢", "Online", "Network"))
+                                stats.append(self.create_stat_item("circle", "Online", "Network", icon_color="#28a745"))
                             else:
-                                stats.append(self.create_stat_item("🔴", "Offline", "Network"))
+                                stats.append(self.create_stat_item("circle", "Offline", "Network", icon_color="#dc3545"))
                         except:
-                            stats.append(self.create_stat_item("❓", "Unknown", "Network"))
+                            stats.append(self.create_stat_item("help-circle", "Unknown", "Network"))
 
                         # P2P status + Peers
                         try:
                             if hasattr(self.app, 'blockchain_service') and hasattr(self.app.blockchain_service, 'get_p2p_status'):
                                 p2p = self.app.blockchain_service.get_p2p_status()
                                 status_text = "On" if p2p.get("running") else "Off"
-                                stats.append(self.create_stat_item("🧭", status_text, "P2P"))
+                                stats.append(self.create_stat_item("compass", status_text, "P2P"))
                                 peer_count = p2p.get("peers", "?")
-                                stats.append(self.create_stat_item("🌐", str(peer_count), "Peers"))
+                                stats.append(self.create_stat_item("globe", str(peer_count), "Peers"))
                             elif hasattr(self.app, 'blockchain_manager'):
                                 peer_count = self.app.blockchain_manager.get_peer_count()
-                                stats.append(self.create_stat_item("🌐", str(peer_count), "Peers"))
+                                stats.append(self.create_stat_item("globe", str(peer_count), "Peers"))
                         except Exception as e:
-                            stats.append(self.create_stat_item("🧭", "?", "P2P"))
-                            stats.append(self.create_stat_item("🌐", "?", "Peers"))
+                            stats.append(self.create_stat_item("compass", "?", "P2P"))
+                            stats.append(self.create_stat_item("globe", "?", "Peers"))
                         
                         # Wallet count
                         try:
                             wallet_count = len(self.app.wallet_core.wallets) if self.app.wallet_core.wallets else 0
-                            stats.append(self.create_stat_item("👛", f"{wallet_count}", "Wallets"))
+                            stats.append(self.create_stat_item("credit-card", f"{wallet_count}", "Wallets"))
                         except:
-                            stats.append(self.create_stat_item("👛", "1", "Wallets"))
+                            stats.append(self.create_stat_item("credit-card", "1", "Wallets"))
                         
                     else:
-                        stats.append(self.create_stat_item("🔒", "Locked", "Wallet"))
-                        stats.append(self.create_stat_item("⏳", "Waiting", "Sync"))
+                        stats.append(self.create_stat_item("lock", "Locked", "Wallet"))
+                        stats.append(self.create_stat_item("clock", "Waiting", "Sync"))
                 
                 else:
-                    stats.append(self.create_stat_item("❌", "No Core", "Wallet"))
+                    stats.append(self.create_stat_item("x-circle", "No Core", "Wallet"))
                 
             except Exception as e:
-                stats.append(self.create_stat_item("❌", "Error", "Stats"))
+                stats.append(self.create_stat_item("x-circle", "Error", "Stats"))
             
             def update_ui():
                 self.stats_row.controls = stats
@@ -2329,11 +2340,11 @@ class WalletPage:
             # Default to online with 1 peer on error (be optimistic)
             return {'connected': True, 'endpoint': 'error', 'peers': 1}
 
-    def create_stat_item(self, icon, value, label):
+    def create_stat_item(self, icon_name, value, label, icon_color="#f8d7da"):
         return ft.Container(
             content=ft.Column([
                 ft.Row([
-                    ft.Text(icon, size=12),
+                    feather_icon(icon_name, size=12, color=icon_color),
                     ft.Text(value, size=12, color="#ffffff", weight="bold")
                 ], spacing=2),
                 ft.Text(label, size=10, color="#f8d7da")

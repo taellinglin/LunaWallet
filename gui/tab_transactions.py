@@ -1,4 +1,5 @@
 import flet as ft
+from gui.icon_utils import feather_icon
 from datetime import datetime
 from typing import List, Dict
 import time
@@ -170,11 +171,11 @@ class TabTransactions:
                 if is_compressed:
                     original_count = tx.get('_original_count', 1)
                     amount = tx.get('amount', 0)
-                    type_icon = "💰"
+                    type_icon_name = "award"
                     direction = f"← Mining Rewards (×{original_count})"
                     amount_text = f"{format_amount(amount)} LKC × {original_count}"
                 else:
-                    type_icon = "💰" if tx_type == "reward" else "🔄"
+                    type_icon_name = "award" if tx_type == "reward" else "repeat"
                     from_addr = tx.get('from', 'Network')
                     to_addr = tx.get('to', 'Unknown')
                     
@@ -196,16 +197,34 @@ class TabTransactions:
                 amount_color = "#00ff00" if (is_compressed or tx.get('type') == 'reward' or 
                                               (not is_compressed and to_addr.lower() in [w['address'].lower() for w in self.wallet_core.wallets])) else "#ff0000"
                 status = tx.get('status', 'unknown')
-                status_icon = "✅" if status == "confirmed" else "⏳" if status == "pending" else "❌"
+                status_icon_name = "check-circle" if status == "confirmed" else "clock" if status == "pending" else "x-circle"
                 memo = tx.get('memo', '')
                 
                 table.rows.append(
                     ft.DataRow(cells=[
                         ft.DataCell(ft.Text(date_str, size=12, color="#f8d7da")),
-                        ft.DataCell(ft.Text(f"{type_icon} {tx_type}", size=12, color="#f8d7da")),
+                        ft.DataCell(
+                            ft.Row(
+                                [
+                                    feather_icon(type_icon_name, size=14, color="#f8d7da"),
+                                    ft.Text(tx_type, size=12, color="#f8d7da"),
+                                ],
+                                spacing=6,
+                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                            )
+                        ),
                         ft.DataCell(ft.Text(direction, size=12, color="#f8d7da")),
                         ft.DataCell(ft.Text(amount_text, size=12, color=amount_color)),
-                        ft.DataCell(ft.Text(f"{status_icon} {status}", size=12, color="#f8d7da")),
+                        ft.DataCell(
+                            ft.Row(
+                                [
+                                    feather_icon(status_icon_name, size=14, color="#f8d7da"),
+                                    ft.Text(status, size=12, color="#f8d7da"),
+                                ],
+                                spacing=6,
+                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                            )
+                        ),
                         ft.DataCell(ft.Text(memo, size=12, color="#f8d7da")),
                     ])
                 )

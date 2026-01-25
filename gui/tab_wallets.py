@@ -1,4 +1,5 @@
 import flet as ft
+from gui.icon_utils import icon_label
 from typing import List, Dict
 from utils import calculate_wallet_balances, format_amount
 from app.storage import is_web
@@ -30,7 +31,7 @@ class TabWallets:
         
         action_buttons = ft.Column([
             ft.ElevatedButton(
-                "🆕 Create New Wallet",
+                content=icon_label("plus-circle", "Create New Wallet", size=16, color="#ffffff", text_size=14),
                 on_click=self._handle_create_wallet,
                 style=ft.ButtonStyle(
                     color="#ffffff",
@@ -41,7 +42,7 @@ class TabWallets:
                 height=55
             ),
             ft.ElevatedButton(
-                "📁 Import Wallet",
+                content=icon_label("folder", "Import Wallet", size=16, color="#ffffff", text_size=14),
                 on_click=self._handle_import_wallet,
                 style=ft.ButtonStyle(
                     color="#ffffff",
@@ -73,7 +74,7 @@ class TabWallets:
         
         action_buttons = ft.Column([
             ft.ElevatedButton(
-                "🆕 Create New Wallet",
+                content=icon_label("plus-circle", "Create New Wallet", size=16, color="#ffffff", text_size=14),
                 on_click=self._handle_create_wallet,
                 style=ft.ButtonStyle(
                     color="#ffffff",
@@ -84,7 +85,7 @@ class TabWallets:
                 height=55
             ),
             ft.ElevatedButton(
-                "📁 Import Wallet",
+                content=icon_label("folder", "Import Wallet", size=16, color="#ffffff", text_size=14),
                 on_click=self._handle_import_wallet,
                 style=ft.ButtonStyle(
                     color="#ffffff",

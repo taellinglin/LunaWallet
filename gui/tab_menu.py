@@ -1,4 +1,5 @@
 import flet as ft
+from gui.icon_utils import icon_label
 
 class TabMenu:
     def __init__(self, is_mobile=False, on_sync=None, on_lock=None, on_about=None, on_export_key=None, on_receive=None, on_send=None):
@@ -72,7 +73,7 @@ class TabMenu:
         quick_actions = ft.Column([
             ft.Text("Quick Actions", size=18, color="#f8d7da", weight="bold"),
             ft.ElevatedButton(
-                "📥 Receive",
+                content=icon_label("download", "Receive", size=16, color="#ffffff", text_size=14),
                 on_click=lambda _: self.on_receive() if self.on_receive else None,
                 style=ft.ButtonStyle(
                     color="#ffffff",
@@ -83,7 +84,7 @@ class TabMenu:
                 height=45
             ),
             ft.ElevatedButton(
-                "📤 Send",
+                content=icon_label("send", "Send", size=16, color="#ffffff", text_size=14),
                 on_click=lambda _: self.on_send() if self.on_send else None,
                 style=ft.ButtonStyle(
                     color="#ffffff",
@@ -94,7 +95,7 @@ class TabMenu:
                 height=45
             ),
             ft.ElevatedButton(
-                "🔄 Sync",
+                content=icon_label("refresh-cw", "Sync", size=16, color="#ffffff", text_size=14),
                 on_click=lambda _: self.on_sync() if self.on_sync else None,
                 style=ft.ButtonStyle(
                     color="#ffffff",
@@ -105,7 +106,7 @@ class TabMenu:
                 height=45
             ),
             ft.ElevatedButton(
-                "🔑 Export Key",
+                content=icon_label("key", "Export Key", size=16, color="#ffffff", text_size=14),
                 on_click=lambda _: self.on_export_key() if self.on_export_key else None,
                 style=ft.ButtonStyle(
                     color="#ffffff",
@@ -116,7 +117,7 @@ class TabMenu:
                 height=45
             ),
             ft.ElevatedButton(
-                "🔒 Lock",
+                content=icon_label("lock", "Lock", size=16, color="#ffffff", text_size=14),
                 on_click=lambda _: self.on_lock() if self.on_lock else None,
                 style=ft.ButtonStyle(
                     color="#ffffff",

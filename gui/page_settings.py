@@ -1,4 +1,5 @@
 import flet as ft
+from gui.icon_utils import icon_label
 import threading
 import time
 from datetime import datetime
@@ -76,7 +77,14 @@ class SettingsPage:
                     on_click=lambda e: self.on_back() if self.on_back else None,
                     tooltip="Back to Wallet"
                 ),
-                ft.Text("⚙️ Wallet Settings", size=24, color="#f8d7da", weight="bold"),
+                icon_label(
+                    "settings",
+                    "Wallet Settings",
+                    size=20,
+                    color="#f8d7da",
+                    text_size=24,
+                    text_weight=ft.FontWeight.BOLD,
+                ),
                 ft.Container(expand=True),
                 ft.IconButton(
                     icon=ft.Icons.SAVE,
@@ -91,7 +99,14 @@ class SettingsPage:
     def create_blockchain_section(self):
         return ft.Container(
             content=ft.Column([
-                ft.Text("🏗️ Blockchain Management", size=18, color="#f8d7da", weight="bold"),
+                icon_label(
+                    "database",
+                    "Blockchain Management",
+                    size=16,
+                    color="#f8d7da",
+                    text_size=18,
+                    text_weight=ft.FontWeight.BOLD,
+                ),
                 ft.Divider(color="#5c2e2e", height=20),
 
                 # Cache statistics
@@ -111,7 +126,7 @@ class SettingsPage:
                             self.last_cleanup_text
                         ]),
                         ft.ElevatedButton(
-                            "🔄 Refresh Stats",
+                            content=icon_label("refresh-cw", "Refresh Stats", size=16, color="#ffffff", text_size=14),
                             on_click=self.refresh_cache_stats,
                             style=ft.ButtonStyle(
                                 color="#ffffff",
@@ -153,7 +168,7 @@ class SettingsPage:
                             label_style=ft.TextStyle(color="#f8d7da")
                         ),
                         ft.ElevatedButton(
-                            "🗑️ Clean Old Cache",
+                            content=icon_label("trash-2", "Clean Old Cache", size=16, color="#ffffff", text_size=14),
                             on_click=self.clean_cache_click,
                             style=ft.ButtonStyle(
                                 color="#ffffff",
@@ -173,7 +188,14 @@ class SettingsPage:
     def create_ui_section(self):
         return ft.Container(
             content=ft.Column([
-                ft.Text("🎨 UI Optimizations", size=18, color="#f8d7da", weight="bold"),
+                icon_label(
+                    "sliders",
+                    "UI Optimizations",
+                    size=16,
+                    color="#f8d7da",
+                    text_size=18,
+                    text_weight=ft.FontWeight.BOLD,
+                ),
                 ft.Divider(color="#5c2e2e", height=20),
 
                 ft.Container(
@@ -205,7 +227,14 @@ class SettingsPage:
     def create_transaction_section(self):
         return ft.Container(
             content=ft.Column([
-                ft.Text("💸 Transaction Management", size=18, color="#f8d7da", weight="bold"),
+                icon_label(
+                    "dollar-sign",
+                    "Transaction Management",
+                    size=16,
+                    color="#f8d7da",
+                    text_size=18,
+                    text_weight=ft.FontWeight.BOLD,
+                ),
                 ft.Divider(color="#5c2e2e", height=20),
 
                 ft.Container(
@@ -220,7 +249,7 @@ class SettingsPage:
                             )
                         ]),
                         ft.ElevatedButton(
-                            "🧹 Clean Mempool",
+                            content=icon_label("trash", "Clean Mempool", size=16, color="#ffffff", text_size=14),
                             on_click=self.clean_mempool_click,
                             style=ft.ButtonStyle(
                                 color="#ffffff",
@@ -229,7 +258,7 @@ class SettingsPage:
                             )
                         ),
                         ft.ElevatedButton(
-                            "🔄 Force Transaction Sync",
+                            content=icon_label("refresh-cw", "Force Transaction Sync", size=16, color="#ffffff", text_size=14),
                             on_click=self.force_sync_click,
                             style=ft.ButtonStyle(
                                 color="#ffffff",
@@ -250,7 +279,7 @@ class SettingsPage:
         return ft.Container(
             content=ft.Row([
                 ft.ElevatedButton(
-                    "💾 Save Settings",
+                    content=icon_label("save", "Save Settings", size=16, color="#ffffff", text_size=14),
                     on_click=self.save_settings_click,
                     style=ft.ButtonStyle(
                         color="#ffffff",
@@ -260,7 +289,7 @@ class SettingsPage:
                 ),
                 ft.Container(width=10),
                 ft.ElevatedButton(
-                    "🔄 Reset to Defaults",
+                    content=icon_label("rotate-ccw", "Reset to Defaults", size=16, color="#ffffff", text_size=14),
                     on_click=self.reset_defaults_click,
                     style=ft.ButtonStyle(
                         color="#ffffff",

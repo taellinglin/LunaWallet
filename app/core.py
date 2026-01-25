@@ -39,6 +39,7 @@ from gui.page_settings import SettingsPage
 from gui.tab_menu import TabMenu
 from gui.tab_transactions import TabTransactions
 from gui.tab_wallets import TabWallets
+from gui.icon_utils import feather_icon
 
 # Import utils
 from utils import format_address, format_balance, format_timestamp, get_transaction_color, get_transaction_icon
@@ -55,6 +56,19 @@ def _prefer_venv_site_packages():
             sys.path.insert(1, repo_root)
     except Exception:
         pass
+
+
+def _strip_emoji_prefix(message: str) -> str:
+    try:
+        msg = (message or "").lstrip()
+        msg = re.sub(
+            r"^[\u2190-\u21FF\u2600-\u26FF\u2700-\u27BF\U0001F300-\U0001FAFF]+\s*",
+            "",
+            msg,
+        )
+        return msg
+    except Exception:
+        return message
 
 
 def _bootstrap_ca_bundle():
@@ -276,6 +290,7 @@ class LunaWalletApp:
         self.mempool_manager = None
         self._services_ready = False
         self._inactivity_monitor_started = False
+        self._is_closing = False
         # Initialize sound manager
         self.sound_enabled = True  # サウンドを明示的に有効化
         print(f"[SOUND] sound_enabled = {self.sound_enabled}")
@@ -524,18 +539,29 @@ class LunaWalletApp:
         color_map = {
             "success": "#4CAF50",  # Green
             "error": "#f44336",    # Red
-            "info": "#2196F3"      # Blue
+            "info": "#2196F3",     # Blue
+            "warning": "#ff9800",  # Amber
+        }
+
+        icon_map = {
+            "success": "check-circle",
+            "error": "x-circle",
+            "info": "info",
+            "warning": "alert-triangle",
         }
 
         bg_color = color_map.get(message_type, "#2196F3")
+        icon_name = icon_map.get(message_type, "info")
+        display_message = _strip_emoji_prefix(message)
 
         try:
             print(f"[SNACKBAR] Creating slim bottom panel notification")
 
             # Create the notification content
             notification_content = ft.Row([
+                feather_icon(icon_name, size=16, color="#ffffff"),
                 ft.Text(
-                    message,
+                    display_message,
                     color="#ffffff",
                     weight="bold",
                     size=13,
@@ -693,6 +719,9 @@ class LunaWalletApp:
                 return
 
             try:
+                if not hasattr(ft, "Audio"):
+                    print(f"[SOUND] Flet Audio not available on this platform")
+                    return
                 audio = ft.Audio(
                     src=os.path.join("assets", "sounds", f"{sound_name}.wav"),
                     autoplay=True,
@@ -1504,6 +1533,8 @@ class LunaWalletApp:
             traceback.print_exc()
 
         page.on_resize = self.on_page_resize
+        if hasattr(page, "on_close"):
+            page.on_close = self.on_page_close
 
         # Track user activity for auto-lock
         try:
@@ -1676,6 +1707,8 @@ class LunaWalletApp:
                 self.show_lock_page(show_create=True, wallet_exists=False)
 
     def detect_orientation(self):
+        if self._is_closing:
+            return
         if not self.is_mobile:
             self.is_landscape = False
             self.current_layout = "desktop"
@@ -1688,10 +1721,14 @@ class LunaWalletApp:
             self.current_layout = "mobile_landscape" if self.is_landscape else "mobile_portrait"
 
     def on_page_resize(self, e):
+        if self._is_closing:
+            return
         self.detect_orientation()
         self.update_layout()
 
     def update_layout(self):
+        if self._is_closing:
+            return
         if not hasattr(self, 'page') or not self.page:
             return
 
@@ -1700,6 +1737,8 @@ class LunaWalletApp:
         self.page.update()
 
     def show_current_page(self):
+        if self._is_closing:
+            return
         self.page.controls.clear()
         if self.current_page:
             # For lock and create pages, center them
@@ -1717,6 +1756,19 @@ class LunaWalletApp:
         else:
             self.show_lock_page()
         self.page.update()
+
+    def on_page_close(self, e):
+        """Handle window close to avoid GTK/engine warnings during teardown."""
+        self._is_closing = True
+        try:
+            if hasattr(self, 'page') and self.page:
+                self.page.on_resize = None
+                if hasattr(self.page, "on_keyboard_event"):
+                    self.page.on_keyboard_event = None
+                if hasattr(self.page, "on_pointer_event"):
+                    self.page.on_pointer_event = None
+        except Exception:
+            pass
 
     def show_lock_page(self, title="Welcome to Luna Wallet", subtitle="Access your wallet", show_create=True, wallet_exists=False):
         """Show lock page with appropriate options based on wallet existence"""

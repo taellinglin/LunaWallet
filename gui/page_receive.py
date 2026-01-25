@@ -250,7 +250,7 @@ class ReceivePage:
                         time.sleep(0.1)
                         try:
                             print("DEBUG: Showing error snackbar")
-                            self.app.show_snackbar("❌ Could not copy to clipboard", "error")
+                            self.app.show_snackbar("Could not copy to clipboard", "error")
                         except Exception as e:
                             print(f"DEBUG: Error in error snackbar callback: {e}")
                             import traceback
@@ -267,7 +267,7 @@ class ReceivePage:
                 time.sleep(0.1)
                 try:
                     print("DEBUG: Showing invalid address snackbar")
-                    self.app.show_snackbar("❌ No valid address to copy", "error")
+                    self.app.show_snackbar("No valid address to copy", "error")
                 except Exception as e:
                     print(f"DEBUG: Error in invalid snackbar callback: {e}")
                     import traceback
