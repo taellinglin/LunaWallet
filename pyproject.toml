@@ -23,6 +23,7 @@ dependencies = [
     "base58",         # Added base58 dependency
     "tqdm",
     "rich",
+    "colorama",
 ]
 
 [project.urls]

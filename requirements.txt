@@ -10,3 +10,4 @@ tqdm
 rich
 packaging==24.2
 simpleaudio; sys_platform == "linux"
+colorama
