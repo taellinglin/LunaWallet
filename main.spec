@@ -12,6 +12,7 @@ a = Analysis(
         'flet', 
         'lunalib',
         'pygame',  # Add pygame for sound support
+        'simpleaudio',  # Linux sound backend
         'PIL',     # Add PIL for image processing
         'PIL._imaging',  # Required for PIL
         'datetime', # Already standard but explicit
