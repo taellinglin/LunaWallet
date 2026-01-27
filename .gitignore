@@ -144,6 +144,9 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+.venv-windows/
+.venv-mac/
+.venv-linux/
 
 # Spyder project settings
 .spyderproject

@@ -16,6 +16,11 @@ installer_output/
 *.coverage
 *.mypy_cache/
 *.pytest_cache/
+.venv-windows/
+.venv-mac/
+.venv-linux/
+venv/
+env/
 site-packages/
 build/
 flutter/
