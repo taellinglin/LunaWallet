@@ -315,6 +315,12 @@ class LunaWalletApp:
             print(f"DEBUG: Error initializing Storage: {e}")
             self.storage = None
 
+        # Apply runtime settings stored in Storage (e.g., decimals, sync URL)
+        try:
+            self._apply_runtime_settings_from_storage()
+        except Exception as e:
+            print(f"DEBUG: Failed to apply runtime settings: {e}")
+
         try:
             from app.debug_logger import debug_log
             storage_type = "BrowserStorage" if is_web() else "SQLiteStorage"
@@ -725,6 +731,7 @@ class LunaWalletApp:
                 audio = ft.Audio(
                     src=os.path.join("assets", "sounds", f"{sound_name}.wav"),
                     autoplay=True,
+                    volume=0.5,
                 )
                 self.page.overlay.append(audio)
                 self.page.update()
@@ -2114,7 +2121,45 @@ class LunaWalletApp:
     def on_settings(self):
         """Handle settings action"""
         print("DEBUG: on_settings called")
-        self.show_snackbar("Settings feature", "info")
+        try:
+            from gui.page_settings import SettingsPage
+
+            settings_page = SettingsPage(
+                self,
+                on_back=lambda: self.show_wallet_page(reuse=True)
+            )
+            self.current_page = settings_page.create()
+            self.page.controls.clear()
+            self.page.add(self.current_page)
+            self.page.update()
+        except Exception as e:
+            print(f"DEBUG: Failed to show settings page: {e}")
+            self.show_snackbar("Failed to open settings", "error")
+
+    def _apply_runtime_settings_from_storage(self):
+        """Apply runtime settings stored in Storage to environment variables."""
+        if not getattr(self, "storage", None):
+            return
+        try:
+            import json
+            raw = self.storage.get("settings")
+            if not raw:
+                return
+            data = json.loads(raw)
+        except Exception:
+            return
+
+        def _set_env(key: str, value):
+            if value is None:
+                return
+            os.environ[str(key)] = str(value)
+
+        _set_env("LUNALIB_AMOUNT_DECIMALS", data.get("luna_big_decimals"))
+        _set_env("LUNALIB_AMOUNT_SMALL_DECIMALS", data.get("luna_small_decimals"))
+        _set_env("LUNALIB_AMOUNT_TINY_DECIMALS", data.get("luna_tiny_decimals"))
+        _set_env("LUNALIB_ENDPOINT_URL", data.get("sync_url"))
+        _set_env("LUNA_NODE_URL", data.get("sync_url"))
+        _set_env("LUNAWALLET_FLAT_LKC", "1" if data.get("flat_lkc_display") else "0")
 
     def unlock_wallet(self, password):
         """Unlock existing wallet with password using LunaWallet core methods"""

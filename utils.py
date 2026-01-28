@@ -614,6 +614,14 @@ def format_amount_with_unit(value: float, decimals: int = 2, show_sign: bool = F
     except Exception:
         number = 0.0
 
+    # Flat LKC display (no compact units, full decimals)
+    try:
+        if os.getenv("LUNAWALLET_FLAT_LKC") == "1":
+            text = f"{number:.11f}".rstrip("0").rstrip(".")
+            return f"{text}{unit}"
+    except Exception:
+        pass
+
     # Prefer lunalib formatter for tiny units (m/μ/n/p) and large units (k/M/G/T)
     try:
         from lunalib.utils.formatting import format_amount as lunalib_format_amount

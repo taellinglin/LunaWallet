@@ -3,6 +3,10 @@ import os
 import threading
 import platform
 import sys
+import tempfile
+import wave
+import audioop
+import hashlib
 
 # Try multiple audio backends based on platform
 AUDIO_BACKEND = None
@@ -40,6 +44,7 @@ class SoundManager:
         self.sound_cache = {}
         self.backend = AUDIO_BACKEND
         self.is_mobile = self._detect_mobile()
+        self.volume = 0.5
         
         # Initialize the appropriate backend
         if self.backend == 'winsound':
@@ -76,6 +81,39 @@ class SoundManager:
         else:
             print(f"DEBUG: Sound file not found at {sound_path}")
             return None
+
+    def _get_scaled_sound_path(self, sound_path: str, volume: float) -> str:
+        """Return a temp wav path scaled to the requested volume."""
+        try:
+            if volume >= 0.99:
+                return sound_path
+
+            key = f"{sound_path}:{volume}"
+            cached = self.sound_cache.get(key)
+            if cached and os.path.exists(cached):
+                return cached
+
+            # Build deterministic temp filename
+            h = hashlib.sha1(key.encode("utf-8")).hexdigest()[:12]
+            out_path = os.path.join(tempfile.gettempdir(), f"luna_sfx_{h}.wav")
+
+            with wave.open(sound_path, "rb") as wf:
+                params = wf.getparams()
+                frames = wf.readframes(wf.getnframes())
+
+            # Scale audio (clamp volume 0..1)
+            vol = max(0.0, min(float(volume), 1.0))
+            scaled_frames = audioop.mul(frames, params.sampwidth, vol)
+
+            with wave.open(out_path, "wb") as wf_out:
+                wf_out.setparams(params)
+                wf_out.writeframes(scaled_frames)
+
+            self.sound_cache[key] = out_path
+            return out_path
+        except Exception as e:
+            print(f"DEBUG: Failed to scale sound: {e}")
+            return sound_path
     
     def play_sound(self, sound_name, async_play=True):
         """Play a sound effect - Works on Windows, macOS, Linux, and Android
@@ -92,6 +130,8 @@ class SoundManager:
             sound_path = self._get_sound_path(sound_name)
             if not sound_path:
                 return False
+
+            sound_path = self._get_scaled_sound_path(sound_path, self.volume)
             
             print(f"DEBUG: Playing sound: {sound_path} (backend: {self.backend}, mobile: {self.is_mobile})")
             

@@ -174,8 +174,7 @@ class TransactionDetailsPage:
     def _create_details_card(self):
         """Create detailed information card"""
         tx = self.transaction_data
-        from_addr = tx.get('from', 'Unknown')
-        to_addr = tx.get('to', 'Unknown')
+        from_addr, to_addr = self._resolve_addresses(tx)
         tx_hash = tx.get('hash', 'Unknown')
         
         return ft.Container(
@@ -367,12 +366,13 @@ class TransactionDetailsPage:
     def _share_details(self):
         """Share transaction details"""
         tx = self.transaction_data
+        from_addr, to_addr = self._resolve_addresses(tx)
         share_text = f"""
 Transaction Details:
 Amount: {format_amount_with_unit(tx.get('amount', 0))}
 Type: {tx.get('type', 'transfer')}
-From: {tx.get('from', 'Unknown')}
-To: {tx.get('to', 'Unknown')}
+    From: {from_addr}
+    To: {to_addr}
 Hash: {tx.get('hash', 'Unknown')}
         """.strip()
         
@@ -384,6 +384,29 @@ Hash: {tx.get('hash', 'Unknown')}
             pyperclip.copy(share_text)
         if hasattr(self.app, 'show_snackbar'):
             self.app.show_snackbar("Transaction details copied for sharing!", "success")
+
+    def _resolve_addresses(self, tx: dict) -> tuple[str, str]:
+        """Resolve from/to addresses across possible transaction schemas."""
+        candidates_from = [
+            tx.get('from'),
+            tx.get('from_address'),
+            tx.get('sender'),
+            tx.get('input_address'),
+        ]
+        candidates_to = [
+            tx.get('to'),
+            tx.get('to_address'),
+            tx.get('recipient'),
+            tx.get('output_address'),
+        ]
+
+        def _first_valid(values):
+            for v in values:
+                if v:
+                    return v
+            return "Unknown"
+
+        return _first_valid(candidates_from), _first_valid(candidates_to)
     
     def _go_back(self):
         """Go back to wallet page"""

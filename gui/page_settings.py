@@ -2,6 +2,7 @@ import flet as ft
 from gui.icon_utils import icon_label
 import threading
 import time
+import json
 from datetime import datetime
 
 class SettingsPage:
@@ -16,7 +17,19 @@ class SettingsPage:
             'auto_cleanup_enabled': True,
             'background_sync_enabled': True,
             'mempool_cleanup_hours': 2,
-            'batch_transaction_updates': True
+            'batch_transaction_updates': True,
+            'blockchain_pruning_enabled': True
+        }
+
+        self.runtime_settings = {
+            'luna_big_decimals': 8,
+            'luna_small_decimals': 4,
+            'luna_tiny_decimals': 2,
+            'sync_url': "",
+            'enable_big_decimals': True,
+            'enable_small_decimals': True,
+            'enable_tiny_decimals': True,
+            'flat_lkc_display': False
         }
 
         # UI elements
@@ -35,6 +48,13 @@ class SettingsPage:
                 settings = self.app.database.get_settings()
                 if settings:
                     self.cache_settings.update(settings)
+            # Load from Storage if available (fallback)
+            if hasattr(self.app, 'storage') and self.app.storage:
+                raw = self.app.storage.get("settings")
+                if raw:
+                    payload = json.loads(raw)
+                    self.cache_settings.update(payload.get("cache", {}))
+                    self.runtime_settings.update(payload.get("runtime", {}))
         except Exception as e:
             print(f"Error loading settings: {e}")
 
@@ -45,10 +65,46 @@ class SettingsPage:
                 self.app.database.save_settings(self.cache_settings)
                 self.app.show_snackbar("Settings saved successfully", "success")
             else:
-                self.app.show_snackbar("Unable to save settings - no database available", "error")
+                self.app.show_snackbar("Saved settings locally", "success")
+
+            # Save to Storage for runtime settings and cross-sessions
+            if hasattr(self.app, 'storage') and self.app.storage:
+                payload = {
+                    "cache": self.cache_settings,
+                    "runtime": self.runtime_settings,
+                }
+                self.app.storage.set("settings", json.dumps(payload))
+
+            # Apply environment variables for lunalib/runtime
+            self.apply_runtime_settings()
         except Exception as e:
             print(f"Error saving settings: {e}")
             self.app.show_snackbar(f"Error saving settings: {e}", "error")
+
+    def apply_runtime_settings(self):
+        try:
+            import os
+            if self.runtime_settings.get("enable_big_decimals", True):
+                os.environ["LUNALIB_AMOUNT_DECIMALS"] = str(self.runtime_settings.get("luna_big_decimals", 8))
+            else:
+                os.environ["LUNALIB_AMOUNT_DECIMALS"] = "0"
+
+            if self.runtime_settings.get("enable_small_decimals", True):
+                os.environ["LUNALIB_AMOUNT_SMALL_DECIMALS"] = str(self.runtime_settings.get("luna_small_decimals", 4))
+            else:
+                os.environ["LUNALIB_AMOUNT_SMALL_DECIMALS"] = "0"
+
+            if self.runtime_settings.get("enable_tiny_decimals", True):
+                os.environ["LUNALIB_AMOUNT_TINY_DECIMALS"] = str(self.runtime_settings.get("luna_tiny_decimals", 2))
+            else:
+                os.environ["LUNALIB_AMOUNT_TINY_DECIMALS"] = "0"
+            sync_url = (self.runtime_settings.get("sync_url") or "").strip()
+            if sync_url:
+                os.environ["LUNALIB_ENDPOINT_URL"] = sync_url
+                os.environ["LUNA_NODE_URL"] = sync_url
+            os.environ["LUNAWALLET_FLAT_LKC"] = "1" if self.runtime_settings.get("flat_lkc_display") else "0"
+        except Exception as e:
+            print(f"Error applying runtime settings: {e}")
 
     def create(self):
         return ft.Container(
@@ -56,6 +112,8 @@ class SettingsPage:
                 self.create_header(),
                 ft.Container(height=20),
                 self.create_blockchain_section(),
+                ft.Container(height=20),
+                self.create_runtime_section(),
                 ft.Container(height=20),
                 self.create_ui_section(),
                 ft.Container(height=20),
@@ -74,7 +132,7 @@ class SettingsPage:
                 ft.IconButton(
                     icon=ft.Icons.ARROW_BACK,
                     icon_color="#f8d7da",
-                    on_click=lambda e: self.on_back() if self.on_back else None,
+                    on_click=lambda e: self.on_back() if self.on_back else self._fallback_back(),
                     tooltip="Back to Wallet"
                 ),
                 icon_label(
@@ -85,16 +143,24 @@ class SettingsPage:
                     text_size=24,
                     text_weight=ft.FontWeight.BOLD,
                 ),
-                ft.Container(expand=True),
                 ft.IconButton(
                     icon=ft.Icons.SAVE,
                     icon_color="#28a745",
                     on_click=self.save_settings_click,
                     tooltip="Save Settings"
                 ),
+                ft.Container(expand=True),
             ]),
             padding=ft.padding.only(bottom=10)
         )
+
+    def _fallback_back(self):
+        try:
+            if hasattr(self.app, "show_wallet_page"):
+                self.app.show_wallet_page(reuse=True)
+                return
+        except Exception:
+            pass
 
     def create_blockchain_section(self):
         return ft.Container(
@@ -146,6 +212,13 @@ class SettingsPage:
                     content=ft.Column([
                         ft.Text("Blockchain Pruning", size=16, color="#f8d7da", weight="bold"),
                         ft.Row([
+                            ft.Switch(
+                                value=self.cache_settings['blockchain_pruning_enabled'],
+                                on_change=lambda e: self.update_setting('blockchain_pruning_enabled', e.control.value)
+                            ),
+                            ft.Text("Enable Pruning", color="#f8d7da")
+                        ], spacing=8),
+                        ft.Row([
                             ft.Text("Max Cache Age (days):", color="#f8d7da"),
                             ft.TextField(
                                 value=str(self.cache_settings['max_cache_age_days']),
@@ -161,12 +234,13 @@ class SettingsPage:
                                 on_change=lambda e: self.update_setting('max_cache_size_mb', int(e.control.value) if e.control.value.isdigit() else 100)
                             )
                         ]),
-                        ft.Switch(
-                            label="Auto Cleanup Enabled",
-                            value=self.cache_settings['auto_cleanup_enabled'],
-                            on_change=lambda e: self.update_setting('auto_cleanup_enabled', e.control.value),
-                            label_style=ft.TextStyle(color="#f8d7da")
-                        ),
+                        ft.Row([
+                            ft.Switch(
+                                value=self.cache_settings['auto_cleanup_enabled'],
+                                on_change=lambda e: self.update_setting('auto_cleanup_enabled', e.control.value)
+                            ),
+                            ft.Text("Auto Cleanup Enabled", color="#f8d7da")
+                        ], spacing=8),
                         ft.ElevatedButton(
                             content=icon_label("trash-2", "Clean Old Cache", size=16, color="#ffffff", text_size=14),
                             on_click=self.clean_cache_click,
@@ -176,6 +250,89 @@ class SettingsPage:
                                 padding=10
                             )
                         )
+                    ]),
+                    padding=15,
+                    bgcolor="#1a0f0f",
+                    border_radius=10
+                )
+            ]),
+            padding=5
+        )
+
+    def create_runtime_section(self):
+        return ft.Container(
+            content=ft.Column([
+                icon_label(
+                    "settings",
+                    "Runtime & Formatting",
+                    size=16,
+                    color="#f8d7da",
+                    text_size=18,
+                    text_weight=ft.FontWeight.BOLD,
+                ),
+                ft.Divider(color="#5c2e2e", height=20),
+                ft.Container(
+                    content=ft.Column([
+                        ft.Text("Luna Display Decimals", size=16, color="#f8d7da", weight="bold"),
+                        ft.Row([
+                            ft.Switch(
+                                value=self.runtime_settings['flat_lkc_display'],
+                                on_change=lambda e: self.update_runtime_setting('flat_lkc_display', e.control.value)
+                            ),
+                            ft.Text("Flat LKC Display", color="#f8d7da")
+                        ], spacing=8),
+                        ft.Row([
+                            ft.Switch(
+                                value=self.runtime_settings['enable_big_decimals'],
+                                on_change=lambda e: self.update_runtime_setting('enable_big_decimals', e.control.value)
+                            ),
+                            ft.Text("Enable Big Decimals", color="#f8d7da")
+                        ], spacing=8),
+                        ft.Row([
+                            ft.Text("Luna Big Decimals:", color="#f8d7da"),
+                            ft.TextField(
+                                value=str(self.runtime_settings['luna_big_decimals']),
+                                width=100,
+                                on_change=lambda e: self.update_runtime_setting('luna_big_decimals', self._safe_int(e.control.value, 8))
+                            )
+                        ]),
+                        ft.Row([
+                            ft.Switch(
+                                value=self.runtime_settings['enable_small_decimals'],
+                                on_change=lambda e: self.update_runtime_setting('enable_small_decimals', e.control.value)
+                            ),
+                            ft.Text("Enable Small Decimals", color="#f8d7da")
+                        ], spacing=8),
+                        ft.Row([
+                            ft.Text("Luna Small Decimals:", color="#f8d7da"),
+                            ft.TextField(
+                                value=str(self.runtime_settings['luna_small_decimals']),
+                                width=100,
+                                on_change=lambda e: self.update_runtime_setting('luna_small_decimals', self._safe_int(e.control.value, 4))
+                            )
+                        ]),
+                        ft.Row([
+                            ft.Switch(
+                                value=self.runtime_settings['enable_tiny_decimals'],
+                                on_change=lambda e: self.update_runtime_setting('enable_tiny_decimals', e.control.value)
+                            ),
+                            ft.Text("Enable Tiny Decimals", color="#f8d7da")
+                        ], spacing=8),
+                        ft.Row([
+                            ft.Text("Luna Tiny Decimals:", color="#f8d7da"),
+                            ft.TextField(
+                                value=str(self.runtime_settings['luna_tiny_decimals']),
+                                width=100,
+                                on_change=lambda e: self.update_runtime_setting('luna_tiny_decimals', self._safe_int(e.control.value, 2))
+                            )
+                        ]),
+                        ft.Text("Sync URL", size=16, color="#f8d7da", weight="bold"),
+                        ft.TextField(
+                            value=str(self.runtime_settings['sync_url']),
+                            width=420,
+                            on_change=lambda e: self.update_runtime_setting('sync_url', e.control.value.strip()),
+                            hint_text="https://bank.linglin.art"
+                        ),
                     ]),
                     padding=15,
                     bgcolor="#1a0f0f",
@@ -200,20 +357,22 @@ class SettingsPage:
 
                 ft.Container(
                     content=ft.Column([
-                        ft.Switch(
-                            label="Background Sync Enabled",
-                            value=self.cache_settings['background_sync_enabled'],
-                            on_change=lambda e: self.update_setting('background_sync_enabled', e.control.value),
-                            label_style=ft.TextStyle(color="#f8d7da")
-                        ),
+                        ft.Row([
+                            ft.Switch(
+                                value=self.cache_settings['background_sync_enabled'],
+                                on_change=lambda e: self.update_setting('background_sync_enabled', e.control.value)
+                            ),
+                            ft.Text("Background Sync Enabled", color="#f8d7da")
+                        ], spacing=8),
                         ft.Text("Enable background blockchain synchronization", size=12, color="#888"),
 
-                        ft.Switch(
-                            label="Batch Transaction Updates",
-                            value=self.cache_settings['batch_transaction_updates'],
-                            on_change=lambda e: self.update_setting('batch_transaction_updates', e.control.value),
-                            label_style=ft.TextStyle(color="#f8d7da")
-                        ),
+                        ft.Row([
+                            ft.Switch(
+                                value=self.cache_settings['batch_transaction_updates'],
+                                on_change=lambda e: self.update_setting('batch_transaction_updates', e.control.value)
+                            ),
+                            ft.Text("Batch Transaction Updates", color="#f8d7da")
+                        ], spacing=8),
                         ft.Text("Update multiple transactions at once for better performance", size=12, color="#888"),
                     ]),
                     padding=15,
@@ -304,6 +463,15 @@ class SettingsPage:
     def update_setting(self, key, value):
         """Update a setting value"""
         self.cache_settings[key] = value
+
+    def update_runtime_setting(self, key, value):
+        self.runtime_settings[key] = value
+
+    def _safe_int(self, value, default):
+        try:
+            return int(value)
+        except Exception:
+            return default
 
     def refresh_cache_stats(self, e):
         """Refresh cache statistics display"""
@@ -403,9 +571,12 @@ class SettingsPage:
         """Clean old mempool transactions"""
         try:
             if hasattr(self.app, 'blockchain_manager') and self.app.blockchain_manager:
-                cache = self.app.blockchain_manager.cache
-                cache.clear_old_mempool(self.cache_settings['mempool_cleanup_hours'])
-                self.app.show_snackbar("Mempool cleaned successfully", "success")
+                cache = getattr(self.app.blockchain_manager, 'cache', None)
+                if cache and hasattr(cache, 'clear_old_mempool'):
+                    cache.clear_old_mempool(self.cache_settings['mempool_cleanup_hours'])
+                    self.app.show_snackbar("Mempool cleaned successfully", "success")
+                else:
+                    self.app.show_snackbar("Mempool cleanup not supported", "info")
             else:
                 self.app.show_snackbar("Blockchain manager not available", "error")
         except Exception as ex:
@@ -418,8 +589,16 @@ class SettingsPage:
             if hasattr(self.app, 'update_wallet_data'):
                 self.app.update_wallet_data()
                 self.app.show_snackbar("Transaction sync initiated", "success")
-            else:
-                self.app.show_snackbar("Sync method not available", "error")
+                return
+            if hasattr(self.app, 'scan_all_wallets_for_changes'):
+                self.app.scan_all_wallets_for_changes()
+                self.app.show_snackbar("Transaction sync initiated", "success")
+                return
+            if hasattr(self.app, 'start_blockchain_sync'):
+                self.app.start_blockchain_sync()
+                self.app.show_snackbar("Blockchain sync started", "success")
+                return
+            self.app.show_snackbar("Sync method not available", "error")
         except Exception as ex:
             print(f"Error forcing sync: {ex}")
             self.app.show_snackbar("Error initiating sync", "error")
@@ -436,7 +615,18 @@ class SettingsPage:
             'auto_cleanup_enabled': True,
             'background_sync_enabled': True,
             'mempool_cleanup_hours': 2,
-            'batch_transaction_updates': True
+            'batch_transaction_updates': True,
+            'blockchain_pruning_enabled': True
+        }
+        self.runtime_settings = {
+            'luna_big_decimals': 8,
+            'luna_small_decimals': 4,
+            'luna_tiny_decimals': 2,
+            'sync_url': "",
+            'enable_big_decimals': True,
+            'enable_small_decimals': True,
+            'enable_tiny_decimals': True,
+            'flat_lkc_display': False
         }
         self.app.show_snackbar("Settings reset to defaults", "info")
         # Would need to refresh UI to show default values

@@ -1188,6 +1188,14 @@ class WalletPage:
                 ft.Row([
                     self.mute_button,
                     ft.IconButton(
+                        icon=ft.Icons.SETTINGS,
+                        icon_color="#f8d7da",
+                        icon_size=18,
+                        on_click=lambda e: self.on_settings() if self.on_settings else None,
+                        tooltip="Settings",
+                        style=ft.ButtonStyle(padding=5)
+                    ),
+                    ft.IconButton(
                         icon=ft.Icons.LOCK,
                         icon_color="#f8d7da",
                         icon_size=18,
@@ -1929,13 +1937,39 @@ class WalletPage:
                                 orig_date_str = datetime.fromtimestamp(orig_timestamp).strftime("%m/%d %H:%M")
                             except:
                                 orig_date_str = "Unknown"
+
+                            status = original_tx.get('status')
+                            if not status:
+                                confirmations = int(original_tx.get('confirmations', 0) or 0)
+                                status = "confirmed" if confirmations > 0 else "pending"
+                            status_color = "#00ff00" if status == "confirmed" else "#ffa500" if status == "pending" else "#a8a8a8"
+                            status_icon = ft.Icons.CHECK_CIRCLE if status == "confirmed" else ft.Icons.SCHEDULE if status == "pending" else ft.Icons.HELP_OUTLINE
                             
                             reward_item = ft.Container(
                                     content=ft.ListTile(
                                         leading=ft.Icon(ft.Icons.ATTACH_MONEY, color="#00ff00", size=16),
-                                        title=ft.Text(format_amount_with_unit(original_tx.get('amount', 0)), 
-                                            color="#00ff00", size=12, weight="bold"),
-                                        subtitle=ft.Text(orig_date_str, size=10, color="#888888"),
+                                        title=ft.Text(
+                                            format_amount_with_unit(original_tx.get('amount', 0)),
+                                            color="#00ff00",
+                                            size=12,
+                                            weight="bold",
+                                            max_lines=1,
+                                            overflow=ft.TextOverflow.ELLIPSIS,
+                                        ),
+                                        subtitle=ft.Row(
+                                            [
+                                                ft.Text(orig_date_str, size=10, color="#888888", expand=True),
+                                                ft.Row(
+                                                    [
+                                                        ft.Icon(status_icon, color=status_color, size=12),
+                                                        ft.Text(status, size=10, color=status_color),
+                                                    ],
+                                                    spacing=4,
+                                                    tight=True,
+                                                ),
+                                            ],
+                                            spacing=6,
+                                        ),
                                         on_click=lambda e, tx=original_tx: self._show_transaction_details(tx),
                                     ),
                                     bgcolor="#1a0f0f",
@@ -1949,7 +1983,11 @@ class WalletPage:
                 # Ensure expanded content is visible
                 try:
                     if hasattr(self, 'transaction_list_view') and self.transaction_list_view:
-                        self.transaction_list_view.scroll_to(key=item_key, duration=200)
+                        try:
+                            self.transaction_list_view.scroll_to(key=item_key, duration=200)
+                        except TypeError:
+                            # Fallback for older Flet versions without key support
+                            self.transaction_list_view.scroll_to(offset=0, duration=200)
                         self.transaction_list_view.update()
                 except Exception as scroll_err:
                     print(f"DEBUG: Failed to scroll expanded item into view: {scroll_err}")

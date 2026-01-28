@@ -280,6 +280,27 @@ class TabTransactions:
                                                 ft.Icon(ft.Icons.ATTACH_MONEY, color="#00ff00", size=14),
                                                 ft.Text(format_amount_with_unit(orig_tx.get('amount', 0)), 
                                                     color="#00ff00", size=11, expand=True),
+                                                ft.Row(
+                                                    [
+                                                        ft.Icon(
+                                                            ft.Icons.CHECK_CIRCLE if orig_tx.get('status', 'unknown') == 'confirmed'
+                                                            else ft.Icons.SCHEDULE if orig_tx.get('status', 'unknown') == 'pending'
+                                                            else ft.Icons.HELP_OUTLINE,
+                                                            color="#00ff00" if orig_tx.get('status', 'unknown') == 'confirmed'
+                                                            else "#ffa500" if orig_tx.get('status', 'unknown') == 'pending'
+                                                            else "#a8a8a8",
+                                                            size=12,
+                                                        ),
+                                                        ft.Text(
+                                                            orig_tx.get('status', 'unknown'),
+                                                            size=10,
+                                                            color="#00ff00" if orig_tx.get('status', 'unknown') == 'confirmed'
+                                                            else "#ffa500" if orig_tx.get('status', 'unknown') == 'pending'
+                                                            else "#a8a8a8",
+                                                        ),
+                                                    ],
+                                                    spacing=4,
+                                                ),
                                                 ft.Text(orig_date_str, size=10, color="#888888"),
                                             ]),
                                             padding=10,
