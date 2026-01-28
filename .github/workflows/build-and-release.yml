@@ -8,11 +8,13 @@ on:
     branches:
       - master
       - main
+      - android
     tags:
       - '*'
   workflow_dispatch:
 jobs:
   build-windows:
+    if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -62,6 +64,7 @@ jobs:
           path: build/LunaWallet-${{ env.VERSION }}-Windows.zip
 
   build-macos:
+    if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -124,6 +127,7 @@ jobs:
           path: build/LunaWallet-${{ env.VERSION }}-Macos.zip
 
   build-linux:
+    if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -170,6 +174,7 @@ jobs:
           path: build/LunaWallet-${{ env.VERSION }}-Linux.zip
 
   build-android:
+    if: github.ref == 'refs/heads/android'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -228,7 +233,8 @@ jobs:
           path: build/LunaWallet-${{ env.VERSION }}-Android.apk
 
   release:
-    needs: [build-windows, build-macos, build-linux, build-android]
+    if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main'
+    needs: [build-windows, build-macos, build-linux]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
