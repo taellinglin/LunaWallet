@@ -2,7 +2,7 @@ flet
 cryptography>=42.0.5,<43
 requests
 qrcode
-lunalib==2.4.7
+lunalib
 pyperclip
 base58
 tqdm

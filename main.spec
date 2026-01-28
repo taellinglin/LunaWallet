@@ -1,6 +1,11 @@
 import os
+from importlib.metadata import version, PackageNotFoundError
 
 # build.spec
+try:
+    print(f"[build] lunalib version: {version('lunalib')}")
+except PackageNotFoundError:
+    print("[build] lunalib not found in build environment")
 block_cipher = None
 
 a = Analysis(

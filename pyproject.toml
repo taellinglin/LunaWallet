@@ -15,7 +15,7 @@ dependencies = [
     "flet>=0.10.0",
     "qrcode>=7.4.0",
     "pillow",
-    "lunalib==2.5.3",
+    "lunalib",
     "requests",
     "cryptography==42.0.5; sys_platform != \"android\"",
     "simpleaudio; sys_platform == \"linux\"",

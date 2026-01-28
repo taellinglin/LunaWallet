@@ -189,21 +189,44 @@ class SendPage:
 
     def _should_try_direct_broadcast(self, message) -> bool:
         text = str(message or "")
+        lowered = text.lower()
         return (
             "Failed to decode JSON object" in text
             or "invalid start byte" in text
             or "utf-8" in text
+            or "ssl" in lowered
+            or "certificate" in lowered
+            or "tls" in lowered
+            or "handshake" in lowered
+            or "connection" in lowered
         )
 
     def _broadcast_transaction_direct(self, transaction: dict, mempool_url: str):
         try:
-            import httpx
+            import os
+            import requests
             headers = {
                 "Content-Type": "application/json",
                 "Accept": "application/json",
                 "Accept-Encoding": "identity",
             }
-            response = httpx.post(mempool_url, json=transaction, headers=headers, timeout=30.0)
+            verify = os.environ.get("SSL_CERT_FILE") or os.environ.get("REQUESTS_CA_BUNDLE")
+            if verify and not os.path.exists(verify):
+                verify = None
+            try:
+                if not verify:
+                    import certifi
+                    verify = certifi.where()
+            except Exception:
+                verify = None
+
+            response = requests.post(
+                mempool_url,
+                json=transaction,
+                headers=headers,
+                timeout=30,
+                verify=verify if verify else True,
+            )
             status = response.status_code
             try:
                 payload = response.json()
@@ -543,8 +566,20 @@ class SendPage:
                     _global_trace(f"BROADCAST EXCEPTION - {str(broadcast_err)}", "SEND_ERROR")
                     _global_trace(f"BROADCAST TRACEBACK - {tb_str[:500]}", "SEND_ERROR")
                     traceback.print_exc()
-                    self.app.show_snackbar(f"Broadcast error: {str(broadcast_err)}", "error")
-                    return
+
+                    # Try direct broadcast on transport/SSL errors
+                    if self._should_try_direct_broadcast(str(broadcast_err)):
+                        _global_trace("BROADCAST - Exception detected, trying direct POST", "SEND")
+                        success, direct_message = self._broadcast_transaction_direct(transaction, mempool_url)
+                        if success:
+                            _global_trace(f"BROADCAST SUCCESS - TX: {tx_hash}, Message: {direct_message}", "SEND")
+                            broadcast_message = direct_message
+                        else:
+                            self.app.show_snackbar(f"Broadcast error: {str(broadcast_err)}", "error")
+                            return
+                    else:
+                        self.app.show_snackbar(f"Broadcast error: {str(broadcast_err)}", "error")
+                        return
                 
                 print(f"[SEND] Broadcast successful")
                 _global_trace(f"BROADCAST SUCCESS - TX: {tx_hash}, Message: {broadcast_message}", "SEND")
