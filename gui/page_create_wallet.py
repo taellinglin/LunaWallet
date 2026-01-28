@@ -228,6 +228,8 @@ class CreateWalletPage:
                         self.app._ensure_services()
                 except Exception as svc_err:
                     print(f"DEBUG: Service init failed before wallet creation: {svc_err}")
+                if not getattr(self.app, 'wallet_core', None):
+                    raise RuntimeError("Wallet core not initialized")
                 # Ensure SM4 wallet encryption is used (lunalib 2.4.0+)
                 try:
                     import os

@@ -2414,6 +2414,14 @@ class LunaWalletApp:
     def show_create_wallet(self):
         """Display the wallet creation page or dialog."""
         print("DEBUG: show_create_wallet called")
+        try:
+            if hasattr(self, '_ensure_services'):
+                self._ensure_services()
+        except Exception as svc_err:
+            print(f"DEBUG: Service init failed before show_create_wallet: {svc_err}")
+        if not getattr(self, 'wallet_core', None):
+            self.show_snackbar("Wallet service not ready. Please try again.", "error")
+            return
         # Example implementation: Navigate to the wallet creation page
         from gui.page_create_wallet import CreateWalletPage
         create_wallet_page = CreateWalletPage(
