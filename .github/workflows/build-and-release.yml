@@ -201,8 +201,8 @@ jobs:
           with open("$GITHUB_ENV", "a", encoding="utf-8") as f:
             f.write(f"VERSION={v}\n")
           PY
-      - name: Build Android APK
-        run: flet build apk --release
+      - name: Build Android APK (Flet)
+        run: flet build apk
       - name: Enable ProGuard/R8 (Android)
         run: python scripts/patch_android_proguard.py
       - name: Rebuild APK with ProGuard
