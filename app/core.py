@@ -1920,7 +1920,10 @@ class LunaWalletApp:
                     self.page.overlay.clear()
             
             if self.is_mobile:
-                self._set_mobile_content(self.current_page)
+                self._set_mobile_content(
+                    self.current_page,
+                    transition=getattr(ft.AnimatedSwitcherTransition, "SLIDE", ft.AnimatedSwitcherTransition.FADE)
+                )
             elif hasattr(self, 'page') and self.page:
                 self.page.add(self.current_page)
                 # Force UI refresh
@@ -1973,7 +1976,10 @@ class LunaWalletApp:
         )
 
         self.current_page = index_page.create()
-        self._set_mobile_content(self.current_page)
+        self._set_mobile_content(
+            self.current_page,
+            transition=getattr(ft.AnimatedSwitcherTransition, "SLIDE", ft.AnimatedSwitcherTransition.FADE)
+        )
 
     def lock_wallet(self):
         """Lock the wallet and return to lock screen"""
@@ -2074,13 +2080,19 @@ class LunaWalletApp:
         from gui.page_import_wallet import ImportWalletPage
         import_page = ImportWalletPage(
             self,
-            on_back=self.show_wallet_page,
+            on_back=self.show_wallet_index_page if self.is_mobile else self.show_wallet_page,
             on_wallet_imported=self.refresh_wallet_list
         )
         self.current_page = import_page.create()
-        self.page.controls.clear()
-        self.page.add(self.current_page)
-        self.page.update()
+        if self.is_mobile:
+            self._set_mobile_content(
+                self.current_page,
+                transition=getattr(ft.AnimatedSwitcherTransition, "SLIDE", ft.AnimatedSwitcherTransition.FADE)
+            )
+        else:
+            self.page.controls.clear()
+            self.page.add(self.current_page)
+            self.page.update()
 
     def show_import_wallet(self):
         """Show import wallet page from lock screen"""
@@ -2089,12 +2101,18 @@ class LunaWalletApp:
         import_page = ImportWalletPage(
             self,
             on_back=self.initialize_wallet_state,  # Go back to lock/create screen
-            on_wallet_imported=self.initialize_wallet_state  # Re-check wallet state after import
+            on_wallet_imported=self.show_wallet_index_page if self.is_mobile else self.initialize_wallet_state
         )
         self.current_page = import_page.create()
-        self.page.controls.clear()
-        self.page.add(self.current_page)
-        self.page.update()
+        if self.is_mobile:
+            self._set_mobile_content(
+                self.current_page,
+                transition=getattr(ft.AnimatedSwitcherTransition, "SLIDE", ft.AnimatedSwitcherTransition.FADE)
+            )
+        else:
+            self.page.controls.clear()
+            self.page.add(self.current_page)
+            self.page.update()
 
     def refresh_wallet_list(self):
         """Refresh the wallet list after a new wallet is created."""
@@ -2400,15 +2418,21 @@ class LunaWalletApp:
         from gui.page_create_wallet import CreateWalletPage
         create_wallet_page = CreateWalletPage(
             self,
-            on_back=self.show_wallet_page,
+            on_back=self.show_wallet_index_page if self.is_mobile else self.show_wallet_page,
             on_wallet_created=self.refresh_wallet_list
         )
         self.current_page = create_wallet_page.create()
 
         # Clear and add the new page to the UI
-        self.page.controls.clear()
-        self.page.controls.append(self.current_page)
-        self.page.update()
+        if self.is_mobile:
+            self._set_mobile_content(
+                self.current_page,
+                transition=getattr(ft.AnimatedSwitcherTransition, "SLIDE", ft.AnimatedSwitcherTransition.FADE)
+            )
+        else:
+            self.page.controls.clear()
+            self.page.controls.append(self.current_page)
+            self.page.update()
 
     def update_refs(self):
             """Update all UI references"""

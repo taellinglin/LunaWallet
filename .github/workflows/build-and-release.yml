@@ -169,8 +169,63 @@ jobs:
           name: linux
           path: build/LunaWallet-${{ env.VERSION }}-Linux.zip
 
+  build-android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install Flet
+        run: pip install flet
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.38.6'
+          channel: 'stable'
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+      - name: Accept Android SDK licenses
+        run: yes | sdkmanager --licenses
+      - name: Export VERSION
+        run: |
+          python - <<'PY'
+          import re
+          p = open('version_info.txt', encoding='utf-8').read()
+          m = re.search(r"ProductVersion', u'([^']+)'", p)
+          v = m.group(1) if m else '0.0.0'
+          parts = v.split('.')
+          if len(parts) == 4 and parts[-1] == '0':
+            v = '.'.join(parts[:-1])
+          with open("$GITHUB_ENV", "a", encoding="utf-8") as f:
+            f.write(f"VERSION={v}\n")
+          PY
+      - name: Build Android APK
+        run: flet build apk --release
+      - name: Enable ProGuard/R8 (Android)
+        run: python scripts/patch_android_proguard.py
+      - name: Rebuild APK with ProGuard
+        run: |
+          cd build/flutter
+          flutter build apk --release
+      - name: Package APK
+        run: |
+          APK_PATH=$(find build -type f -name "*.apk" | head -n 1)
+          if [ -z "$APK_PATH" ]; then
+            echo "No APK found in build/"
+            find build -type f -maxdepth 4 | head -n 200 || true
+            exit 1
+          fi
+          cp "$APK_PATH" "build/LunaWallet-${VERSION}-Android.apk"
+      - name: Upload Android Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: build/LunaWallet-${{ env.VERSION }}-Android.apk
+
   release:
-    needs: [build-windows, build-macos, build-linux]
+    needs: [build-windows, build-macos, build-linux, build-android]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

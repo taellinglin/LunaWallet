@@ -17,7 +17,7 @@ dependencies = [
     "pillow",
     "lunalib",
     "requests",
-    "cryptography==42.0.5; sys_platform != \"android\"",
+    "cryptography>=42.0.5",
     "simpleaudio; sys_platform == \"linux\"",
     "pyperclip",
     "base58",         # Added base58 dependency
