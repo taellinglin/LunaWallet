@@ -506,7 +506,7 @@ class LunaWalletApp:
                     if idle_seconds >= self.auto_lock_minutes * 60:
                         def _do_lock():
                             try:
-                                self.show_snackbar("Wallet locked due to inactivity", "info")
+                                self.show_snackbar("Wallet locked due to inactivity", "info", duration=5.0)
                                 self.lock_wallet()
                             except Exception as e:
                                 print(f"DEBUG: Auto-lock error: {e}")
@@ -520,7 +520,7 @@ class LunaWalletApp:
 
         threading.Thread(target=_monitor, daemon=True).start()
 
-    def show_snackbar(self, message: str, message_type: str = "info"):
+    def show_snackbar(self, message: str, message_type: str = "info", duration: float = 3.5):
         """Display a slim notification panel docked at the bottom of the window.
 
         Args:
@@ -609,9 +609,9 @@ class LunaWalletApp:
                 self.page.update()
                 print(f"[SNACKBAR] Notification panel displayed successfully at bottom")
 
-                # Auto-remove after 3.5 seconds if not closed manually
+                # Auto-remove after duration if not closed manually
                 def auto_close():
-                    time.sleep(3.5)
+                    time.sleep(max(0.5, float(duration or 0)))
                     try:
                         if notification_wrapper in self.page.overlay:
                             print(f"[SNACKBAR] Auto-closing notification")
