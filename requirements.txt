@@ -9,5 +9,5 @@ base58
 tqdm
 rich
 packaging==24.2
-simpleaudio; sys_platform == "linux"
+#simpleaudio; sys_platform == "linux"
 colorama
