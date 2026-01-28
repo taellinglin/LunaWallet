@@ -17,8 +17,7 @@ dependencies = [
     "pillow",
     "lunalib",
     "requests",
-    "cryptography>=42.0.5",
-    "simpleaudio; sys_platform == \"linux\"",
+    "cryptography>=42.0.5", # "simpleaudio; sys_platform == \"linux\"",
     "pyperclip",
     "base58",         # Added base58 dependency
     "tqdm",
