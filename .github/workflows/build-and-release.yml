@@ -213,6 +213,26 @@ jobs:
         run: flet build apk
       - name: Enable ProGuard/R8 (Android)
         run: python scripts/patch_android_proguard.py
+      - name: Set SERIOUS_PYTHON_SITE_PACKAGES
+        run: |
+          set -euo pipefail
+          PY_DIR=$(find build/flutter/build -maxdepth 2 -type d -name "build_python_*" | head -n 1 || true)
+          if [ -z "$PY_DIR" ]; then
+            echo "build_python_* not found under build/flutter/build"
+            find build/flutter/build -maxdepth 3 -type d | head -n 200 || true
+            exit 1
+          fi
+          if [ -d "$PY_DIR/python/lib" ]; then
+            SITE_PACKAGES=$(find "$PY_DIR/python/lib" -maxdepth 2 -type d -name "site-packages" | head -n 1)
+          else
+            SITE_PACKAGES=$(find "$PY_DIR/python/Lib" -maxdepth 2 -type d -name "site-packages" | head -n 1)
+          fi
+          if [ -z "$SITE_PACKAGES" ]; then
+            echo "site-packages not found under $PY_DIR/python"
+            find "$PY_DIR/python" -maxdepth 3 -type d | head -n 200 || true
+            exit 1
+          fi
+          echo "SERIOUS_PYTHON_SITE_PACKAGES=$SITE_PACKAGES" >> $GITHUB_ENV
       - name: Rebuild APK with ProGuard
         run: |
           cd build/flutter
