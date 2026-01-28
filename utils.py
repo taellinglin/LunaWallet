@@ -516,12 +516,12 @@ def format_balance_display(available: float, pending: float = None, decimals: in
     Returns:
         Tuple of (available_text, pending_text)
     """
-    available_text = f"{format_amount(available, decimals=decimals)} LKC"
+    available_text = format_amount_with_unit(available, decimals=decimals)
     
     if pending is not None:
-        pending_text = f"{format_amount(pending, decimals=decimals)} LKC"
+        pending_text = format_amount_with_unit(pending, decimals=decimals)
     else:
-        pending_text = "0.000000 LKC"
+        pending_text = "0.000000LKC"
     
     return (available_text, pending_text)
 
@@ -539,9 +539,9 @@ def get_balance_summary(available: float, pending: float) -> str:
     """
     total = available + pending
     return (
-        f"Available: {format_amount(available)} LKC | "
-        f"Pending: {format_amount(pending)} LKC | "
-        f"Total: {format_amount(total)} LKC"
+        f"Available: {format_amount_with_unit(available)} | "
+        f"Pending: {format_amount_with_unit(pending)} | "
+        f"Total: {format_amount_with_unit(total)}"
     )
 
 def generate_qr_code(data: str, size: int = 200) -> str:
@@ -559,20 +559,87 @@ def format_address(address: str, prefix_length: int = 8, suffix_length: int = 6)
         return address
     return f"{address[:prefix_length]}...{address[-suffix_length:]}"
 
-def format_amount(value: float, decimals: int = 2, show_sign: bool = False) -> str:
-    """Format numeric amounts with commas and fixed decimals."""
+def _trim_number(value_str: str) -> str:
+    """Trim trailing zeros and dot from a numeric string."""
+    if "." in value_str:
+        value_str = value_str.rstrip("0").rstrip(".")
+    return value_str
+
+
+def _compact_amount(value: float, decimals: int = 2) -> tuple[str, str]:
+    """Return (number_text, prefix) using 1000-based compact units."""
+    prefixes = [
+        ("", 1),
+        ("k", 1_000),
+        ("m", 1_000_000),
+        ("g", 1_000_000_000),
+        ("t", 1_000_000_000_000),
+        ("p", 1_000_000_000_000_000),
+        ("e", 1_000_000_000_000_000_000),
+    ]
+
+    abs_value = abs(value)
+    prefix = ""
+    scale = 1
+    for p, s in prefixes:
+        if abs_value >= s:
+            prefix = p
+            scale = s
+    scaled = value / scale
+    number_text = _trim_number(f"{scaled:.{decimals}f}")
+    return number_text, prefix
+
+
+def format_amount(value: float, decimals: int = 2, show_sign: bool = False, compact: bool = True) -> str:
+    """Format numeric amounts with optional compact units and sign (no unit suffix)."""
     try:
         number = float(value)
     except Exception:
         number = 0.0
-    if show_sign:
-        return f"{number:+,.{decimals}f}"
-    return f"{number:,.{decimals}f}"
+
+    if compact and abs(number) >= 1000:
+        number_text, _ = _compact_amount(number, decimals=decimals)
+    else:
+        number_text = _trim_number(f"{number:,.{decimals}f}")
+
+    if show_sign and not number_text.startswith("-"):
+        number_text = f"+{number_text}"
+    return number_text
+
+
+def format_amount_with_unit(value: float, decimals: int = 2, show_sign: bool = False, compact: bool = True, unit: str = "LKC") -> str:
+    """Format amount with LKC unit using lunalib formatting (supports tiny units)."""
+    try:
+        number = float(value)
+    except Exception:
+        number = 0.0
+
+    # Prefer lunalib formatter for tiny units (m/μ/n/p) and large units (k/M/G/T)
+    try:
+        from lunalib.utils.formatting import format_amount as lunalib_format_amount
+
+        text = lunalib_format_amount(number, unit=unit)
+        # Remove space for base unit only (e.g., "1 LKC" -> "1LKC")
+        if unit and text.endswith(f" {unit}"):
+            text = text[:-len(unit)-1] + unit
+        return text
+    except Exception:
+        pass
+
+    # Fallback to local compact formatting
+    if compact and abs(number) >= 1000:
+        number_text, prefix = _compact_amount(number, decimals=decimals)
+        unit_text = f"{prefix}{unit}"
+        return f"{number_text} {unit_text}"
+
+    number_text = format_amount(number, decimals=decimals, show_sign=show_sign, compact=False)
+    return f"{number_text}{unit}"
 
 def format_balance(balance: float, decimals: int = 2, with_unit: bool = False, show_sign: bool = False) -> str:
-    """Format balance with commas, optional unit, and optional sign."""
-    formatted = format_amount(balance, decimals=decimals, show_sign=show_sign)
-    return f"{formatted} LKC" if with_unit else formatted
+    """Format balance with optional compact unit and sign."""
+    if with_unit:
+        return format_amount_with_unit(balance, decimals=decimals, show_sign=show_sign)
+    return format_amount(balance, decimals=decimals, show_sign=show_sign)
 
 def format_timestamp(timestamp: float, format_str: str = "%Y-%m-%d %H:%M") -> str:
     """Format timestamp to readable string"""
@@ -730,10 +797,10 @@ def diagnose_wallet_rewards_balance(wallet_address: str, database=None):
         import traceback
         traceback.print_exc()
 
-def format_amount(amount: float, is_incoming: bool = True) -> str:
-    """Format amount with sign based on direction"""
+def format_amount_signed(amount: float, is_incoming: bool = True, decimals: int = 6) -> str:
+    """Format amount with sign based on direction (no unit)."""
     sign = "+" if is_incoming else "-"
-    return f"{sign}{amount:.6f}"
+    return f"{sign}{amount:.{decimals}f}"
 
 def assess_transaction_risk(transaction: Dict) -> tuple[str, str]:
     """Assess transaction risk using lunalib security"""

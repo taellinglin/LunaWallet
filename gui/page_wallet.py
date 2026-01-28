@@ -6,7 +6,7 @@ console = Console()
 import threading
 from datetime import datetime
 import time
-from utils import calculate_wallet_balances, format_amount
+from utils import calculate_wallet_balances, format_amount, format_amount_with_unit
 import json
 import os
 
@@ -564,14 +564,14 @@ class WalletPage:
                 balance_display = "--.--"
                 balance_color = "#999999"
             else:
-                balance_display = format_amount(confirmed_balance)
+                balance_display = format_amount_with_unit(confirmed_balance)
                 balance_color = "#f8d7da"
             
             if pending_balance is None:
                 pending_display = "--.--"
                 pending_color = "#999999"
             else:
-                pending_display = format_amount(pending_balance)
+                pending_display = format_amount_with_unit(pending_balance)
                 pending_color = "#00ff00" if pending_balance > 0 else ("#ff4444" if pending_balance < 0 else "#ffd700")
             
             # Get the content column
@@ -585,7 +585,7 @@ class WalletPage:
                     
                     if hasattr(info_column, 'controls') and len(info_column.controls) >= 2:
                         # Update balance text (second control)
-                        info_column.controls[1].value = f"{balance_display} LKC"
+                        info_column.controls[1].value = balance_display
                         info_column.controls[1].color = balance_color
                         
                         # Update pending text (third control) if it exists
@@ -634,7 +634,7 @@ class WalletPage:
                             # Update the sidebar item display
                             self._update_sidebar_wallet_display(wallet_item, confirmed_balance, pending_balance)
                             
-                            print(f"✓ Updated {wallet_address[:12]}... in sidebar: {format_amount(confirmed_balance)} LKC")
+                            print(f"✓ Updated {wallet_address[:12]}... in sidebar: {format_amount_with_unit(confirmed_balance)}")
                 except Exception as e:
                     print(f"DEBUG: Error updating individual wallet in sidebar: {e}")
             
@@ -848,7 +848,7 @@ class WalletPage:
             
             confirmed_balance = max(0.0, confirmed_balance)
             
-            print(f"DEBUG: Calculated balance - confirmed={format_amount(confirmed_balance)}, pending={format_amount(pending_balance)}")
+            print(f"DEBUG: Calculated balance - confirmed={format_amount_with_unit(confirmed_balance)}, pending={format_amount_with_unit(pending_balance)}")
             return confirmed_balance, pending_balance
             
         except Exception as e:
@@ -908,14 +908,14 @@ class WalletPage:
             balance_display = "--.--"
             balance_color = "#999999"
         else:
-            balance_display = format_amount(confirmed)
+            balance_display = format_amount_with_unit(confirmed)
             balance_color = "#f8d7da"
         
         if pending is None:
             pending_display = "--.--"
             pending_color = "#999999"
         else:
-            pending_display = format_amount(pending)
+            pending_display = format_amount_with_unit(pending)
             pending_color = "#00ff00" if pending > 0 else ("#ff4444" if pending < 0 else "#ffd700")
         
         if self.sidebar_collapsed:
@@ -1101,24 +1101,24 @@ class WalletPage:
             if pending is None and wallet_data:
                 pending = wallet_data.get('pending_balance', None)
             if confirmed is None:
-                self.balance_text.value = "--.-- LKC"
+                self.balance_text.value = "--.--LKC"
                 self.balance_text.color = "#999999"
             else:
                 try:
-                    self.balance_text.value = f"{format_amount(float(confirmed))} LKC"
+                    self.balance_text.value = format_amount_with_unit(float(confirmed))
                     self.balance_text.color = "#f8d7da"
                 except Exception:
-                    self.balance_text.value = "--.-- LKC"
+                    self.balance_text.value = "--.--LKC"
                     self.balance_text.color = "#999999"
             if pending is None:
-                self.pending_balance_text.value = "--.-- LKC"
+                self.pending_balance_text.value = "--.--LKC"
                 self.pending_balance_text.color = "#999999"
             else:
                 try:
-                    self.pending_balance_text.value = f"Pending: {format_amount(float(pending))}"
+                    self.pending_balance_text.value = f"Pending: {format_amount_with_unit(float(pending))}"
                     self.pending_balance_text.color = "#00ff00" if float(pending) > 0 else ("#ff4444" if float(pending) < 0 else "#ffd700")
                 except Exception:
-                    self.pending_balance_text.value = "--.-- LKC"
+                    self.pending_balance_text.value = "--.--LKC"
                     self.pending_balance_text.color = "#999999"
             # アドレス表示
             label = wallet_data.get('label', 'Wallet') if wallet_data else 'Wallet'
@@ -1776,8 +1776,8 @@ class WalletPage:
             ab = available_balance if available_balance is not None else 0.0
             pb = pending_balance if pending_balance is not None else 0.0
             # Update balance text
-            self.balance_text.value = f"{format_amount(ab)} LKC"
-            self.pending_balance_text.value = f"{format_amount(pb)} LKC"
+            self.balance_text.value = format_amount_with_unit(ab)
+            self.pending_balance_text.value = format_amount_with_unit(pb)
             # Color pending balance
             if pb > 0:
                 self.pending_balance_text.color = "#00ff00"  # Green
@@ -1933,7 +1933,7 @@ class WalletPage:
                             reward_item = ft.Container(
                                     content=ft.ListTile(
                                         leading=ft.Icon(ft.Icons.ATTACH_MONEY, color="#00ff00", size=16),
-                                        title=ft.Text(f"{format_amount(original_tx.get('amount', 0))} LKC", 
+                                        title=ft.Text(format_amount_with_unit(original_tx.get('amount', 0)), 
                                             color="#00ff00", size=12, weight="bold"),
                                         subtitle=ft.Text(orig_date_str, size=10, color="#888888"),
                                         on_click=lambda e, tx=original_tx: self._show_transaction_details(tx),
@@ -1964,7 +1964,7 @@ class WalletPage:
                             size=20
                         ),
                         title=ft.Row([
-                            ft.Text(f"{format_amount(amount)} LKC × {original_count}", 
+                            ft.Text(f"{format_amount_with_unit(amount)} × {original_count}", 
                                 color=amount_color, 
                                 size=14,
                                 weight="bold",
@@ -2042,7 +2042,7 @@ class WalletPage:
                     size=20
                 ),
                 title=ft.Row([
-                    ft.Text(f"{amount_prefix}{format_amount(abs(amount))} LKC", 
+                    ft.Text(f"{amount_prefix}{format_amount_with_unit(abs(amount))}", 
                         color=amount_color, 
                         size=14,
                         weight="bold",
@@ -2144,7 +2144,19 @@ class WalletPage:
 
     def _return_to_wallet(self):
         """Return to wallet page from details"""
-        # Recreate the wallet page to ensure fresh data
+        # Reuse cached wallet page when available to avoid full reload
+        try:
+            if hasattr(self.app, "show_wallet_page"):
+                self.app.show_wallet_page(reuse=True)
+                return
+            if hasattr(self.app, "wallet_page_view") and self.app.wallet_page_view:
+                self.app.current_page = self.app.wallet_page_view
+                self.app.show_current_page()
+                return
+        except Exception:
+            pass
+
+        # Fallback: recreate the wallet page
         wallet_page = WalletPage(
             self.app,
             on_send=self.on_send,

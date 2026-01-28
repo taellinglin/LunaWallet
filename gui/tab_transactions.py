@@ -3,7 +3,7 @@ from gui.icon_utils import feather_icon
 from datetime import datetime
 from typing import List, Dict
 import time
-from utils import format_amount
+from utils import format_amount, format_amount_with_unit
 
 class TabTransactions:
     def __init__(self, wallet_core, is_mobile=False):
@@ -173,7 +173,7 @@ class TabTransactions:
                     amount = tx.get('amount', 0)
                     type_icon_name = "award"
                     direction = f"← Mining Rewards (×{original_count})"
-                    amount_text = f"{format_amount(amount)} LKC × {original_count}"
+                    amount_text = f"{format_amount_with_unit(amount)} × {original_count}"
                 else:
                     type_icon_name = "award" if tx_type == "reward" else "repeat"
                     from_addr = tx.get('from', 'Network')
@@ -192,7 +192,7 @@ class TabTransactions:
                             direction = f"→ To: {to_addr}"
                     
                     amount = tx.get('amount', 0)
-                    amount_text = f"{format_amount(amount)} LKC"
+                    amount_text = format_amount_with_unit(amount)
                 
                 amount_color = "#00ff00" if (is_compressed or tx.get('type') == 'reward' or 
                                               (not is_compressed and to_addr.lower() in [w['address'].lower() for w in self.wallet_core.wallets])) else "#ff0000"
@@ -278,7 +278,7 @@ class TabTransactions:
                                         reward_item = ft.Container(
                                             content=ft.Row([
                                                 ft.Icon(ft.Icons.ATTACH_MONEY, color="#00ff00", size=14),
-                                                ft.Text(f"{format_amount(orig_tx.get('amount', 0))} LKC", 
+                                                ft.Text(format_amount_with_unit(orig_tx.get('amount', 0)), 
                                                     color="#00ff00", size=11, expand=True),
                                                 ft.Text(orig_date_str, size=10, color="#888888"),
                                             ]),
@@ -302,7 +302,7 @@ class TabTransactions:
                                         ft.Icon(ft.Icons.ACCOUNT_BALANCE_WALLET, color="#00ff00", size=20),
                                         ft.Column([
                                             ft.Text(
-                                                f"{format_amount(amount)} LKC × {original_count}",
+                                                f"{format_amount_with_unit(amount)} × {original_count}",
                                                 size=16,
                                                 color="#00ff00",
                                                 weight="bold",
@@ -357,7 +357,7 @@ class TabTransactions:
                             direction_text = f"To: {tx.get('to', 'Unknown')[:12]}..."
                             icon = ft.Icons.ARROW_UPWARD
                     
-                    amount_text = f"{format_amount(abs(amount))} LKC"
+                    amount_text = format_amount_with_unit(abs(amount))
                     amount_color = "#00ff00" if is_incoming else "#ff0000"
                     status = tx.get('status', 'unknown')
                     

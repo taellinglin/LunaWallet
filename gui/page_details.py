@@ -1,7 +1,7 @@
 import flet as ft
 from datetime import datetime
 import time
-from utils import format_amount
+from utils import format_amount, format_amount_with_unit
 
 class TransactionDetailsPage:
     def __init__(self, app, transaction_data, on_back=None):
@@ -130,14 +130,14 @@ class TransactionDetailsPage:
                 ]),
                 ft.Container(height=10),
                 ft.Text(
-                    f"'{format_amount(amount)} LKC'",
+                    f"'{format_amount_with_unit(amount)}'",
                     size=20,
                     weight="bold",
                     color=color
                 ),
                 ft.Row([
                     ft.Text(f"{tx_type.title()} - {direction}", size=12, color="#a8a8a8", expand=True),
-                    ft.Text(f"Fee: {format_amount(fee)} LKC", size=12, color="#a8a8a8"),
+                    ft.Text(f"Fee: {format_amount_with_unit(fee)}", size=12, color="#a8a8a8"),
                 ])
             ]),
             padding=15,
@@ -369,7 +369,7 @@ class TransactionDetailsPage:
         tx = self.transaction_data
         share_text = f"""
 Transaction Details:
-Amount: {format_amount(tx.get('amount', 0))} LKC
+Amount: {format_amount_with_unit(tx.get('amount', 0))}
 Type: {tx.get('type', 'transfer')}
 From: {tx.get('from', 'Unknown')}
 To: {tx.get('to', 'Unknown')}
@@ -392,6 +392,12 @@ Hash: {tx.get('hash', 'Unknown')}
         else:
             # Fallback to wallet page
             from gui.page_wallet import WalletPage
+            try:
+                if hasattr(self.app, "show_wallet_page"):
+                    self.app.show_wallet_page(reuse=True)
+                    return
+            except Exception:
+                pass
             wallet_page = WalletPage(
                 self.app,
                 on_send=self.app.show_send_page,

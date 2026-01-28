@@ -1,5 +1,5 @@
 import flet as ft
-from utils import calculate_wallet_balances, format_amount
+from utils import calculate_wallet_balances, format_amount, format_amount_with_unit
 import threading
 
 class SendPage:
@@ -337,7 +337,7 @@ class SendPage:
                             confirmed_balance -= (amount + fee)
                     
                     confirmed_balance = max(0.0, confirmed_balance)
-                    print(f"DEBUG SendPage: Calculated balance - {format_amount(confirmed_balance)} LKC from {len(all_txs)} transactions")
+                    print(f"DEBUG SendPage: Calculated balance - {format_amount_with_unit(confirmed_balance)} from {len(all_txs)} transactions")
                     
                 except Exception as db_err:
                     print(f"DEBUG SendPage: Error getting transactions: {db_err}")
@@ -446,7 +446,7 @@ class SendPage:
             available_balance = self.get_available_balance()
             if amount > available_balance:
                 self.app.show_snackbar(
-                    f"Insufficient available balance. Available: {format_amount(available_balance)} LKC", 
+                    f"Insufficient available balance. Available: {format_amount_with_unit(available_balance)}", 
                     "error"
                 )
                 return
@@ -718,7 +718,7 @@ class SendPage:
                 # Centered form container - scrollable to fit content
                 ft.Container(
                     content=ft.Column([
-                        ft.Text(f"Available: {format_amount(balance)} LKC", size=12, color="#f0c2c2"),
+                        ft.Text(f"Available: {format_amount_with_unit(balance)}", size=12, color="#f0c2c2"),
                         ft.Text("Minimum confirmations: 6", size=10, color="#8d6e6e"),
                         ft.Container(height=12),
                         self.recipient,

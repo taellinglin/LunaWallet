@@ -9,6 +9,9 @@ sys.path.insert(0, os.path.dirname(__file__))
 # Prevent leaking paths from other projects (e.g., via PYTHONPATH)
 os.environ.pop("PYTHONPATH", None)
 
+# Enable tiny-decimal amounts in lunalib (must be set before lunalib imports)
+os.environ.setdefault("LUNALIB_AMOUNT_TINY_DECIMALS", "1")
+
 
 def _prune_foreign_venv_paths():
     """Remove unrelated/old venv paths from sys.path (e.g., other projects)."""
@@ -951,6 +954,18 @@ if __name__ == "__main__":
 
     def unlock_wallet(self, password):
         """Unlock the first wallet in the database using lunalib's SQLite backend"""
+        def _run_on_ui(callback):
+            try:
+                if hasattr(self, 'page') and self.page and hasattr(self.page, 'call_from_thread'):
+                    self.page.call_from_thread(callback)
+                    return
+                callback()
+            except Exception:
+                try:
+                    callback()
+                except Exception:
+                    pass
+
         def unlock_thread():
             try:
                 print("DEBUG: Starting unlock process (SQLite backend)...")
@@ -960,7 +975,7 @@ if __name__ == "__main__":
                 print(f"DEBUG: wallet_index: {wallet_index}")
                 if not wallet_index:
                     print("DEBUG: No wallets found in database")
-                    self.page.run_thread(lambda: self.show_snackbar("No wallets found to unlock", "error"))
+                    _run_on_ui(lambda: self.show_snackbar("No wallets found to unlock", "error"))
                     return
                 address = wallet_index[0]["address"]
                 print(f"DEBUG: Attempting to unlock wallet address: {address}")
@@ -1020,7 +1035,7 @@ if __name__ == "__main__":
                         self.show_snackbar(f"Failed to unlock wallet: {result.get('error', 'Unknown error')}", "error")
                         if hasattr(self, 'current_lock_page') and self.current_lock_page:
                             self.current_lock_page.hide_loading()
-                self.page.run_thread(update_ui)
+                _run_on_ui(update_ui)
             except Exception as e:
                 print(f"DEBUG: Unlock error: {e}")
                 import traceback
@@ -1029,7 +1044,7 @@ if __name__ == "__main__":
                     self.show_snackbar(f"Unlock error: {str(e)}", "error")
                     if hasattr(self, 'current_lock_page') and self.current_lock_page:
                         self.current_lock_page.hide_loading()
-                self.page.run_thread(show_error)
+                _run_on_ui(show_error)
         threading.Thread(target=unlock_thread, daemon=True).start()
 
     def start_blockchain_sync(self):
@@ -1082,8 +1097,10 @@ if __name__ == "__main__":
                 if hasattr(self, "wallet_page") and self.wallet_page:
                     self.wallet_page.show_loading(text)
 
-            if hasattr(self, "page") and self.page:
-                self.page.run_thread(_do_show)
+            if hasattr(self, "page") and self.page and hasattr(self.page, "call_from_thread"):
+                self.page.call_from_thread(_do_show)
+            else:
+                _do_show()
         except Exception as e:
             print(f"DEBUG: Error showing scan overlay: {e}")
 
@@ -1101,8 +1118,10 @@ if __name__ == "__main__":
                 try:
                     if delay > 0:
                         time.sleep(delay)
-                    if hasattr(self, "page") and self.page:
-                        self.page.run_thread(_do_hide)
+                    if hasattr(self, "page") and self.page and hasattr(self.page, "call_from_thread"):
+                        self.page.call_from_thread(_do_hide)
+                    else:
+                        _do_hide()
                 except Exception as e:
                     print(f"DEBUG: Error hiding scan overlay: {e}")
 
