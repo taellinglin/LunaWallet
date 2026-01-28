@@ -2,6 +2,8 @@
 # Common patterns to ignore build, cache, test, and dev files
 
 __pycache__/
+.git/
+.github/
 installer_output/
 *.pyc
 *.pyo
@@ -18,9 +20,14 @@ installer_output/
 *.pytest_cache/
 .venv-windows/
 .venv-mac/
+.venv-win/
 .venv-linux/
+.venv/
 venv/
 env/
+**/.venv*/
+**/venv/
+**/env/
 site-packages/
 build/
 flutter/
