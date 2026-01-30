@@ -223,6 +223,20 @@ jobs:
           fi
       - name: Build Android APK (Flet)
         run: flet build apk
+
+      - name: Patch pubspec.yaml and re-run build if needed
+        run: |
+          find . -name pubspec.yaml -exec sed -i 's/file_picker: *[0-9.^]*/file_picker: ^10.3.10/' {} +
+          if [ -d build/flutter ]; then
+            cd build/flutter
+            if [ -f pubspec.yaml ]; then
+              flutter pub add file_picker:^10.3.10 || true
+              flutter pub get || true
+            fi
+            cd ../..
+          fi
+          # Try building again
+          flet build apk || true
       - name: Enable ProGuard/R8 (Android)
         run: python scripts/patch_android_proguard.py
       - name: Set SERIOUS_PYTHON_SITE_PACKAGES
