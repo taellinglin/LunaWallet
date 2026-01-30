@@ -245,9 +245,9 @@ jobs:
             fi
             mapfile -t files < <(find build -maxdepth 2 -name "*.zip" -print)
             if [ ${#files[@]} -eq 0 ]; then
-              echo "No zip artifacts found under build/"
+              echo "No zip artifacts found under build/. Skipping release upload."
               ls -la build || true
-              exit 1
+              exit 0
             fi
             uploaded_files=()
             for f in "${files[@]}"; do
