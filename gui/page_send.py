@@ -543,8 +543,11 @@ class SendPage:
                     success, broadcast_message = tx_manager.send_transaction(transaction)
                     print(f"[SEND] TransactionManager result: success={success}, message={broadcast_message}")
 
-                    if not success and self._should_try_direct_broadcast(broadcast_message):
-                        _global_trace("BROADCAST - Decode error detected, trying direct POST", "SEND")
+                    if not success:
+                        _global_trace(
+                            f"BROADCAST - TransactionManager failed, falling back to direct HTTP: {broadcast_message}",
+                            "SEND",
+                        )
                         success, direct_message = self._broadcast_transaction_direct(transaction, mempool_url)
                         broadcast_message = direct_message
                         print(f"[SEND] Direct broadcast result: success={success}, message={broadcast_message}")
