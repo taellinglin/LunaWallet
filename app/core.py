@@ -301,6 +301,16 @@ class LunaWalletApp:
             print(f"DEBUG: Failed to initialize SoundManager: {e}")
             self.sound_manager = None
 
+        # --- Ensure services are initialized on Android ---
+        import sys
+        try:
+            if "android" in sys.platform:
+                print("DEBUG: Android detected, initializing services early...")
+                self._ensure_services()
+                print("DEBUG: Android service initialization complete.")
+        except Exception as e:
+            print(f"DEBUG: Android service initialization failed: {e}")
+
         # Initialize storage (web: browser storage, desktop: sqlite3)
         try:
             if is_web():
