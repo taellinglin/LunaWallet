@@ -213,14 +213,6 @@ jobs:
       - name: Remove simpleaudio for Android build
         run: |
           sed -i '/^simpleaudio/d' requirements.txt
-
-          v = m.group(1) if m else '0.0.0'
-          parts = v.split('.')
-          if len(parts) == 4 and parts[-1] == '0':
-            v = '.'.join(parts[:-1])
-          with open("$GITHUB_ENV", "a", encoding="utf-8") as f:
-            f.write(f"VERSION={v}\n")
-          PY
       - uses: actions/download-artifact@v4
         with:
           path: build
