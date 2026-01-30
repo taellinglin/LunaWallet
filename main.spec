@@ -78,6 +78,13 @@ except:
 # Add GUI modules
 a.datas += datas
 
+# Include certifi CA bundle for SSL verification in packaged builds
+try:
+    if os.path.exists('./certifi/cacert.pem'):
+        a.datas.append(('./certifi/cacert.pem', 'certifi'))
+except Exception:
+    pass
+
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
 exe = EXE(

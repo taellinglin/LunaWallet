@@ -75,6 +75,12 @@ def _bootstrap_ca_bundle():
     """Ensure CA bundle env vars are set to a string at import time."""
     try:
         ca_path = None
+        meipass = None
+        try:
+            import sys
+            meipass = getattr(sys, "_MEIPASS", None)
+        except Exception:
+            meipass = None
         try:
             from certifi import where
 
@@ -96,6 +102,14 @@ def _bootstrap_ca_bundle():
                 local_bundle = os.path.join(base_dir, "certifi", "cacert.pem")
                 if os.path.exists(local_bundle) and os.path.getsize(local_bundle) > 0:
                     ca_path = local_bundle
+            except Exception:
+                ca_path = None
+
+        if not ca_path and meipass:
+            try:
+                bundled = os.path.join(meipass, "certifi", "cacert.pem")
+                if os.path.exists(bundled) and os.path.getsize(bundled) > 0:
+                    ca_path = bundled
             except Exception:
                 ca_path = None
 
