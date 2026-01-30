@@ -32,7 +32,7 @@ jobs:
         run: echo PYTHONIOENCODING=utf-8 >> %GITHUB_ENV%
         shell: cmd
       - name: Install Flet
-        run: pip install flet==0.80.4
+        run: pip install flet
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
@@ -73,7 +73,7 @@ jobs:
         with:
           python-version: '3.11'
       - name: Install Flet
-        run: pip install flet==0.80.4
+        run: pip install flet
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
@@ -136,7 +136,7 @@ jobs:
         with:
           python-version: '3.11'
       - name: Install Flet
-        run: pip install flet==0.80.4
+        run: pip install flet
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
@@ -174,13 +174,6 @@ jobs:
           path: build/LunaWallet-${{ env.VERSION }}-Linux.zip
 
   build-android:
-          - name: Clean Flutter build directory
-            run: |
-              if [ -d build/flutter ]; then
-                cd build/flutter
-                flutter clean
-                cd ../..
-              fi
     if: github.ref == 'refs/heads/android'
     runs-on: ubuntu-latest
     steps:
@@ -190,7 +183,7 @@ jobs:
         with:
           python-version: '3.11'
       - name: Install Flet
-        run: pip install flet==0.80.4
+        run: pip install flet
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
@@ -217,141 +210,6 @@ jobs:
         run: |
           sed -i '/^simpleaudio/d' requirements.txt
 
-      - name: Patch all pubspec.yaml for file_picker version
-        run: |
-          find . -name pubspec.yaml -exec sed -i 's/file_picker: *[0-9.^]*/file_picker: ^10.3.10/' {} +
-          # If a Flutter project exists, force add the correct version
-          if [ -d build/flutter ]; then
-            cd build/flutter
-            if [ -f pubspec.yaml ]; then
-              flutter pub add file_picker:^10.3.10 || true
-            fi
-            cd ../..
-          fi
-      - name: Build Android APK (Flet)
-        run: flet build apk
-
-      - name: Patch pubspec.yaml and re-run build if needed
-        run: |
-          find . -name pubspec.yaml -exec sed -i 's/file_picker: *[0-9.^]*/file_picker: ^10.3.10/' {} +
-          if [ -d build/flutter ]; then
-            cd build/flutter
-            if [ -f pubspec.yaml ]; then
-              flutter pub add file_picker:^10.3.10 || true
-              flutter pub get || true
-            fi
-            cd ../..
-          fi
-          # Try building again
-          flet build apk || true
-      - name: Enable ProGuard/R8 (Android)
-        run: python scripts/patch_android_proguard.py
-      - name: Set SERIOUS_PYTHON_SITE_PACKAGES
-        run: |
-          set -euo pipefail
-          PY_DIR=$(find build/flutter/build -maxdepth 2 -type d -name "build_python_*" | head -n 1 || true)
-          if [ -z "$PY_DIR" ]; then
-            echo "build_python_* not found under build/flutter/build"
-            find build/flutter/build -maxdepth 3 -type d | head -n 200 || true
-            exit 1
-          fi
-          if [ -d "$PY_DIR/python/lib" ]; then
-            SITE_PACKAGES=$(find "$PY_DIR/python/lib" -maxdepth 2 -type d -name "site-packages" | head -n 1)
-          else
-            SITE_PACKAGES=$(find "$PY_DIR/python/Lib" -maxdepth 2 -type d -name "site-packages" | head -n 1)
-          fi
-          if [ -z "$SITE_PACKAGES" ]; then
-            echo "site-packages not found under $PY_DIR/python"
-            find "$PY_DIR/python" -maxdepth 3 -type d | head -n 200 || true
-            exit 1
-          fi
-          echo "SERIOUS_PYTHON_SITE_PACKAGES=$SITE_PACKAGES" >> $GITHUB_ENV
-      - name: Rebuild APK with ProGuard
-        run: |
-          cd build/flutter
-          flutter build apk --release
-      - name: Package APK
-        run: |
-          APK_PATH=$(find build -type f -name "*.apk" | head -n 1)
-          if [ -z "$APK_PATH" ]; then
-            echo "No APK found in build/"
-            find build -type f -maxdepth 4 | head -n 200 || true
-            exit 1
-          fi
-          cp "$APK_PATH" "build/LunaWallet-${VERSION}-Android.apk"
-      - name: Upload Android Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: android
-          path: build/LunaWallet-${{ env.VERSION }}-Android.apk
-
-  release-android:
-    if: github.ref == 'refs/heads/android'
-    needs: [build-android]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Export VERSION
-        run: |
-          python - <<'PY'
-          import re
-          p = open('version_info.txt', encoding='utf-8').read()
-          m = re.search(r"ProductVersion', u'([^']+)'", p)
-          v = m.group(1) if m else '0.0.0'
-          parts = v.split('.')
-          if len(parts) == 4 and parts[-1] == '0':
-            v = '.'.join(parts[:-1])
-          with open("$GITHUB_ENV", "a", encoding="utf-8") as f:
-            f.write(f"VERSION={v}\n")
-          PY
-      - uses: actions/download-artifact@v4
-        with:
-          path: build
-          merge-multiple: true
-      - name: List artifacts
-        run: ls -la build
-      - name: Create/Upload Android Release
-        uses: nick-fields/retry@v3
-        with:
-          timeout_minutes: 10
-          max_attempts: 3
-          retry_on: error
-          shell: bash
-          command: |
-            set -euo pipefail
-            cd "$GITHUB_WORKSPACE"
-            if [ -z "${VERSION:-}" ]; then
-              VERSION=$(python -c "import re; p=open('version_info.txt',encoding='utf-8').read(); m=re.search(r\"ProductVersion', u'([^']+)'\", p); v=m.group(1) if m else '0.0.0'; parts=v.split('.'); v='.'.join(parts[:-1]) if len(parts)==4 and parts[-1]=='0' else v; print(v)")
-            fi
-            tag="android-v${VERSION}"
-            release_name="LunaWallet-Android-v${VERSION}"
-            if ! gh release view "$tag" >/dev/null 2>&1; then
-              gh release create "$tag" --title "$release_name" --notes "Android release" --target "$GITHUB_SHA"
-            fi
-            mapfile -t files < <(find build -maxdepth 2 -name "*.apk" -print)
-            if [ ${#files[@]} -eq 0 ]; then
-              echo "No apk artifacts found under build/"
-              ls -la build || true
-              exit 1
-            fi
-            gh release upload "$tag" "${files[@]}" --clobber
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
-
-  release:
-    if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main'
-    needs: [build-windows, build-macos, build-linux]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Export VERSION
-        run: |
-          python - <<'PY'
-          import re
-          p = open('version_info.txt', encoding='utf-8').read()
-          m = re.search(r"ProductVersion', u'([^']+)'", p)
           v = m.group(1) if m else '0.0.0'
           parts = v.split('.')
           if len(parts) == 4 and parts[-1] == '0':
