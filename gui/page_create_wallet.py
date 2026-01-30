@@ -72,13 +72,18 @@ class CreateWalletPage:
         )
 
     def _on_back(self):
-        # 既存ウォレットがあればwalletページへ、なければロック画面へ
+        """Back button logic: if first wallet, go to create/import screen; else, go to wallet index/page."""
         self.app.load_wallet_data()
-        if self.app.wallet_core.wallets:
-            self.app.show_wallet_page()
+        wallets = getattr(self.app.wallet_core, 'wallets', None)
+        if not wallets or (isinstance(wallets, dict) and len(wallets) == 0) or (isinstance(wallets, list) and len(wallets) == 0):
+            # No wallets: go to lock page with create/import option
+            self.app.show_lock_page(title="Welcome to Luna Wallet", subtitle="Create or import a wallet to get started", show_create=True, wallet_exists=False)
         else:
-            self.app.show_lock_page()
-        
+            # Wallets exist: go to wallet index/page
+            if hasattr(self.app, 'show_wallet_index'):
+                self.app.show_wallet_index()
+            else:
+                self.app.show_wallet_page()
         # Progress indicator
         self.progress_indicator = ft.ProgressRing(
             color="#dc3545",
@@ -221,15 +226,26 @@ class CreateWalletPage:
         self._show_loading_state(True)
         
         def create_and_unlock():
+            import time
             try:
                 print("DEBUG: Starting wallet creation...")
-                try:
+                # Wait for wallet_core to be ready (max 5 seconds)
+                ready = False
+                for _ in range(50):
+                    if getattr(self.app, 'wallet_core', None):
+                        ready = True
+                        break
                     if hasattr(self.app, '_ensure_services'):
-                        self.app._ensure_services()
-                except Exception as svc_err:
-                    print(f"DEBUG: Service init failed before wallet creation: {svc_err}")
-                if not getattr(self.app, 'wallet_core', None):
-                    raise RuntimeError("Wallet core not initialized")
+                        try:
+                            self.app._ensure_services()
+                        except Exception as svc_err:
+                            print(f"DEBUG: Service init failed before wallet creation: {svc_err}")
+                    time.sleep(0.1)
+                if not ready:
+                    print("ERROR: Wallet core still not initialized after waiting!")
+                    self._show_loading_state(False)
+                    self.app.show_snackbar("Wallet core not initialized. Please restart the app.", "error")
+                    return
                 # Ensure SM4 wallet encryption is used (lunalib 2.4.0+)
                 try:
                     import os
