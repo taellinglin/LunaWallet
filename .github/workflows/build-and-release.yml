@@ -197,6 +197,7 @@ jobs:
       - name: Export VERSION
         run: |
           python - <<'PY'
+          import os
           import re
           p = open('version_info.txt', encoding='utf-8').read()
           m = re.search(r"ProductVersion', u'([^']+)'", p)
@@ -204,7 +205,7 @@ jobs:
           parts = v.split('.')
           if len(parts) == 4 and parts[-1] == '0':
             v = '.'.join(parts[:-1])
-          with open("$GITHUB_ENV", "a", encoding="utf-8") as f:
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as f:
             f.write(f"VERSION={v}\n")
           PY
       - name: Remove simpleaudio for Android build
