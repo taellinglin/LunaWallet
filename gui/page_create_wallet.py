@@ -72,18 +72,13 @@ class CreateWalletPage:
         )
 
     def _on_back(self):
-        """Back button logic: if first wallet, go to create/import screen; else, go to wallet index/page."""
-        self.app.load_wallet_data()
-        wallets = getattr(self.app.wallet_core, 'wallets', None)
-        if not wallets or (isinstance(wallets, dict) and len(wallets) == 0) or (isinstance(wallets, list) and len(wallets) == 0):
-            # No wallets: go to lock page with create/import option
-            self.app.show_lock_page(title="Welcome to Luna Wallet", subtitle="Create or import a wallet to get started", show_create=True, wallet_exists=False)
-        else:
-            # Wallets exist: go to wallet index/page
-            if hasattr(self.app, 'show_wallet_index'):
-                self.app.show_wallet_index()
-            else:
-                self.app.show_wallet_page()
+        """Back button logic: always go to create/import screen."""
+        self.app.show_lock_page(
+            title="Welcome to Luna Wallet",
+            subtitle="Create or import a wallet to get started",
+            show_create=True,
+            wallet_exists=False
+        )
         # Progress indicator
         self.progress_indicator = ft.ProgressRing(
             color="#dc3545",
@@ -232,7 +227,9 @@ class CreateWalletPage:
                 # Wait for wallet_core to be ready (max 5 seconds)
                 ready = False
                 for _ in range(50):
-                    if getattr(self.app, 'wallet_core', None):
+                    wallet_core = getattr(self.app, 'wallet_core', None)
+                    services_ready = getattr(self.app, '_services_ready', True)
+                    if wallet_core and services_ready:
                         ready = True
                         break
                     if hasattr(self.app, '_ensure_services'):
