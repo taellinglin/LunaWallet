@@ -32,7 +32,7 @@ jobs:
         run: echo PYTHONIOENCODING=utf-8 >> %GITHUB_ENV%
         shell: cmd
       - name: Install Flet
-        run: pip install flet
+        run: pip install flet==0.80.4
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
@@ -73,7 +73,7 @@ jobs:
         with:
           python-version: '3.11'
       - name: Install Flet
-        run: pip install flet
+        run: pip install flet==0.80.4
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
@@ -136,7 +136,7 @@ jobs:
         with:
           python-version: '3.11'
       - name: Install Flet
-        run: pip install flet
+        run: pip install flet==0.80.4
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
@@ -183,7 +183,7 @@ jobs:
         with:
           python-version: '3.11'
       - name: Install Flet
-        run: pip install flet
+        run: pip install flet==0.80.4
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
