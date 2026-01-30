@@ -218,7 +218,9 @@ jobs:
           path: build
           merge-multiple: true
       - name: List artifacts
-        run: ls -la build
+        run: |
+          mkdir -p build
+          ls -la build || true
       - name: Create/Upload Release (retry)
         uses: nick-fields/retry@v3
         with:
