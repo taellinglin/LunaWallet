@@ -1615,14 +1615,35 @@ class LunaWalletApp:
         try:
             print("DEBUG: Initializing services...")
             self._ensure_ca_bundle()
-            self.wallet_service = self.wallet_service or WalletService()
-            self.blockchain_service = self.blockchain_service or BlockchainService()
-            self.mempool_service = self.mempool_service or MempoolService()
+            self._services_errors = getattr(self, "_services_errors", {})
 
-            # Keep references for backward compatibility
-            self.wallet_core = self.wallet_service.core
-            self.blockchain_manager = self.blockchain_service.manager
-            self.mempool_manager = self.mempool_service.manager
+            # Wallet service must be available for core operations
+            try:
+                self.wallet_service = self.wallet_service or WalletService()
+                self.wallet_core = self.wallet_service.core
+            except Exception as wallet_err:
+                self._services_errors["wallet_service"] = str(wallet_err)
+                print(f"DEBUG: Wallet service init failed: {wallet_err}")
+                return
+
+            # Optional services (do not block wallet core)
+            try:
+                self.blockchain_service = self.blockchain_service or BlockchainService()
+                self.blockchain_manager = self.blockchain_service.manager
+            except Exception as chain_err:
+                self._services_errors["blockchain_service"] = str(chain_err)
+                self.blockchain_service = None
+                self.blockchain_manager = None
+                print(f"DEBUG: Blockchain service init failed: {chain_err}")
+
+            try:
+                self.mempool_service = self.mempool_service or MempoolService()
+                self.mempool_manager = self.mempool_service.manager
+            except Exception as mem_err:
+                self._services_errors["mempool_service"] = str(mem_err)
+                self.mempool_service = None
+                self.mempool_manager = None
+                print(f"DEBUG: Mempool service init failed: {mem_err}")
 
             # Optional one-time cache reset
             try:

@@ -229,7 +229,9 @@ class CreateWalletPage:
                 for _ in range(50):
                     wallet_core = getattr(self.app, 'wallet_core', None)
                     services_ready = getattr(self.app, '_services_ready', True)
-                    if wallet_core and services_ready:
+                    if wallet_core:
+                        if not services_ready:
+                            print("DEBUG: wallet_core ready, other services still initializing")
                         ready = True
                         break
                     if hasattr(self.app, '_ensure_services'):
@@ -241,7 +243,14 @@ class CreateWalletPage:
                 if not ready:
                     print("ERROR: Wallet core still not initialized after waiting!")
                     self._show_loading_state(False)
-                    self.app.show_snackbar("Wallet core not initialized. Please restart the app.", "error")
+                    svc_errors = getattr(self.app, '_services_errors', {}) or {}
+                    if svc_errors:
+                        self.app.show_snackbar(
+                            f"Wallet core not initialized. Details: {svc_errors}",
+                            "error"
+                        )
+                    else:
+                        self.app.show_snackbar("Wallet core not initialized. Please restart the app.", "error")
                     return
                 # Ensure SM4 wallet encryption is used (lunalib 2.4.0+)
                 try:
