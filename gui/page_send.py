@@ -201,6 +201,45 @@ class SendPage:
             or "connection" in lowered
         )
 
+    def _resolve_network_endpoints(self):
+        """Resolve base endpoint and mempool URL from env/settings."""
+        import os
+        from urllib.parse import urlsplit
+
+        base = (
+            os.getenv("LUNALIB_ENDPOINT_URL")
+            or os.getenv("LUNA_NODE_URL")
+            or os.getenv("PRIMARY_NODE_URL")
+        )
+
+        # Fallback to blockchain service/manager configured endpoint
+        if not base:
+            try:
+                if hasattr(self.app, "blockchain_service") and self.app.blockchain_service:
+                    base = getattr(self.app.blockchain_service, "endpoint_url", None)
+            except Exception:
+                base = None
+        if not base:
+            try:
+                if hasattr(self.app, "blockchain_manager") and self.app.blockchain_manager:
+                    base = getattr(self.app.blockchain_manager, "endpoint_url", None)
+            except Exception:
+                base = None
+
+        base = (base or "https://bank.linglin.art").strip()
+        base = base.rstrip("/")
+
+        # If endpoint includes a path (e.g., /api/blockchain/full), reduce to scheme+host
+        try:
+            parts = urlsplit(base)
+            if parts.scheme and parts.netloc:
+                base = f"{parts.scheme}://{parts.netloc}"
+        except Exception:
+            pass
+
+        mempool_url = f"{base}/mempool/add"
+        return [base], mempool_url
+
     def _broadcast_transaction_direct(self, transaction: dict, mempool_url: str):
         try:
             import os
@@ -220,29 +259,41 @@ class SendPage:
             except Exception:
                 verify = None
 
-            response = requests.post(
-                mempool_url,
-                json=transaction,
-                headers=headers,
-                timeout=30,
-                verify=verify if verify else True,
-            )
-            status = response.status_code
-            try:
-                payload = response.json()
-            except Exception:
-                payload = {"raw": response.text}
+            payload_variants = [
+                transaction,
+                {"transaction": transaction},
+                {"tx": transaction},
+            ]
 
-            if status >= 400:
-                return False, f"HTTP {status}: {payload}"
+            last_error = None
+            for payload_body in payload_variants:
+                response = requests.post(
+                    mempool_url,
+                    json=payload_body,
+                    headers=headers,
+                    timeout=30,
+                    verify=verify if verify else True,
+                )
+                status = response.status_code
+                try:
+                    payload = response.json()
+                except Exception:
+                    payload = {"raw": response.text}
 
-            if isinstance(payload, dict):
-                if payload.get("success") is True:
-                    return True, payload.get("message") or "Broadcasted"
-                if payload.get("success") is False:
-                    return False, payload.get("error") or str(payload)
+                if status >= 400:
+                    last_error = f"HTTP {status}: {payload}"
+                    continue
 
-            return True, str(payload)
+                if isinstance(payload, dict):
+                    if payload.get("success") is True:
+                        return True, payload.get("message") or "Broadcasted"
+                    if payload.get("success") is False:
+                        last_error = payload.get("error") or str(payload)
+                        continue
+
+                return True, str(payload)
+
+            return False, last_error or "Broadcast failed"
         except Exception as e:
             return False, f"Direct broadcast error: {e}"
     def get_available_balance(self):
@@ -468,7 +519,16 @@ class SendPage:
                 # Try to get UTXO info if available
                 if hasattr(wallet, 'get_balance'):
                     balances = wallet.get_balance()
-                    _global_trace(f"WALLET STATE - Confirmed: {balances.get('confirmed', 0)}, Pending: {balances.get('pending', 0)}", "SEND")
+                    if isinstance(balances, dict):
+                        _global_trace(
+                            f"WALLET STATE - Confirmed: {balances.get('confirmed', 0)}, Pending: {balances.get('pending', 0)}",
+                            "SEND",
+                        )
+                    elif isinstance(balances, (int, float)):
+                        _global_trace(
+                            f"WALLET STATE - Confirmed: {float(balances)}, Pending: 0",
+                            "SEND",
+                        )
                 if hasattr(wallet, 'get_utxos'):
                     utxos = wallet.get_utxos()
                     _global_trace(f"WALLET UTXOS - Count: {len(utxos) if utxos else 0}", "SEND")
@@ -482,10 +542,12 @@ class SendPage:
                 
                 # Log network endpoint information
                 from app.core import _global_trace
-                # Use the base URL only - TransactionManager will append the path
-                network_endpoints = ["https://bank.linglin.art"]
-                mempool_url = "https://bank.linglin.art/mempool/add"
-                _global_trace(f"NETWORK - Using base endpoint: {network_endpoints[0]}, Mempool: {mempool_url}, Environment: {'BUILD' if hasattr(self.app, 'is_build_version') else 'DEV'}", "SEND")
+                # Use configured base URL (settings/env) to match build/runtime
+                network_endpoints, mempool_url = self._resolve_network_endpoints()
+                _global_trace(
+                    f"NETWORK - Using base endpoint: {network_endpoints[0]}, Mempool: {mempool_url}, Environment: {'BUILD' if hasattr(self.app, 'is_build_version') else 'DEV'}",
+                    "SEND",
+                )
                 
                 tx_manager = TransactionManager(network_endpoints=network_endpoints)
                 
