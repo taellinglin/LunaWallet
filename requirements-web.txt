@@ -2,7 +2,7 @@ flet
 cryptography>=42.0.5,<43
 requests
 qrcode
-lunalib==2.6.6
+lunalib==2.4.0
 pillow
 pyperclip
 base58
