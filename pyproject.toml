@@ -15,7 +15,7 @@ dependencies = [
     "flet==0.80.4",
     "qrcode>=7.4.0",
     "pillow",
-    "lunalib>=2.6.6",
+    "lunalib==2.6.6",
     "requests",
     "cryptography>=42.0.5", # "simpleaudio; sys_platform == \"linux\"",
     "pyperclip",
