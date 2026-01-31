@@ -271,7 +271,7 @@ jobs:
           PY
       - name: Build iOS (no codesign)
         run: |
-          flet build ios
+          flet build ipa
           pushd build/flutter
           flutter build ipa --no-codesign
           popd
@@ -342,9 +342,9 @@ jobs:
             if ! gh release view "$tag" >/dev/null 2>&1; then
               gh release create "$tag" --title "$release_name" --notes "Automated release" --target "$GITHUB_SHA"
             fi
-            mapfile -t files < <(find build -maxdepth 2 -name "*.zip" -print)
+            mapfile -t files < <(find build -maxdepth 2 \( -name "*.zip" -o -name "*.apk" -o -name "*.ipa" \) -print)
             if [ ${#files[@]} -eq 0 ]; then
-              echo "No zip artifacts found under build/. Skipping release upload."
+              echo "No release artifacts found under build/. Skipping release upload."
               ls -la build || true
               exit 0
             fi
