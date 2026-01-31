@@ -289,12 +289,12 @@ jobs:
       - name: Package iOS build
         run: |
           mkdir -p build
-          IPA_PATH=$(find build/flutter/build/ios/ipa -maxdepth 1 -type f -name "*.ipa" | head -n 1)
+          IPA_PATH=$(find build -maxdepth 6 -type f -name "*.ipa" | head -n 1)
           if [ -n "$IPA_PATH" ]; then
             cp "$IPA_PATH" "build/LunaWallet-${VERSION}-iOS.ipa"
           else
             echo "iOS IPA not found"
-            find build/flutter/build/ios -maxdepth 4 -type f -name "*.ipa" -print || true
+            find build -maxdepth 6 -type f -name "*.ipa" -print || true
             exit 1
           fi
       - name: Upload iOS Artifact
