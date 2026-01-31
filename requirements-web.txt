@@ -2,7 +2,7 @@ flet
 cryptography>=42.0.5,<43
 requests
 qrcode
-git+https://github.com/LingLin-Art-LLC/lunalib.git@v2.6.6#egg=lunalib
+git+https://github.com/taellinglin/LunaLib.git@main#egg=lunalib
 pillow
 pyperclip
 base58
