@@ -221,24 +221,28 @@ jobs:
         run: |
           flet build apk
           python scripts/patch_android_proguard.py
-          SITE_PACKAGES=$(find build/flutter/build -maxdepth 3 -type d -name "site-packages" | head -n 1)
+          SITE_PACKAGES=$(find build -type d -name "site-packages" | head -n 1)
           if [ -n "$SITE_PACKAGES" ]; then
-            echo "SERIOUS_PYTHON_SITE_PACKAGES=$SITE_PACKAGES" >> $GITHUB_ENV
+            export SERIOUS_PYTHON_SITE_PACKAGES="$SITE_PACKAGES"
+            pushd build/flutter
+            flutter build apk --release
+            popd
           else
-            echo "SERIOUS_PYTHON_SITE_PACKAGES not found under build/flutter/build"
+            echo "SERIOUS_PYTHON_SITE_PACKAGES not found; skipping flutter build (using flet output)"
           fi
-          pushd build/flutter
-          flutter build apk --release
-          popd
       - name: Package Android build
         run: |
           mkdir -p build
           APK_PATH="build/flutter/build/app/outputs/flutter-apk/app-release.apk"
+          APK_PATH_FLET=$(find build/apk -maxdepth 1 -type f -name "*.apk" | head -n 1)
           if [ -f "$APK_PATH" ]; then
             cp "$APK_PATH" "build/LunaWallet-${VERSION}-Android.apk"
+          elif [ -n "$APK_PATH_FLET" ]; then
+            cp "$APK_PATH_FLET" "build/LunaWallet-${VERSION}-Android.apk"
           else
             echo "Android APK not found at $APK_PATH"
             find build/flutter -maxdepth 6 -type f -name "*.apk" -print || true
+            find build/apk -maxdepth 2 -type f -name "*.apk" -print || true
             exit 1
           fi
       - name: Upload Android Artifact
@@ -299,9 +303,19 @@ jobs:
           if [ -n "$IPA_PATH" ]; then
             cp "$IPA_PATH" "build/LunaWallet-${VERSION}-iOS.ipa"
           else
-            echo "iOS IPA not found"
-            find build -maxdepth 6 -type f -name "*.ipa" -print || true
-            exit 1
+            echo "iOS IPA not found, attempting to package .app"
+            APP_PATH=$(find build -maxdepth 6 -type d -name "*.app" | head -n 1)
+            if [ -n "$APP_PATH" ]; then
+              rm -rf build/ios_payload
+              mkdir -p build/ios_payload/Payload
+              cp -R "$APP_PATH" build/ios_payload/Payload/
+              (cd build/ios_payload && zip -r "../LunaWallet-${VERSION}-iOS.ipa" Payload)
+            else
+              echo "iOS .app not found"
+              find build -maxdepth 6 -type f -name "*.ipa" -print || true
+              find build -maxdepth 6 -type d -name "*.app" -print || true
+              exit 1
+            fi
           fi
       - name: Upload iOS Artifact
         uses: actions/upload-artifact@v4
