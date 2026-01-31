@@ -15,7 +15,7 @@ dependencies = [
     "flet==0.80.4",
     "qrcode>=7.4.0",
     "pillow",
-    "lunalib @ git+https://github.com/LingLin-Art-LLC/lunalib.git@v2.6.6",
+    "lunalib @ git+https://github.com/taellinglin/LunaLib.git@master",
     "requests",
     "cryptography>=42.0.5", # "simpleaudio; sys_platform == \"linux\"",
     "pyperclip",
