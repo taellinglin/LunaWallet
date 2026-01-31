@@ -177,7 +177,7 @@ jobs:
           path: build/LunaWallet-${{ env.VERSION }}-Linux.zip
 
   build-android:
-    if: github.ref == 'refs/heads/android'
+    if: github.ref == 'refs/heads/android' || github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -213,18 +213,88 @@ jobs:
       - name: Remove simpleaudio for Android build
         run: |
           sed -i '/^simpleaudio/d' requirements.txt
-      - uses: actions/download-artifact@v4
-        with:
-          path: build
-          merge-multiple: true
-      - name: List artifacts
+      - name: Build Android APK (release)
+        run: |
+          flet build apk
+          python scripts/patch_android_proguard.py
+          pushd build/flutter
+          flutter build apk --release
+          popd
+      - name: Package Android build
         run: |
           mkdir -p build
-          ls -la build || true
+          APK_PATH="build/flutter/build/app/outputs/flutter-apk/app-release.apk"
+          if [ -f "$APK_PATH" ]; then
+            cp "$APK_PATH" "build/LunaWallet-${VERSION}-Android.apk"
+          else
+            echo "Android APK not found at $APK_PATH"
+            find build/flutter -maxdepth 6 -type f -name "*.apk" -print || true
+            exit 1
+          fi
+      - name: Upload Android Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: build/LunaWallet-${{ env.VERSION }}-Android.apk
+
+  build-ios:
+    if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install Flet
+        run: pip install flet
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.38.6'
+          channel: 'stable'
+      - name: Add Flutter to PATH
+        run: echo "$HOME/flutter/bin" >> $GITHUB_PATH
+      - name: Export VERSION
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          p = open('version_info.txt', encoding='utf-8').read()
+          m = re.search(r"ProductVersion', u'([^']+)'", p)
+          v = m.group(1) if m else '0.0.0'
+          parts = v.split('.')
+          if len(parts) == 4 and parts[-1] == '0':
+            v = '.'.join(parts[:-1])
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as f:
+            f.write(f"VERSION={v}\n")
+          PY
+      - name: Build iOS (no codesign)
+        run: |
+          flet build ios
+          pushd build/flutter
+          flutter build ipa --no-codesign
+          popd
+      - name: Package iOS build
+        run: |
+          mkdir -p build
+          IPA_PATH=$(find build/flutter/build/ios/ipa -maxdepth 1 -type f -name "*.ipa" | head -n 1)
+          if [ -n "$IPA_PATH" ]; then
+            cp "$IPA_PATH" "build/LunaWallet-${VERSION}-iOS.ipa"
+          else
+            echo "iOS IPA not found"
+            find build/flutter/build/ios -maxdepth 4 -type f -name "*.ipa" -print || true
+            exit 1
+          fi
+      - name: Upload iOS Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios
+          path: build/LunaWallet-${{ env.VERSION }}-iOS.ipa
 
   release:
     if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
-    needs: [build-windows, build-macos, build-linux]
+    needs: [build-windows, build-macos, build-linux, build-android, build-ios]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
