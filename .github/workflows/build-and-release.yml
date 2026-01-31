@@ -179,6 +179,9 @@ jobs:
   build-android:
     if: github.ref == 'refs/heads/android' || github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
+    env:
+      PIP_INDEX_URL: https://pypi.org/simple
+      PIP_NO_CACHE_DIR: "1"
     steps:
       - uses: actions/checkout@v4
       - name: Set up Python
@@ -187,6 +190,8 @@ jobs:
           python-version: '3.11'
       - name: Install Flet
         run: pip install flet
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
@@ -240,6 +245,9 @@ jobs:
   build-ios:
     if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
     runs-on: macos-latest
+    env:
+      PIP_INDEX_URL: https://pypi.org/simple
+      PIP_NO_CACHE_DIR: "1"
     steps:
       - uses: actions/checkout@v4
       - name: Set up Python
@@ -248,6 +256,8 @@ jobs:
           python-version: '3.11'
       - name: Install Flet
         run: pip install flet
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
