@@ -221,6 +221,35 @@ jobs:
         run: |
           mkdir -p build
           ls -la build || true
+
+  release:
+    if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
+    needs: [build-windows, build-macos, build-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: build
+          merge-multiple: true
+      - name: List artifacts
+        run: |
+          mkdir -p build
+          ls -la build || true
+      - name: Export VERSION
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          p = open('version_info.txt', encoding='utf-8').read()
+          m = re.search(r"ProductVersion', u'([^']+)'", p)
+          v = m.group(1) if m else '0.0.0'
+          parts = v.split('.')
+          if len(parts) == 4 and parts[-1] == '0':
+            v = '.'.join(parts[:-1])
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as f:
+            f.write(f"VERSION={v}\n")
+          PY
       - name: Create/Upload Release (retry)
         uses: nick-fields/retry@v3
         with:
