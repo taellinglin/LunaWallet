@@ -1529,6 +1529,7 @@ class LunaWalletApp:
 
         # Detect if we're on mobile
         self.is_mobile = page.platform in ["ios", "android"]
+        self.is_android = page.platform == "android"
         self.detect_orientation()
 
         page.title = "Luna Wallet"
@@ -2066,6 +2067,33 @@ class LunaWalletApp:
         self.page.controls.clear()
         self.page.add(self.current_page)
         self.page.update()
+
+    def show_sidebar_page(self):
+        """Display sidebar as its own page on Android."""
+        if not getattr(self, "is_android", False):
+            return
+        try:
+            if not hasattr(self, "wallet_page") or not self.wallet_page:
+                self.show_wallet_page()
+            if not self.wallet_page:
+                return
+
+            sidebar_page = self.wallet_page.create_sidebar_page()
+            self.current_page = sidebar_page
+
+            if hasattr(self, 'page') and self.page:
+                try:
+                    self.page.clean()
+                except Exception:
+                    self.page.controls.clear()
+                if hasattr(self.page, 'overlay'):
+                    self.page.overlay.clear()
+                self._set_mobile_content(
+                    self.current_page,
+                    transition=getattr(ft.AnimatedSwitcherTransition, "SLIDE", ft.AnimatedSwitcherTransition.FADE)
+                )
+        except Exception as e:
+            print(f"[SIDEBAR_PAGE] ERROR: {e}")
         print("DEBUG: Send page displayed")
 
     def on_receive(self):

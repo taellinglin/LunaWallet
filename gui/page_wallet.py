@@ -1149,6 +1149,17 @@ class WalletPage:
     
     def create_header(self):
         left_controls = []
+        if getattr(self.app, "is_android", False):
+            left_controls.append(
+                ft.IconButton(
+                    icon=ft.Icons.MENU,
+                    icon_color="#f8d7da",
+                    icon_size=18,
+                    on_click=lambda e: self.app.show_sidebar_page(),
+                    tooltip="Wallets",
+                    style=ft.ButtonStyle(padding=5),
+                )
+            )
         if self.show_back and self.on_back:
             left_controls.append(
                 ft.IconButton(
@@ -1206,6 +1217,54 @@ class WalletPage:
                 ], spacing=5),
             ]),
             padding=ft.padding.symmetric(vertical=5)
+        )
+
+    def create_sidebar_page(self):
+        """Create a standalone sidebar page (Android only)."""
+        self.sidebar_collapsed = False
+        sidebar = self._create_sidebar()
+        try:
+            sidebar.width = None
+            sidebar.expand = True
+        except Exception:
+            pass
+
+        # Populate sidebar with wallets
+        self._populate_sidebar_wallets(show_placeholders=True)
+
+        def refresh_sidebar_balances():
+            try:
+                self._refresh_sidebar_wallets()
+                if hasattr(self.app, 'page') and self.app.page:
+                    self.app.page.update()
+            except Exception as e:
+                print(f"DEBUG: Error refreshing sidebar balances: {e}")
+        threading.Thread(target=refresh_sidebar_balances, daemon=True).start()
+
+        header = ft.Container(
+            content=ft.Row([
+                ft.IconButton(
+                    icon=ft.Icons.ARROW_BACK,
+                    icon_color="#f8d7da",
+                    icon_size=18,
+                    on_click=lambda e: self.app.show_wallet_page(reuse=True),
+                    tooltip="Back",
+                    style=ft.ButtonStyle(padding=5),
+                ),
+                ft.Text("Wallets", size=18, weight="bold", color="#f8d7da"),
+            ]),
+            padding=ft.padding.symmetric(vertical=10, horizontal=10),
+            bgcolor="#1a0f0f",
+            border=ft.border.only(bottom=ft.BorderSide(1, "#5c2e2e")),
+        )
+
+        return ft.Container(
+            content=ft.Column([
+                header,
+                ft.Container(content=sidebar, expand=True),
+            ], spacing=0, expand=True),
+            expand=True,
+            bgcolor="#2c1a1a",
         )
 
     def create_sync_status_bar(self):
