@@ -221,12 +221,17 @@ jobs:
         run: |
           flet build apk
           python scripts/patch_android_proguard.py
-          SITE_PACKAGES=$(find build/site-packages -maxdepth 2 -type d | head -n 1)
+          SITE_PACKAGES=$(find build/flutter/build -maxdepth 3 -type d -name "site-packages" | head -n 1)
           if [ -z "$SITE_PACKAGES" ]; then
-            echo "SERIOUS_PYTHON_SITE_PACKAGES not found under build/site-packages"
+            SITE_PACKAGES=$(find build/site-packages -maxdepth 2 -type d | head -n 1)
+          fi
+          if [ -z "$SITE_PACKAGES" ]; then
+            echo "SERIOUS_PYTHON_SITE_PACKAGES not found"
+            find build/flutter/build -maxdepth 4 -type d -name "site-packages" -print || true
             find build/site-packages -maxdepth 3 -type d -print || true
             exit 1
           fi
+          echo "SERIOUS_PYTHON_SITE_PACKAGES=$SITE_PACKAGES"
           export SERIOUS_PYTHON_SITE_PACKAGES="$SITE_PACKAGES"
           pushd build/flutter
           flutter build apk --release
