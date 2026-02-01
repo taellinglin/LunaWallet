@@ -239,14 +239,14 @@ jobs:
       - name: Package Android build
         run: |
           mkdir -p build
-          APK_PATH="build/flutter/build/app/outputs/flutter-apk/app-release.apk"
           APK_PATH_FLET=$(find build/apk -maxdepth 1 -type f -name "*.apk" | head -n 1)
-          if [ -f "$APK_PATH" ]; then
-            cp "$APK_PATH" "build/LunaWallet-${VERSION}-Android.apk"
-          elif [ -n "$APK_PATH_FLET" ]; then
+          APK_PATH="build/flutter/build/app/outputs/flutter-apk/app-release.apk"
+          if [ -n "$APK_PATH_FLET" ]; then
             cp "$APK_PATH_FLET" "build/LunaWallet-${VERSION}-Android.apk"
+          elif [ -f "$APK_PATH" ]; then
+            cp "$APK_PATH" "build/LunaWallet-${VERSION}-Android.apk"
           else
-            echo "Android APK not found at $APK_PATH"
+            echo "Android APK not found in build/apk or $APK_PATH"
             find build/flutter -maxdepth 6 -type f -name "*.apk" -print || true
             find build/apk -maxdepth 2 -type f -name "*.apk" -print || true
             exit 1
