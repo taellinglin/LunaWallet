@@ -11,11 +11,12 @@ class LockPage:
         self.show_create_option = show_create_option
         self.is_unlocking = False
             
+        field_width = 320 if getattr(self.app, "is_mobile", False) else 300
         self.password_field = ft.TextField(
             label="Password",
             password=True,
             can_reveal_password=True,
-            width=300,
+            width=field_width,
             border_color="#5c2e2e",
             focused_border_color="#dc3545",
             text_size=14,
@@ -98,7 +99,7 @@ class LockPage:
             self.loading_container,
             
             ft.Container(expand=True),
-        ], horizontal_alignment=ft.CrossAxisAlignment.CENTER)
+        ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, scroll=ft.ScrollMode.ADAPTIVE)
         
         return ft.Container(
             content=self.content_column,
@@ -172,7 +173,7 @@ class LockPage:
                 ),
                 
                 ft.Container(expand=True),
-            ], horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+            ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, scroll=ft.ScrollMode.ADAPTIVE),
             expand=True,
             padding=20,
             bgcolor="#2c1a1a",

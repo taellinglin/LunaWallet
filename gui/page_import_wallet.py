@@ -104,7 +104,7 @@ class ImportWalletPage:
                     border=ft.border.all(1, "#5c2e2e"),
                     expand=True
                 )
-            ]),
+            ], scroll=ft.ScrollMode.ADAPTIVE),
             expand=True, 
             padding=10,
             bgcolor="#2c1a1a"

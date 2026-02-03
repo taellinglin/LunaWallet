@@ -103,6 +103,7 @@ class WalletIndexPage:
                 ],
                 expand=True,
                 spacing=12,
+                scroll=ft.ScrollMode.ADAPTIVE,
             ),
             expand=True,
             padding=16,

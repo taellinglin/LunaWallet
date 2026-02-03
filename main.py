@@ -1398,6 +1398,10 @@ if __name__ == "__main__":
         try:
             from lunalib.core.mempool import MempoolManager
             mempool_manager = MempoolManager()
+
+            if not mempool_manager or not hasattr(mempool_manager, 'get_pending_transactions_for_addresses'):
+                print("⚠️  Mempool manager unavailable or missing batch API")
+                return
             
             print(f"\n=== CHECKING MEMPOOL FOR {len(wallet_addresses)} WALLETS ===")
             

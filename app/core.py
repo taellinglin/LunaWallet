@@ -305,6 +305,9 @@ class LunaWalletApp:
         self._services_ready = False
         self._inactivity_monitor_started = False
         self._is_closing = False
+        self.current_page_kind = None
+        self._back_action = None
+        self._swipe_start = None
         # Initialize sound manager
         self.sound_enabled = True  # サウンドを明示的に有効化
         print(f"[SOUND] sound_enabled = {self.sound_enabled}")
@@ -475,6 +478,60 @@ class LunaWalletApp:
     def _register_activity(self, *_args, **_kwargs):
         """Update last activity time for inactivity auto-lock."""
         self.last_activity_time = time.time()
+
+    def _set_page_context(self, kind: str = None, back_action=None):
+        """Track current page type and back action for mobile gestures."""
+        if kind is not None:
+            self.current_page_kind = kind
+        self._back_action = back_action
+
+    def _handle_back_gesture(self):
+        """Handle mobile back gesture."""
+        try:
+            if callable(self._back_action):
+                self._back_action()
+                return True
+            if self.is_mobile and self.current_page_kind in ("send", "receive", "export_key", "settings"):
+                self.show_wallet_page(reuse=True)
+                return True
+        except Exception:
+            return False
+        return False
+
+    def _on_pointer_event(self, e):
+        """Track pointer events for swipe-back gestures on mobile."""
+        self._register_activity()
+        if not getattr(self, "is_mobile", False):
+            return
+        try:
+            etype = getattr(e, "type", None) or getattr(e, "kind", None)
+            etype = str(etype).lower() if etype else ""
+            x = getattr(e, "x", None)
+            y = getattr(e, "y", None)
+            now = time.time()
+
+            if etype in ("down", "start", "pointerdown", "pressed"):
+                self._swipe_start = (x, y, now)
+                return
+
+            if etype in ("up", "end", "pointerup", "released", "cancel"):
+                if not self._swipe_start:
+                    return
+                sx, sy, st = self._swipe_start
+                self._swipe_start = None
+                if x is None or y is None or sx is None or sy is None:
+                    return
+                dx = x - sx
+                dy = y - sy
+                dt = now - st if st else None
+
+                # Require swipe from left edge to avoid conflicts with horizontal scroll
+                if sx is not None and sx > 80:
+                    return
+                if dx > 120 and abs(dy) < 80 and (dt is None or dt < 0.7):
+                    self._handle_back_gesture()
+        except Exception:
+            return
 
     def _ensure_ca_bundle(self):
         """Ensure requests has a valid CA bundle path."""
@@ -1573,7 +1630,7 @@ class LunaWalletApp:
             if hasattr(page, "on_keyboard_event"):
                 page.on_keyboard_event = self._register_activity
             if hasattr(page, "on_pointer_event"):
-                page.on_pointer_event = self._register_activity
+                page.on_pointer_event = self._on_pointer_event
         except Exception as e:
             print(f"DEBUG: Failed to attach activity handlers: {e}")
 
@@ -1843,6 +1900,7 @@ class LunaWalletApp:
         )
         self.current_lock_page = lock_page
         self.current_page = lock_page.create()
+        self._set_page_context(kind="lock", back_action=None)
 
         # Clear and add with proper centering
         self.page.controls.clear()
@@ -1880,6 +1938,10 @@ class LunaWalletApp:
         """Display the main wallet page with all wallets and transactions"""
         try:
             print("[WALLET_PAGE] showing wallet page...")
+            self._set_page_context(
+                kind="wallet",
+                back_action=self.show_wallet_index_page if self.is_mobile else None
+            )
 
             # Fast path: reuse existing wallet page view when available
             if reuse and hasattr(self, "wallet_page") and hasattr(self, "wallet_page_view") and self.wallet_page_view:
@@ -2002,6 +2064,8 @@ class LunaWalletApp:
         if not self.is_mobile:
             return self.show_wallet_page()
 
+        self._set_page_context(kind="sidebar_page", back_action=None)
+
         from gui.page_wallet_index import WalletIndexPage
 
         def _select_wallet(address):
@@ -2064,13 +2128,20 @@ class LunaWalletApp:
             on_send_complete=self.on_transaction_sent
         )
         self.current_page = send_page.create()
-        self.page.controls.clear()
-        self.page.add(self.current_page)
-        self.page.update()
+        self._set_page_context(kind="send", back_action=lambda: self.show_wallet_page(reuse=True))
+        if self.is_mobile:
+            self._set_mobile_content(
+                self.current_page,
+                transition=getattr(ft.AnimatedSwitcherTransition, "SLIDE", ft.AnimatedSwitcherTransition.FADE)
+            )
+        else:
+            self.page.controls.clear()
+            self.page.add(self.current_page)
+            self.page.update()
 
     def show_sidebar_page(self):
-        """Display sidebar as its own page on Android."""
-        if not getattr(self, "is_android", False):
+        """Display sidebar as its own page on mobile."""
+        if not getattr(self, "is_mobile", False):
             return
         try:
             if not hasattr(self, "wallet_page") or not self.wallet_page:
@@ -2080,6 +2151,7 @@ class LunaWalletApp:
 
             sidebar_page = self.wallet_page.create_sidebar_page()
             self.current_page = sidebar_page
+            self._set_page_context(kind="sidebar_page", back_action=lambda: self.show_wallet_page(reuse=True))
 
             if hasattr(self, 'page') and self.page:
                 try:
@@ -2104,9 +2176,16 @@ class LunaWalletApp:
             on_back=lambda: self.show_wallet_page(reuse=True)
         )
         self.current_page = receive_page.create()
-        self.page.controls.clear()
-        self.page.add(self.current_page)
-        self.page.update()
+        self._set_page_context(kind="receive", back_action=lambda: self.show_wallet_page(reuse=True))
+        if self.is_mobile:
+            self._set_mobile_content(
+                self.current_page,
+                transition=getattr(ft.AnimatedSwitcherTransition, "SLIDE", ft.AnimatedSwitcherTransition.FADE)
+            )
+        else:
+            self.page.controls.clear()
+            self.page.add(self.current_page)
+            self.page.update()
         print("DEBUG: Receive page displayed")
 
     def on_export_key(self):
@@ -2117,9 +2196,16 @@ class LunaWalletApp:
             on_back=lambda: self.show_wallet_page(reuse=True)
         )
         self.current_page = export_key_page.create()
-        self.page.controls.clear()
-        self.page.add(self.current_page)
-        self.page.update()
+        self._set_page_context(kind="export_key", back_action=lambda: self.show_wallet_page(reuse=True))
+        if self.is_mobile:
+            self._set_mobile_content(
+                self.current_page,
+                transition=getattr(ft.AnimatedSwitcherTransition, "SLIDE", ft.AnimatedSwitcherTransition.FADE)
+            )
+        else:
+            self.page.controls.clear()
+            self.page.add(self.current_page)
+            self.page.update()
         print("DEBUG: Export key page displayed")
 
     def on_transaction_sent(self):
@@ -2157,6 +2243,10 @@ class LunaWalletApp:
             on_wallet_imported=self.refresh_wallet_list
         )
         self.current_page = import_page.create()
+        self._set_page_context(
+            kind="import",
+            back_action=self.show_wallet_index_page if self.is_mobile else self.show_wallet_page
+        )
         if self.is_mobile:
             self._set_mobile_content(
                 self.current_page,
@@ -2177,6 +2267,7 @@ class LunaWalletApp:
             on_wallet_imported=self.show_wallet_index_page if self.is_mobile else self.initialize_wallet_state
         )
         self.current_page = import_page.create()
+        self._set_page_context(kind="import", back_action=self.initialize_wallet_state)
         if self.is_mobile:
             self._set_mobile_content(
                 self.current_page,
@@ -2220,9 +2311,16 @@ class LunaWalletApp:
                 on_back=lambda: self.show_wallet_page(reuse=True)
             )
             self.current_page = settings_page.create()
-            self.page.controls.clear()
-            self.page.add(self.current_page)
-            self.page.update()
+            self._set_page_context(kind="settings", back_action=lambda: self.show_wallet_page(reuse=True))
+            if self.is_mobile:
+                self._set_mobile_content(
+                    self.current_page,
+                    transition=getattr(ft.AnimatedSwitcherTransition, "SLIDE", ft.AnimatedSwitcherTransition.FADE)
+                )
+            else:
+                self.page.controls.clear()
+                self.page.add(self.current_page)
+                self.page.update()
         except Exception as e:
             print(f"DEBUG: Failed to show settings page: {e}")
             self.show_snackbar("Failed to open settings", "error")
@@ -2502,6 +2600,15 @@ class LunaWalletApp:
             on_wallet_created=self.refresh_wallet_list
         )
         self.current_page = create_wallet_page.create()
+        self._set_page_context(
+            kind="create",
+            back_action=lambda: self.show_lock_page(
+                title="Welcome to Luna Wallet",
+                subtitle="Create or import a wallet to get started",
+                show_create=True,
+                wallet_exists=False
+            )
+        )
 
         # Clear and add the new page to the UI
         if self.is_mobile:
@@ -3055,6 +3162,10 @@ class LunaWalletApp:
         try:
             from lunalib.core.mempool import MempoolManager
             mempool_manager = MempoolManager()
+
+            if not mempool_manager or not hasattr(mempool_manager, 'get_pending_transactions_for_addresses'):
+                _safe_print("⚠️  Mempool manager unavailable or missing batch API")
+                return
             
             _safe_print(f"\n=== CHECKING MEMPOOL FOR {len(wallet_addresses)} WALLETS ===")
             

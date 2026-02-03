@@ -1149,7 +1149,7 @@ class WalletPage:
     
     def create_header(self):
         left_controls = []
-        if getattr(self.app, "is_android", False):
+        if getattr(self.app, "is_mobile", False):
             left_controls.append(
                 ft.IconButton(
                     icon=ft.Icons.MENU,
@@ -2434,6 +2434,49 @@ class WalletPage:
                 is_connected = True
             else:
                 is_connected = False
+
+            # Fallback: direct HTTPS probe to endpoint (helps on mobile SSL issues)
+            if not is_connected:
+                try:
+                    import os
+                    import requests
+                    from urllib.parse import urlsplit
+
+                    base = (
+                        os.getenv("LUNALIB_ENDPOINT_URL")
+                        or os.getenv("LUNA_NODE_URL")
+                        or os.getenv("PRIMARY_NODE_URL")
+                    )
+
+                    if not base and hasattr(self.app, "blockchain_service") and self.app.blockchain_service:
+                        base = getattr(self.app.blockchain_service, "endpoint_url", None)
+                    if not base and hasattr(self.app, "blockchain_manager") and self.app.blockchain_manager:
+                        base = getattr(self.app.blockchain_manager, "endpoint_url", None)
+
+                    base = (base or "https://bank.linglin.art").strip().rstrip("/")
+                    try:
+                        parts = urlsplit(base)
+                        if parts.scheme and parts.netloc:
+                            base = f"{parts.scheme}://{parts.netloc}"
+                    except Exception:
+                        pass
+
+                    verify = os.environ.get("SSL_CERT_FILE") or os.environ.get("REQUESTS_CA_BUNDLE")
+                    if verify and not os.path.exists(verify):
+                        verify = None
+                    if not verify:
+                        try:
+                            import certifi
+                            verify = certifi.where()
+                        except Exception:
+                            verify = None
+
+                    resp = requests.get(base, timeout=5, verify=verify)
+                    if resp is not None and resp.status_code < 500:
+                        is_connected = True
+                        peer_count = peer_count or 1
+                except Exception as e:
+                    print(f"DEBUG: Direct endpoint probe failed: {e}")
             
             # Ensure peer_count is never None
             if peer_count is None:

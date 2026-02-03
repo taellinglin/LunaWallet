@@ -134,7 +134,7 @@ class CreateWalletPage:
                     alignment=ft.Alignment(0, 0),
                     expand=True
                 ),
-            ]),
+            ], scroll=ft.ScrollMode.ADAPTIVE),
             expand=True,
             padding=10,
             bgcolor="#2c1a1a",
