@@ -1810,6 +1810,7 @@ class LunaWalletApp:
                 transition=transition,
                 duration=300,
                 reverse_duration=300,
+                expand=True,
             )
             if hasattr(self, 'page') and self.page:
                 try:
@@ -1820,6 +1821,7 @@ class LunaWalletApp:
         else:
             self._mobile_switcher.transition = transition
             self._mobile_switcher.content = content
+            self._mobile_switcher.expand = True
         if hasattr(self, 'page') and self.page:
             self.page.update()
 
@@ -2138,6 +2140,20 @@ class LunaWalletApp:
 
         def _select_wallet(address):
             try:
+                wallets = getattr(self.wallet_core, "wallets", {}) if self.wallet_core else {}
+                if address not in wallets:
+                    self.load_wallet_data()
+                    wallets = getattr(self.wallet_core, "wallets", {}) if self.wallet_core else {}
+                if address not in wallets:
+                    self.show_snackbar("Wallet not found. Please re-import.", "error")
+                    self.show_wallet_index_page()
+                    return
+                try:
+                    addr_list = list(wallets.keys()) if isinstance(wallets, dict) else []
+                    if address in addr_list:
+                        self.selected_wallet_index = addr_list.index(address)
+                except Exception:
+                    pass
                 if hasattr(self.wallet_core, 'switch_wallet'):
                     self.wallet_core.switch_wallet(address)
                 elif hasattr(self.wallet_core, 'current_wallet_address'):
@@ -2145,6 +2161,11 @@ class LunaWalletApp:
                 self.show_wallet_page()
             except Exception as e:
                 print(f"DEBUG: Failed to select wallet: {e}")
+                try:
+                    self.show_snackbar("Failed to open wallet", "error")
+                    self.show_wallet_index_page()
+                except Exception:
+                    pass
 
         index_page = WalletIndexPage(
             app=self,

@@ -9,6 +9,8 @@ class WalletIndexPage:
         self.on_import_wallet = on_import_wallet
 
     def create(self):
+        top_padding = 24 if getattr(self.app, "is_mobile", False) else 16
+        side_padding = 16
         wallets = []
         if hasattr(self.app, "wallet_core") and getattr(self.app.wallet_core, "wallets", None):
             if isinstance(self.app.wallet_core.wallets, dict):
@@ -106,6 +108,11 @@ class WalletIndexPage:
                 scroll=ft.ScrollMode.ADAPTIVE,
             ),
             expand=True,
-            padding=16,
+            padding=ft.padding.only(
+                top=top_padding,
+                left=side_padding,
+                right=side_padding,
+                bottom=side_padding,
+            ),
             bgcolor="#2c1a1a",
         )
