@@ -3,6 +3,7 @@ import sys
 import threading
 import shutil
 import platform
+import traceback
 # Ensure local packages (./cryptography, ./certifi) shadow site-packages
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -145,12 +146,44 @@ def _ensure_lunalib_on_path():
 
 _ensure_lunalib_on_path()
 
-from app.core import LunaWalletApp
 from gui.page_wallet_index import WalletIndexPage
 from typing import List, Dict
+
+
+def main(page):
+    try:
+        import flet as ft
+        from app.core import LunaWalletApp
+
+        app = LunaWalletApp()
+        app.create_main_ui(page)
+    except Exception as exc:
+        error_details = traceback.format_exc()
+        try:
+            import flet as ft
+
+            page.controls.clear()
+            page.add(
+                ft.Container(
+                    content=ft.Column(
+                        [
+                            ft.Text("Startup error", size=18, weight="bold", color="#ffb4b4"),
+                            ft.Text(str(exc), size=12, color="#ffb4b4"),
+                            ft.Text(error_details, size=10, selectable=True, color="#cccccc"),
+                        ],
+                        tight=True,
+                    ),
+                    padding=16,
+                )
+            )
+            page.update()
+        except Exception:
+            pass
+        print("Startup error:", exc)
+        print(error_details)
 if __name__ == "__main__":
     import flet as ft
-    ft.app(target=LunaWalletApp().create_main_ui)
+    ft.app(target=main)
     def _create_enhanced_blockchain_manager(self):
         """Create an enhanced BlockchainManager with proper outgoing transaction detection"""
         # Create the blockchain manager
