@@ -13,8 +13,6 @@ readme = "README.md"
 requires-python = ">=3.8"
 dependencies = [
     "flet==0.80.4",
-    "flet-local-auth",
-    "flet-secure-storage",
     "qrcode>=7.4.0",
     "pillow",
     "lunalib @ git+https://github.com/taellinglin/LunaLib.git@master",
@@ -80,3 +78,11 @@ version-file = "version_info.txt"
 # Additional PyInstaller options
 [tool.pyinstaller.windows]
 target_arch = "x64"
+
+[tool.flet.android.manifest_application]
+"allowBackup" = "false"
+"fullBackupContent" = "false"
+
+[tool.flet.android.permission]
+"android.permission.USE_BIOMETRIC" = true
+"android.permission.USE_FINGERPRINT" = true

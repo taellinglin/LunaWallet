@@ -3653,8 +3653,29 @@ class LunaWalletApp:
             return self._secure_storage
         try:
             from flet_secure_storage import SecureStorage
+            from flet_secure_storage.types import AndroidOptions, KeyCipherAlgorithm, StorageCipherAlgorithm
 
-            self._secure_storage = SecureStorage("luna_wallet")
+            android_options = AndroidOptions(
+                enforce_biometrics=True,
+                key_cipher_algorithm=KeyCipherAlgorithm.AES_GCM_NO_PADDING,
+                storage_cipher_algorithm=StorageCipherAlgorithm.AES_GCM_NO_PADDING,
+                biometric_prompt_title="Unlock Luna Wallet",
+                biometric_prompt_subtitle="Use biometrics or device credentials",
+                preferences_key_prefix="luna_wallet",
+            )
+
+            try:
+                self._secure_storage = SecureStorage(
+                    "luna_wallet",
+                    android_options=android_options,
+                )
+            except Exception as e:
+                print(f"DEBUG: SecureStorage enforce_biometrics failed, retrying optional: {e}")
+                android_options.enforce_biometrics = False
+                self._secure_storage = SecureStorage(
+                    "luna_wallet",
+                    android_options=android_options,
+                )
             if hasattr(self, "page") and self.page and hasattr(self.page, "overlay"):
                 if self._secure_storage not in self.page.overlay:
                     self.page.overlay.append(self._secure_storage)

@@ -1,6 +1,4 @@
 flet
-flet-local-auth
-flet-secure-storage
 cryptography>=42.0.5
 requests
 qrcode
