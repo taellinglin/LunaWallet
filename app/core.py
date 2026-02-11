@@ -2158,7 +2158,7 @@ class LunaWalletApp:
                     self.wallet_core.switch_wallet(address)
                 elif hasattr(self.wallet_core, 'current_wallet_address'):
                     self.wallet_core.current_wallet_address = address
-                self.show_wallet_page()
+                self.show_single_wallet_page()
             except Exception as e:
                 print(f"DEBUG: Failed to select wallet: {e}")
                 try:
@@ -2179,6 +2179,31 @@ class LunaWalletApp:
             self.current_page,
             transition=getattr(ft.AnimatedSwitcherTransition, "SLIDE", ft.AnimatedSwitcherTransition.FADE)
         )
+
+    def show_single_wallet_page(self):
+        """Display a single-wallet page on mobile without sidebar."""
+        try:
+            from gui.page_single_wallet import SingleWalletPage
+
+            single_page = SingleWalletPage(
+                app=self,
+                on_back=self.show_wallet_index_page,
+            )
+            self.current_page = single_page.create()
+            self._set_page_context(kind="wallet", back_action=self.show_wallet_index_page)
+            if self.is_mobile:
+                self._set_mobile_content(
+                    self.current_page,
+                    transition=getattr(ft.AnimatedSwitcherTransition, "SLIDE", ft.AnimatedSwitcherTransition.FADE)
+                )
+            else:
+                self.page.controls.clear()
+                self.page.add(self.current_page)
+                self.page.update()
+        except Exception as e:
+            print(f"[SINGLE_WALLET] ERROR: {e}")
+            self.show_snackbar("Failed to open wallet", "error")
+            self.show_wallet_index_page()
 
     def lock_wallet(self):
         """Lock the wallet and return to lock screen"""

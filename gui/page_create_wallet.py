@@ -88,6 +88,7 @@ class CreateWalletPage:
         )
         
     def create(self):
+        top_padding = 24 if self.app.is_mobile else 10
         return ft.Container(
             content=ft.Column([
                 # Header
@@ -134,9 +135,9 @@ class CreateWalletPage:
                     alignment=ft.Alignment(0, 0),
                     expand=True
                 ),
-            ], scroll=ft.ScrollMode.ADAPTIVE),
+            ], scroll=ft.ScrollMode.ADAPTIVE, expand=True),
             expand=True,
-            padding=10,
+            padding=ft.padding.only(top=top_padding, left=10, right=10, bottom=16),
             bgcolor="#2c1a1a",
             alignment=ft.Alignment(0, 0)
         )

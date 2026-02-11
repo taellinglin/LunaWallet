@@ -28,7 +28,7 @@ def _safe_print(*args, **kwargs):
             pass
 
 class WalletPage:
-    def __init__(self, app, on_send, on_receive, on_export_key, on_lock, on_create_wallet, on_import_wallet, on_settings, show_back=False, on_back=None):
+    def __init__(self, app, on_send, on_receive, on_export_key, on_lock, on_create_wallet, on_import_wallet, on_settings, show_back=False, on_back=None, show_sidebar_button=True):
         self.app = app
         self.on_send = on_send
         self.on_receive = on_receive
@@ -39,6 +39,7 @@ class WalletPage:
         self.on_settings = on_settings
         self.show_back = show_back
         self.on_back = on_back
+        self.show_sidebar_button = show_sidebar_button
         self.is_mobile = getattr(app, "is_mobile", False)
         # Sidebar state
         self.sidebar_collapsed = True if self.is_mobile else False
@@ -1152,7 +1153,7 @@ class WalletPage:
     
     def create_header(self):
         left_controls = []
-        if getattr(self.app, "is_mobile", False):
+        if self.show_sidebar_button and getattr(self.app, "is_mobile", False):
             left_controls.append(
                 ft.IconButton(
                     icon=ft.Icons.MENU,
