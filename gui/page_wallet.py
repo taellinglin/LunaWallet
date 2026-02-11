@@ -41,7 +41,7 @@ class WalletPage:
         self.on_back = on_back
         self.is_mobile = getattr(app, "is_mobile", False)
         # Sidebar state
-        self.sidebar_collapsed = False
+        self.sidebar_collapsed = True if self.is_mobile else False
         self.sidebar_width = 280
         self.sidebar_collapsed_width = 72
         # Refs for UI elements
@@ -1552,7 +1552,7 @@ class WalletPage:
                         print(f"DEBUG: Lunalib cache-only error: {cache_err}")
 
                 # Method 2: Try blockchain manager scan against cache if needed
-                if not cache_only and not use_wallet_manager:
+                if not cache_only:
                     should_scan = True
                     try:
                         if not force_scan and hasattr(self.app, 'initial_scan_complete') and self.app.initial_scan_complete:
@@ -1577,14 +1577,20 @@ class WalletPage:
                                 print(f"DEBUG: Cache height read error: {cache_err}")
 
                             if end_height is not None:
-                                all_transactions = self.app.blockchain_manager.scan_transactions_for_address(
+                                blockchain_results = self.app.blockchain_manager.scan_transactions_for_address(
                                     current_address,
                                     start_height=0,
                                     end_height=end_height
                                 )
                             else:
-                                all_transactions = self.app.blockchain_manager.scan_transactions_for_address(current_address)
-                            print(f"DEBUG: Found {len(all_transactions)} transactions from blockchain manager")
+                                blockchain_results = self.app.blockchain_manager.scan_transactions_for_address(current_address)
+
+                            if blockchain_results:
+                                if all_transactions:
+                                    all_transactions = list(all_transactions) + list(blockchain_results)
+                                else:
+                                    all_transactions = list(blockchain_results)
+                            print(f"DEBUG: Found {len(blockchain_results or [])} transactions from blockchain manager")
                             try:
                                 self.app.last_ui_scan_time = time.time()
                             except Exception:
@@ -1609,7 +1615,7 @@ class WalletPage:
                 print(f"DEBUG: After filtering database: {len(filtered_transactions)} transactions")
                 
                 # IMPORTANT: Also load pending transactions from mempool that aren't in the database yet
-                if not cache_only and not use_wallet_manager:
+                if not cache_only:
                     if hasattr(self.app, 'get_mempool_manager'):
                         try:
                             print(f"DEBUG: Loading pending transactions from mempool for {current_address[:12]}...")
@@ -1665,6 +1671,19 @@ class WalletPage:
                 else:
                     print("DEBUG: Cache-only mode: skipping mempool")
                 
+                # De-duplicate by hash/transaction_id when combining sources
+                deduped = []
+                seen_hashes = set()
+                for tx in filtered_transactions:
+                    tx_hash = tx.get('hash') or tx.get('transaction_id')
+                    if tx_hash and tx_hash in seen_hashes:
+                        continue
+                    if tx_hash:
+                        seen_hashes.add(tx_hash)
+                    deduped.append(tx)
+
+                filtered_transactions = deduped
+
                 print(f"DEBUG: Total transactions (confirmed + pending): {len(filtered_transactions)}")
 
                 # Mark low-confirmation transactions as pending in UI

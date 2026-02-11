@@ -167,24 +167,11 @@ class ReceivePage:
         if address and address not in ["No wallet available", "Error loading address"]:
             try:
                 print(f"DEBUG: copy_address called with: {address[:12]}...")
-                
-                # Prefer async clipboard on mobile
-                if hasattr(self.app.page, 'set_clipboard_async'):
-                    print("DEBUG: Using page.set_clipboard_async()")
-                    async def _do_copy():
-                        try:
-                            await self.app.page.set_clipboard_async(address)
-                        except Exception as e:
-                            print(f"DEBUG: Async clipboard error: {e}")
-                    if hasattr(self.app.page, 'run_task'):
-                        self.app.page.run_task(_do_copy)
-                    else:
-                        self.app.page.set_clipboard_async(address)
-                elif hasattr(self.app.page, 'set_clipboard'):
-                    print("DEBUG: Using page.set_clipboard()")
-                    self.app.page.set_clipboard(address)
-                else:
-                    # Fallback for different Flet versions
+                copied = False
+                if hasattr(self.app, "copy_to_clipboard"):
+                    copied = self.app.copy_to_clipboard(address)
+                if not copied and not self.app.is_mobile:
+                    # Desktop fallback for older Flet versions
                     print("DEBUG: Using pyperclip fallback")
                     import pyperclip
                     pyperclip.copy(address)
@@ -220,10 +207,11 @@ class ReceivePage:
                 traceback.print_exc()
                 # Final fallback
                 try:
-                    print("DEBUG: Trying pyperclip fallback...")
-                    import pyperclip
-                    pyperclip.copy(address)
-                    print("DEBUG: Pyperclip copy succeeded")
+                    if not self.app.is_mobile:
+                        print("DEBUG: Trying pyperclip fallback...")
+                        import pyperclip
+                        pyperclip.copy(address)
+                        print("DEBUG: Pyperclip copy succeeded")
                     
                     def show_snack():
                         import time

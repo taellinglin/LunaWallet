@@ -166,21 +166,11 @@ class ExportKeyPage:
     def copy_private_key(self, e):
         if self.private_key_display.value:
             try:
-                # Prefer async clipboard when available
-                if hasattr(self.app.page, 'set_clipboard_async'):
-                    async def _do_copy():
-                        try:
-                            await self.app.page.set_clipboard_async(self.private_key_display.value)
-                        except Exception as async_err:
-                            print(f"DEBUG: Async clipboard error: {async_err}")
-                    if hasattr(self.app.page, 'run_task'):
-                        self.app.page.run_task(_do_copy)
-                    else:
-                        self.app.page.set_clipboard_async(self.private_key_display.value)
-                elif hasattr(self.app.page, 'set_clipboard'):
-                    self.app.page.set_clipboard(self.private_key_display.value)
-                else:
-                    # Fallback for different Flet versions
+                copied = False
+                if hasattr(self.app, "copy_to_clipboard"):
+                    copied = self.app.copy_to_clipboard(self.private_key_display.value)
+                if not copied and not self.app.is_mobile:
+                    # Desktop fallback for older Flet versions
                     import pyperclip
                     pyperclip.copy(self.private_key_display.value)
                 
@@ -201,8 +191,9 @@ class ExportKeyPage:
             except Exception as e:
                 print(f"DEBUG: Clipboard error: {e}")
                 try:
-                    import pyperclip
-                    pyperclip.copy(self.private_key_display.value)
+                    if not self.app.is_mobile:
+                        import pyperclip
+                        pyperclip.copy(self.private_key_display.value)
                     
                     def show_snack():
                         try:

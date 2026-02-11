@@ -295,18 +295,18 @@ class TransactionDetailsPage:
     def _copy_tx_hash(self, tx_hash):
         """Copy transaction hash to clipboard"""
         try:
-            if hasattr(self.app.page, 'set_clipboard'):
-                self.app.page.set_clipboard(tx_hash)
-            elif hasattr(self.app.page, 'set_clipboard_async'):
-                self.app.page.set_clipboard_async(tx_hash)
-            else:
+            copied = False
+            if hasattr(self.app, "copy_to_clipboard"):
+                copied = self.app.copy_to_clipboard(tx_hash)
+            if not copied and not self.app.is_mobile:
                 import pyperclip
                 pyperclip.copy(tx_hash)
         except Exception as e:
             print(f"DEBUG: Clipboard error: {e}")
             try:
-                import pyperclip
-                pyperclip.copy(tx_hash)
+                if not self.app.is_mobile:
+                    import pyperclip
+                    pyperclip.copy(tx_hash)
             except Exception as e2:
                 print(f"DEBUG: Pyperclip error: {e2}")
         
@@ -325,18 +325,18 @@ class TransactionDetailsPage:
     def _copy_to_clipboard(self, text):
         """Copy any text to clipboard"""
         try:
-            if hasattr(self.app.page, 'set_clipboard'):
-                self.app.page.set_clipboard(text)
-            elif hasattr(self.app.page, 'set_clipboard_async'):
-                self.app.page.set_clipboard_async(text)
-            else:
+            copied = False
+            if hasattr(self.app, "copy_to_clipboard"):
+                copied = self.app.copy_to_clipboard(text)
+            if not copied and not self.app.is_mobile:
                 import pyperclip
                 pyperclip.copy(text)
         except Exception as e:
             print(f"DEBUG: Clipboard error: {e}")
             try:
-                import pyperclip
-                pyperclip.copy(text)
+                if not self.app.is_mobile:
+                    import pyperclip
+                    pyperclip.copy(text)
             except Exception as e2:
                 print(f"DEBUG: Pyperclip error: {e2}")
         
@@ -377,7 +377,12 @@ Hash: {tx.get('hash', 'Unknown')}
         """.strip()
         
         try:
-            self.app.page.set_clipboard_async(share_text)
+            copied = False
+            if hasattr(self.app, "copy_to_clipboard"):
+                copied = self.app.copy_to_clipboard(share_text)
+            if not copied and not self.app.is_mobile:
+                import pyperclip
+                pyperclip.copy(share_text)
         except AttributeError:
             # Fallback for different Flet versions
             import pyperclip

@@ -124,8 +124,18 @@ def _bootstrap_ca_bundle():
         os.environ.pop("SSL_CERT_FILE", None)
 
 
+def _disable_lunalib_cache_only():
+    """Ensure lunalib does not force cache-only scans unless explicitly set."""
+    try:
+        if os.getenv("LUNALIB_WALLET_SCAN_CACHE_ONLY") is None:
+            os.environ["LUNALIB_WALLET_SCAN_CACHE_ONLY"] = "0"
+    except Exception:
+        pass
+
+
 _prefer_venv_site_packages()
 _bootstrap_ca_bundle()
+_disable_lunalib_cache_only()
 
 # Import lunalib components
 from lunalib.core.wallet import LunaWallet
@@ -1739,6 +1749,34 @@ class LunaWalletApp:
         except Exception as e:
             print(f"DEBUG: Service initialization failed: {e}")
 
+    def get_mempool_manager(self):
+        """Return a usable mempool manager, creating one on demand if needed."""
+        try:
+            if hasattr(self, "mempool_manager") and self.mempool_manager:
+                return self.mempool_manager
+
+            try:
+                self.mempool_service = self.mempool_service or MempoolService()
+                self.mempool_manager = self.mempool_service.manager
+                if self.mempool_manager:
+                    return self.mempool_manager
+            except Exception as mem_err:
+                print(f"DEBUG: Mempool service init failed (lazy): {mem_err}")
+
+            try:
+                from lunalib.core.mempool import MempoolManager
+                if not hasattr(MempoolManager, "verbose"):
+                    setattr(MempoolManager, "verbose", False)
+                endpoint = os.getenv("LUNALIB_ENDPOINT_URL") or os.getenv("LUNA_NODE_URL") or os.getenv("PRIMARY_NODE_URL")
+                endpoints = [endpoint] if endpoint else None
+                self.mempool_manager = MempoolManager(network_endpoints=endpoints)
+                return self.mempool_manager
+            except Exception as mem_err:
+                print(f"DEBUG: Mempool manager init failed (direct): {mem_err}")
+        except Exception:
+            pass
+        return None
+
     def _set_mobile_content(self, content, transition=None):
         if transition is None:
             transition = getattr(ft.AnimatedSwitcherTransition, "SLIDE", ft.AnimatedSwitcherTransition.FADE)
@@ -2634,7 +2672,27 @@ class LunaWalletApp:
                 from lunalib.core.wallet_sync_helper import create_wallet_sync_helper
             except Exception:
                 from lunalib.core.sync_helper import create_wallet_sync_helper
-            helper = create_wallet_sync_helper(self.wallet_core, self.blockchain_manager, self.mempool_manager)
+            mempool_manager = self.mempool_manager
+            if not mempool_manager:
+                try:
+                    from lunalib.core.mempool import MempoolManager
+                    endpoint = os.getenv("LUNALIB_ENDPOINT_URL") or os.getenv("LUNA_NODE_URL") or os.getenv("PRIMARY_NODE_URL")
+                    endpoints = [endpoint] if endpoint else None
+                    mempool_manager = MempoolManager(network_endpoints=endpoints)
+                except Exception:
+                    mempool_manager = None
+
+            if not mempool_manager:
+                class _NullMempoolManager:
+                    def get_pending_transactions_for_addresses(self, addresses, fetch_remote=True):
+                        return {}
+
+                    def get_pending_transactions(self, address, fetch_remote=True):
+                        return []
+
+                mempool_manager = _NullMempoolManager()
+
+            helper = create_wallet_sync_helper(self.wallet_core, self.blockchain_manager, mempool_manager)
             self._wallet_sync_helper = helper
             try:
                 if hasattr(helper, 'register_wallets_from_lunawallet'):
@@ -2998,9 +3056,19 @@ class LunaWalletApp:
         try:
             # Prefer wallet's built-in sync if available
             if hasattr(self.wallet_core, 'sync_with_state_manager'):
+                mempool = self.mempool_manager
+                if not mempool or not hasattr(mempool, 'get_pending_transactions_for_addresses'):
+                    class _NullMempoolManager:
+                        def get_pending_transactions_for_addresses(self, addresses, fetch_remote=True):
+                            return {}
+
+                        def get_pending_transactions(self, address):
+                            return []
+
+                    mempool = _NullMempoolManager()
                 self.wallet_core.sync_with_state_manager(
                     blockchain=self.blockchain_manager,
-                    mempool=self.mempool_manager
+                    mempool=mempool
                 )
                 return True
         except Exception as e:
@@ -3503,6 +3571,35 @@ class LunaWalletApp:
                 except Exception as e:
                     print(f"DEBUG: Continuous scan error: {e}")
                     time.sleep(self.scan_interval)
+
+    def copy_to_clipboard(self, text: str) -> bool:
+        """Copy text to clipboard with mobile-safe fallbacks."""
+        if not text:
+            return False
+        try:
+            page = getattr(self, "page", None)
+            if page and hasattr(page, "set_clipboard_async"):
+                async def _do_copy():
+                    try:
+                        await page.set_clipboard_async(text)
+                    except Exception as e:
+                        print(f"DEBUG: Clipboard async error: {e}")
+
+                if hasattr(page, "run_task"):
+                    page.run_task(_do_copy)
+                else:
+                    try:
+                        page.set_clipboard_async(text)
+                    except Exception:
+                        return False
+                return True
+
+            if page and hasattr(page, "set_clipboard"):
+                page.set_clipboard(text)
+                return True
+        except Exception as e:
+            print(f"DEBUG: Clipboard copy failed: {e}")
+        return False
 
         threading.Thread(target=continuous_scan_loop, daemon=True).start()
 

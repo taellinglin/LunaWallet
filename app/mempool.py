@@ -7,11 +7,23 @@ try:
 except Exception:
     MempoolManager = None
 
+
+def _prepare_mempool_manager_class():
+    """Backfill missing attributes for older lunalib versions."""
+    if MempoolManager is None:
+        return
+    if not hasattr(MempoolManager, "verbose"):
+        setattr(MempoolManager, "verbose", False)
+
 class MempoolService:
     def __init__(self):
         endpoint = os.getenv("LUNALIB_ENDPOINT_URL") or os.getenv("LUNA_NODE_URL") or os.getenv("PRIMARY_NODE_URL")
         endpoints = [endpoint] if endpoint else None
-        self.manager = MempoolManager(network_endpoints=endpoints) if MempoolManager is not None else None
+        if MempoolManager is not None:
+            _prepare_mempool_manager_class()
+            self.manager = MempoolManager(network_endpoints=endpoints)
+        else:
+            self.manager = None
 
     def get_pending_transactions(self, address):
         """指定アドレスの未承認トランザクションを取得"""
