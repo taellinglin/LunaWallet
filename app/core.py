@@ -3681,6 +3681,8 @@ class LunaWalletApp:
     def _get_secure_storage(self):
         if self._secure_storage is not None:
             return self._secure_storage
+        if not self._secure_storage_supported():
+            return None
         try:
             from flet_secure_storage import SecureStorage
             from flet_secure_storage.types import AndroidOptions, KeyCipherAlgorithm, StorageCipherAlgorithm
@@ -3715,6 +3717,23 @@ class LunaWalletApp:
             self._secure_storage = None
             return None
 
+    def _secure_storage_supported(self) -> bool:
+        if not getattr(self, "is_mobile", False):
+            return False
+        try:
+            page = getattr(self, "page", None)
+            platform_name = str(getattr(page, "platform", "")).lower()
+            env_platform = str(os.getenv("FLET_PLATFORM", "")).lower()
+            sys_platform = str(sys.platform).lower()
+            return (
+                ("android" in platform_name or "ios" in platform_name)
+                or env_platform in ("android", "ios")
+                or sys_platform.startswith("android")
+                or sys_platform.startswith("ios")
+            )
+        except Exception:
+            return False
+
     def set_biometric_enabled(self, enabled: bool):
         self.biometric_enabled = bool(enabled)
         if not self.biometric_enabled:
@@ -3722,8 +3741,6 @@ class LunaWalletApp:
         self._save_security_settings()
 
     def is_biometric_available(self) -> bool:
-        if not getattr(self, "is_mobile", False):
-            return False
         return self._get_secure_storage() is not None
 
     def can_biometric_unlock(self) -> bool:
