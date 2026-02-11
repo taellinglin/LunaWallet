@@ -1427,6 +1427,13 @@ class WalletPage:
         # Load initial transactions
         self.refresh_transaction_history()
         
+        list_content = self.transaction_list_view
+        if hasattr(ft, "RefreshIndicator"):
+            list_content = ft.RefreshIndicator(
+                content=self.transaction_list_view,
+                on_refresh=lambda e: self.refresh_transaction_history(force_scan=True),
+            )
+
         return ft.Container(
             content=ft.Column([
                 ft.Row([
@@ -1451,7 +1458,7 @@ class WalletPage:
                     )
                 ]),
                 ft.Container(
-                    content=self.transaction_list_view,
+                    content=list_content,
                     padding=10,
                     bgcolor="#1a0f0f",
                     border_radius=12,

@@ -302,6 +302,20 @@ class ImportWalletPage:
                         self.app.save_wallet_data(force_save=True)
                     elif hasattr(self.app.wallet_core, "save_wallet_data"):
                         self.app.wallet_core.save_wallet_data()
+                    try:
+                        if hasattr(self.app, "_register_wallets_with_manager"):
+                            self.app._register_wallets_with_manager()
+                    except Exception:
+                        pass
+                    try:
+                        if hasattr(self.app, "show_snackbar"):
+                            self.app.show_snackbar("Rescanning blockchain...", "info")
+                        if hasattr(self.app, "force_rescan_blockchain"):
+                            self.app.force_rescan_blockchain()
+                        elif hasattr(self.app, "scan_all_wallets_for_changes"):
+                            self.app.scan_all_wallets_for_changes(force_full_scan=True)
+                    except Exception:
+                        pass
                     self.on_wallet_imported()
                 else:
                     self.app.show_snackbar("Failed to import wallet - invalid private key or password", "error")

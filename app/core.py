@@ -2249,13 +2249,14 @@ class LunaWalletApp:
     def on_send_transaction(self):
         """Handle send transaction action"""
         print("DEBUG: on_send_transaction called")
+        back_target = self.show_wallet_index_page if (self.is_mobile and self._mobile_return_to_index) else lambda: self.show_wallet_page(reuse=True)
         send_page = SendPage(
             self,
-            on_back=self.show_wallet_index_page if self.is_mobile else lambda: self.show_wallet_page(reuse=True),
+            on_back=back_target,
             on_send_complete=self.on_transaction_sent
         )
         self.current_page = send_page.create()
-        self._set_page_context(kind="send", back_action=self.show_wallet_index_page if self.is_mobile else lambda: self.show_wallet_page(reuse=True))
+        self._set_page_context(kind="send", back_action=back_target)
         if self.is_mobile:
             self._set_mobile_content(
                 self.current_page,
@@ -2298,12 +2299,13 @@ class LunaWalletApp:
     def on_receive(self):
         """Handle receive action"""
         print("DEBUG: on_receive called")
+        back_target = self.show_wallet_index_page if (self.is_mobile and self._mobile_return_to_index) else lambda: self.show_wallet_page(reuse=True)
         receive_page = ReceivePage(
             self,
-            on_back=self.show_wallet_index_page if self.is_mobile else lambda: self.show_wallet_page(reuse=True)
+            on_back=back_target
         )
         self.current_page = receive_page.create()
-        self._set_page_context(kind="receive", back_action=self.show_wallet_index_page if self.is_mobile else lambda: self.show_wallet_page(reuse=True))
+        self._set_page_context(kind="receive", back_action=back_target)
         if self.is_mobile:
             self._set_mobile_content(
                 self.current_page,
@@ -2318,12 +2320,13 @@ class LunaWalletApp:
     def on_export_key(self):
         """Handle export key action"""
         print("DEBUG: on_export_key called")
+        back_target = self.show_wallet_index_page if (self.is_mobile and self._mobile_return_to_index) else lambda: self.show_wallet_page(reuse=True)
         export_key_page = ExportKeyPage(
             self,
-            on_back=self.show_wallet_index_page if self.is_mobile else lambda: self.show_wallet_page(reuse=True)
+            on_back=back_target
         )
         self.current_page = export_key_page.create()
-        self._set_page_context(kind="export_key", back_action=self.show_wallet_index_page if self.is_mobile else lambda: self.show_wallet_page(reuse=True))
+        self._set_page_context(kind="export_key", back_action=back_target)
         if self.is_mobile:
             self._set_mobile_content(
                 self.current_page,
@@ -2364,15 +2367,16 @@ class LunaWalletApp:
         """Handle import wallet action"""
         print("DEBUG: on_import_wallet called")
         from gui.page_import_wallet import ImportWalletPage
+        back_target = self.show_wallet_index_page if (self.is_mobile and self._mobile_return_to_index) else self.show_wallet_page
         import_page = ImportWalletPage(
             self,
-            on_back=self.show_wallet_index_page if self.is_mobile else self.show_wallet_page,
+            on_back=back_target,
             on_wallet_imported=self.refresh_wallet_list
         )
         self.current_page = import_page.create()
         self._set_page_context(
             kind="import",
-            back_action=self.show_wallet_index_page if self.is_mobile else self.show_wallet_page
+            back_action=back_target
         )
         if self.is_mobile:
             self._set_mobile_content(
@@ -2388,15 +2392,17 @@ class LunaWalletApp:
         """Show import wallet page from lock screen"""
         print("DEBUG: show_import_wallet called")
         from gui.page_import_wallet import ImportWalletPage
+        if self.is_mobile:
+            self._mobile_return_to_index = False
         import_page = ImportWalletPage(
             self,
-            on_back=self.show_wallet_index_page if self.is_mobile else self.initialize_wallet_state,
+            on_back=self.initialize_wallet_state,
             on_wallet_imported=self.show_wallet_index_page if self.is_mobile else self.initialize_wallet_state
         )
         self.current_page = import_page.create()
         self._set_page_context(
             kind="import",
-            back_action=self.show_wallet_index_page if self.is_mobile else self.initialize_wallet_state
+            back_action=self.initialize_wallet_state
         )
         if self.is_mobile:
             self._set_mobile_content(
@@ -2436,12 +2442,14 @@ class LunaWalletApp:
         try:
             from gui.page_settings import SettingsPage
 
+            back_target = self.show_wallet_index_page if (self.is_mobile and self._mobile_return_to_index) else lambda: self.show_wallet_page(reuse=True)
+
             settings_page = SettingsPage(
                 self,
-                on_back=lambda: self.show_wallet_page(reuse=True)
+                on_back=back_target
             )
             self.current_page = settings_page.create()
-            self._set_page_context(kind="settings", back_action=lambda: self.show_wallet_page(reuse=True))
+            self._set_page_context(kind="settings", back_action=back_target)
             if self.is_mobile:
                 self._set_mobile_content(
                     self.current_page,

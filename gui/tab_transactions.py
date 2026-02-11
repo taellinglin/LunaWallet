@@ -78,6 +78,18 @@ class TabTransactions:
     
     def create_mobile_content(self):
         self.refs['mobile_transactions_list'] = ft.Ref[ft.ListView]()
+
+        list_content = ft.ListView(
+            ref=self.refs['mobile_transactions_list'],
+            expand=True,
+            spacing=10,
+            padding=10
+        )
+        if hasattr(ft, "RefreshIndicator"):
+            list_content = ft.RefreshIndicator(
+                content=list_content,
+                on_refresh=lambda e: self.update_transaction_history(),
+            )
         
         return ft.Container(
             content=ft.Column([
@@ -91,12 +103,7 @@ class TabTransactions:
                     )
                 ]),
                 ft.Container(
-                    content=ft.ListView(
-                        ref=self.refs['mobile_transactions_list'],
-                        expand=True,
-                        spacing=10,
-                        padding=10
-                    ),
+                    content=list_content,
                     expand=True,
                     border=ft.border.all(2, "#5c2e2e"),
                     border_radius=10,

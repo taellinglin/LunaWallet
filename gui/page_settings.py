@@ -9,6 +9,7 @@ class SettingsPage:
     def __init__(self, app, on_back=None):
         self.app = app
         self.on_back = on_back
+        self.is_mobile = bool(getattr(app, "is_mobile", False))
 
         # Settings state
         self.cache_settings = {
@@ -125,33 +126,38 @@ class SettingsPage:
             print(f"Error applying runtime settings: {e}")
 
     def create(self):
+        section_gap = 12 if self.is_mobile else 20
+        outer_padding = 12 if self.is_mobile else 20
         return ft.Container(
             content=ft.Column([
                 self.create_header(),
-                ft.Container(height=20),
+                ft.Container(height=section_gap),
                 self.create_blockchain_section(),
-                ft.Container(height=20),
+                ft.Container(height=section_gap),
                 self.create_runtime_section(),
-                ft.Container(height=20),
+                ft.Container(height=section_gap),
                 self.create_security_section(),
-                ft.Container(height=20),
+                ft.Container(height=section_gap),
                 self.create_ui_section(),
-                ft.Container(height=20),
+                ft.Container(height=section_gap),
                 self.create_transaction_section(),
-                ft.Container(height=20),
+                ft.Container(height=section_gap),
                 self.create_actions_section(),
             ], scroll=ft.ScrollMode.ADAPTIVE),
             expand=True,
-            padding=20,
+            padding=outer_padding,
             bgcolor="#2c1a1a"
         )
 
     def create_header(self):
+        title_size = 20 if self.is_mobile else 24
+        icon_size = 18 if self.is_mobile else 20
         return ft.Container(
             content=ft.Row([
                 ft.IconButton(
                     icon=ft.Icons.ARROW_BACK,
                     icon_color="#f8d7da",
+                    icon_size=icon_size,
                     on_click=lambda e: self.on_back() if self.on_back else self._fallback_back(),
                     tooltip="Back to Wallet"
                 ),
@@ -160,12 +166,13 @@ class SettingsPage:
                     "Wallet Settings",
                     size=20,
                     color="#f8d7da",
-                    text_size=24,
+                    text_size=title_size,
                     text_weight=ft.FontWeight.BOLD,
                 ),
                 ft.IconButton(
                     icon=ft.Icons.SAVE,
                     icon_color="#28a745",
+                    icon_size=icon_size,
                     on_click=self.save_settings_click,
                     tooltip="Save Settings"
                 ),
@@ -183,6 +190,8 @@ class SettingsPage:
             pass
 
     def create_blockchain_section(self):
+        card_padding = 10 if self.is_mobile else 15
+        title_size = 14 if self.is_mobile else 16
         return ft.Container(
             content=ft.Column([
                 icon_label(
@@ -190,7 +199,7 @@ class SettingsPage:
                     "Blockchain Management",
                     size=16,
                     color="#f8d7da",
-                    text_size=18,
+                    text_size=title_size + 2,
                     text_weight=ft.FontWeight.BOLD,
                 ),
                 ft.Divider(color="#5c2e2e", height=20),
@@ -198,7 +207,7 @@ class SettingsPage:
                 # Cache statistics
                 ft.Container(
                     content=ft.Column([
-                        ft.Text("Cache Statistics", size=16, color="#f8d7da", weight="bold"),
+                        ft.Text("Cache Statistics", size=title_size, color="#f8d7da", weight="bold"),
                         ft.Row([
                             ft.Text("Cache Size:", color="#f8d7da"),
                             self.cache_size_text
@@ -221,7 +230,7 @@ class SettingsPage:
                             )
                         )
                     ]),
-                    padding=15,
+                    padding=card_padding,
                     bgcolor="#1a0f0f",
                     border_radius=10,
                     margin=ft.margin.only(bottom=15)
@@ -230,7 +239,7 @@ class SettingsPage:
                 # Pruning settings
                 ft.Container(
                     content=ft.Column([
-                        ft.Text("Blockchain Pruning", size=16, color="#f8d7da", weight="bold"),
+                        ft.Text("Blockchain Pruning", size=title_size, color="#f8d7da", weight="bold"),
                         ft.Row([
                             ft.Switch(
                                 value=self.cache_settings['blockchain_pruning_enabled'],
@@ -269,9 +278,18 @@ class SettingsPage:
                                 bgcolor="#dc3545",
                                 padding=10
                             )
+                        ),
+                        ft.ElevatedButton(
+                            content=icon_label("refresh-cw", "Full Rescan", size=16, color="#ffffff", text_size=14),
+                            on_click=self.force_rescan_click,
+                            style=ft.ButtonStyle(
+                                color="#ffffff",
+                                bgcolor="#b33a3a",
+                                padding=10
+                            )
                         )
                     ]),
-                    padding=15,
+                    padding=card_padding,
                     bgcolor="#1a0f0f",
                     border_radius=10
                 )
@@ -280,6 +298,9 @@ class SettingsPage:
         )
 
     def create_runtime_section(self):
+        card_padding = 10 if self.is_mobile else 15
+        title_size = 14 if self.is_mobile else 16
+        field_width = 320 if self.is_mobile else 420
         return ft.Container(
             content=ft.Column([
                 icon_label(
@@ -287,13 +308,13 @@ class SettingsPage:
                     "Runtime & Formatting",
                     size=16,
                     color="#f8d7da",
-                    text_size=18,
+                    text_size=title_size + 2,
                     text_weight=ft.FontWeight.BOLD,
                 ),
                 ft.Divider(color="#5c2e2e", height=20),
                 ft.Container(
                     content=ft.Column([
-                        ft.Text("Luna Display Decimals", size=16, color="#f8d7da", weight="bold"),
+                        ft.Text("Luna Display Decimals", size=title_size, color="#f8d7da", weight="bold"),
                         ft.Row([
                             ft.Switch(
                                 value=self.runtime_settings['flat_lkc_display'],
@@ -346,15 +367,15 @@ class SettingsPage:
                                 on_change=lambda e: self.update_runtime_setting('luna_tiny_decimals', self._safe_int(e.control.value, 2))
                             )
                         ]),
-                        ft.Text("Sync URL", size=16, color="#f8d7da", weight="bold"),
+                        ft.Text("Sync URL", size=title_size, color="#f8d7da", weight="bold"),
                         ft.TextField(
                             value=str(self.runtime_settings['sync_url']),
-                            width=420,
+                            width=field_width,
                             on_change=lambda e: self.update_runtime_setting('sync_url', e.control.value.strip()),
                             hint_text="https://bank.linglin.art"
                         ),
                     ]),
-                    padding=15,
+                    padding=card_padding,
                     bgcolor="#1a0f0f",
                     border_radius=10
                 )
@@ -363,6 +384,7 @@ class SettingsPage:
         )
 
     def create_security_section(self):
+        card_padding = 10 if self.is_mobile else 15
         biometric_supported = bool(getattr(self.app, "is_biometric_available", lambda: False)())
         biometric_ready = bool(getattr(self.app, "is_biometric_ready", lambda: False)())
 
@@ -413,7 +435,7 @@ class SettingsPage:
 
         return ft.Container(
             content=ft.Column(controls),
-            padding=5
+            padding=card_padding
         )
 
     def check_biometrics_click(self, e):
@@ -431,6 +453,8 @@ class SettingsPage:
             pass
 
     def create_ui_section(self):
+        card_padding = 10 if self.is_mobile else 15
+        title_size = 14 if self.is_mobile else 16
         return ft.Container(
             content=ft.Column([
                 icon_label(
@@ -438,7 +462,7 @@ class SettingsPage:
                     "UI Optimizations",
                     size=16,
                     color="#f8d7da",
-                    text_size=18,
+                    text_size=title_size + 2,
                     text_weight=ft.FontWeight.BOLD,
                 ),
                 ft.Divider(color="#5c2e2e", height=20),
@@ -463,7 +487,7 @@ class SettingsPage:
                         ], spacing=8),
                         ft.Text("Update multiple transactions at once for better performance", size=12, color="#888"),
                     ]),
-                    padding=15,
+                    padding=card_padding,
                     bgcolor="#1a0f0f",
                     border_radius=10
                 )
@@ -472,6 +496,8 @@ class SettingsPage:
         )
 
     def create_transaction_section(self):
+        card_padding = 10 if self.is_mobile else 15
+        title_size = 14 if self.is_mobile else 16
         return ft.Container(
             content=ft.Column([
                 icon_label(
@@ -479,14 +505,14 @@ class SettingsPage:
                     "Transaction Management",
                     size=16,
                     color="#f8d7da",
-                    text_size=18,
+                    text_size=title_size + 2,
                     text_weight=ft.FontWeight.BOLD,
                 ),
                 ft.Divider(color="#5c2e2e", height=20),
 
                 ft.Container(
                     content=ft.Column([
-                        ft.Text("Mempool Management", size=16, color="#f8d7da", weight="bold"),
+                        ft.Text("Mempool Management", size=title_size, color="#f8d7da", weight="bold"),
                         ft.Row([
                             ft.Text("Mempool Cleanup (hours):", color="#f8d7da"),
                             ft.TextField(
@@ -514,7 +540,7 @@ class SettingsPage:
                             )
                         )
                     ]),
-                    padding=15,
+                    padding=card_padding,
                     bgcolor="#1a0f0f",
                     border_radius=10
                 )
@@ -657,6 +683,21 @@ class SettingsPage:
 
         threading.Thread(target=clean_task, daemon=True).start()
         self.app.show_snackbar("Cache cleanup started...", "info")
+
+    def force_rescan_click(self, e):
+        """Force a full blockchain rescan"""
+        def rescan_task():
+            try:
+                if hasattr(self.app, 'force_rescan_blockchain'):
+                    self.app.force_rescan_blockchain()
+                elif hasattr(self.app, 'scan_all_wallets_for_changes'):
+                    self.app.scan_all_wallets_for_changes(force_full_scan=True)
+            except Exception as ex:
+                print(f"Error forcing rescan: {ex}")
+                self.app.show_snackbar("Full rescan failed", "error")
+
+        threading.Thread(target=rescan_task, daemon=True).start()
+        self.app.show_snackbar("Full rescan started...", "info")
 
     def clean_mempool_click(self, e):
         """Clean old mempool transactions"""
