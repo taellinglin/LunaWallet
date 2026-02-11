@@ -8,9 +8,12 @@ class TransactionDetailsPage:
         self.app = app
         self.transaction_data = transaction_data
         self.on_back = on_back
+        self.is_mobile = getattr(app, "is_mobile", False)
         
     def create(self):
         # Create a responsive container that adjusts based on screen size
+        outer_padding = 12 if self.is_mobile else 20
+        row_spacing = 8 if self.is_mobile else 15
         return ft.Container(
             content=ft.Column([
                 self._create_header(),
@@ -28,8 +31,8 @@ class TransactionDetailsPage:
                             self._create_details_card(),
                             self._create_actions_card(),
                         ], col={"sm": 12, "md": 6}),
-                    ], spacing=15),
-                    padding=20,
+                    ], spacing=row_spacing),
+                    padding=outer_padding,
                     expand=True,
                 )
             ], spacing=0),
@@ -40,6 +43,7 @@ class TransactionDetailsPage:
     
     def _create_header(self):
         """Create page header with back button"""
+        title_size = 18 if self.is_mobile else 20
         return ft.Container(
             content=ft.Row([
                 ft.IconButton(
@@ -48,7 +52,7 @@ class TransactionDetailsPage:
                     on_click=lambda e: self._go_back(),
                     tooltip="Back to Wallet"
                 ),
-                ft.Text("Transaction Details", size=20, weight="bold", color="#f8d7da", expand=True),
+                ft.Text("Transaction Details", size=title_size, weight="bold", color="#f8d7da", expand=True),
                 ft.Container(
                     content=ft.Icon(ft.Icons.RECEIPT, color="#dc3545", size=20),
                     padding=5,
@@ -67,6 +71,9 @@ class TransactionDetailsPage:
         status = tx.get('status', 'unknown')
         confirmations = tx.get('confirmations', 0)
         block_height = tx.get('block_height')
+        padding = 12 if self.is_mobile else 15
+        title_size = 14 if self.is_mobile else 16
+        icon_size = 18 if self.is_mobile else 20
         
         status_color = "#00ff00" if status == 'confirmed' else "#ffd700"
         status_icon = ft.Icons.CHECK_CIRCLE if status == 'confirmed' else ft.Icons.SCHEDULE
@@ -74,8 +81,8 @@ class TransactionDetailsPage:
         return ft.Container(
             content=ft.Column([
                 ft.Row([
-                    ft.Icon(status_icon, color=status_color, size=20),
-                    ft.Text("Status", size=16, weight="bold", color="#f8d7da", expand=True),
+                    ft.Icon(status_icon, color=status_color, size=icon_size),
+                    ft.Text("Status", size=title_size, weight="bold", color="#f8d7da", expand=True),
                 ]),
                 ft.Container(height=10),
                 ft.Row([
@@ -100,7 +107,7 @@ class TransactionDetailsPage:
                     color="#a8a8a8"
                 ) if block_height else ft.Container()
             ]),
-            padding=15,
+            padding=padding,
             bgcolor="#1a0f0f",
             border_radius=12,
         )
@@ -111,6 +118,10 @@ class TransactionDetailsPage:
         amount = tx.get('amount', 0)
         fee = tx.get('fee', 0)
         tx_type = tx.get('type', 'transfer')
+        padding = 12 if self.is_mobile else 15
+        title_size = 14 if self.is_mobile else 16
+        icon_size = 18 if self.is_mobile else 20
+        amount_size = 18 if self.is_mobile else 20
         
         # Determine direction
         current_address = getattr(self.app.wallet_core, 'current_wallet_address', '')
@@ -125,13 +136,13 @@ class TransactionDetailsPage:
         return ft.Container(
             content=ft.Column([
                 ft.Row([
-                    ft.Icon(icon, color=color, size=20),
-                    ft.Text("Amount", size=16, weight="bold", color="#f8d7da", expand=True),
+                    ft.Icon(icon, color=color, size=icon_size),
+                    ft.Text("Amount", size=title_size, weight="bold", color="#f8d7da", expand=True),
                 ]),
                 ft.Container(height=10),
                 ft.Text(
                     f"'{format_amount_with_unit(amount)}'",
-                    size=20,
+                    size=amount_size,
                     weight="bold",
                     color=color
                 ),
@@ -140,7 +151,7 @@ class TransactionDetailsPage:
                     ft.Text(f"Fee: {format_amount_with_unit(fee)}", size=12, color="#a8a8a8"),
                 ])
             ]),
-            padding=15,
+            padding=padding,
             bgcolor="#1a0f0f",
             border_radius=12,
         )
@@ -150,6 +161,9 @@ class TransactionDetailsPage:
         tx = self.transaction_data
         timestamp = tx.get('timestamp', 0)
         memo = tx.get('memo', '')
+        padding = 12 if self.is_mobile else 15
+        title_size = 14 if self.is_mobile else 16
+        icon_size = 16 if self.is_mobile else 18
         
         try:
             date_str = datetime.fromtimestamp(timestamp).strftime("%b %d, %Y at %H:%M") if timestamp else "Unknown"
@@ -159,14 +173,14 @@ class TransactionDetailsPage:
         return ft.Container(
             content=ft.Column([
                 ft.Row([
-                    ft.Icon(ft.Icons.INFO, color="#f8d7da", size=18),
-                    ft.Text("Quick Info", size=16, weight="bold", color="#f8d7da", expand=True),
+                    ft.Icon(ft.Icons.INFO, color="#f8d7da", size=icon_size),
+                    ft.Text("Quick Info", size=title_size, weight="bold", color="#f8d7da", expand=True),
                 ]),
                 ft.Container(height=10),
                 self._create_info_row("Date", date_str),
                 self._create_info_row("Memo", memo if memo else "No memo"),
             ]),
-            padding=15,
+            padding=padding,
             bgcolor="#1a0f0f",
             border_radius=12,
         )
@@ -176,40 +190,49 @@ class TransactionDetailsPage:
         tx = self.transaction_data
         from_addr, to_addr = self._resolve_addresses(tx)
         tx_hash = tx.get('hash', 'Unknown')
+        padding = 12 if self.is_mobile else 15
+        title_size = 14 if self.is_mobile else 16
+        icon_size = 16 if self.is_mobile else 18
+        card_height = 220 if self.is_mobile else 300
         
         return ft.Container(
             content=ft.Column([
                 ft.Row([
-                    ft.Icon(ft.Icons.LIST_ALT, color="#f8d7da", size=18),
-                    ft.Text("Details", size=16, weight="bold", color="#f8d7da", expand=True),
+                    ft.Icon(ft.Icons.LIST_ALT, color="#f8d7da", size=icon_size),
+                    ft.Text("Details", size=title_size, weight="bold", color="#f8d7da", expand=True),
                 ]),
                 ft.Container(height=10),
                 self._create_detail_item("From Address", from_addr, True),
                 self._create_detail_item("To Address", to_addr, True),
                 self._create_detail_item("Transaction Hash", tx_hash, True),
             ], scroll=ft.ScrollMode.ADAPTIVE),
-            padding=15,
+            padding=padding,
             bgcolor="#1a0f0f",
             border_radius=12,
-            height=300  # Fixed height with scroll
+            height=card_height  # Fixed height with scroll
         )
     
     def _create_actions_card(self):
         """Create actions card with buttons"""
         tx_hash = self.transaction_data.get('hash', '')
+        padding = 12 if self.is_mobile else 15
+        title_size = 14 if self.is_mobile else 16
+        icon_size = 14 if self.is_mobile else 16
+        btn_height = 40 if self.is_mobile else 45
+        btn_text = 12 if self.is_mobile else 14
         
         return ft.Container(
             content=ft.Column([
                 ft.Row([
-                    ft.Icon(ft.Icons.BUILD, color="#f8d7da", size=18),
-                    ft.Text("Actions", size=16, weight="bold", color="#f8d7da", expand=True),
+                    ft.Icon(ft.Icons.BUILD, color="#f8d7da", size=icon_size),
+                    ft.Text("Actions", size=title_size, weight="bold", color="#f8d7da", expand=True),
                 ]),
                 ft.Container(height=10),
                 ft.Column([
                     ft.ElevatedButton(
                         content=ft.Row([
-                            ft.Icon(ft.Icons.CONTENT_COPY, size=16),
-                            ft.Text("Copy TX Hash", size=14, expand=True),
+                            ft.Icon(ft.Icons.CONTENT_COPY, size=icon_size),
+                            ft.Text("Copy TX Hash", size=btn_text, expand=True),
                         ]),
                         on_click=lambda e: self._copy_tx_hash(tx_hash),
                         style=ft.ButtonStyle(
@@ -217,13 +240,13 @@ class TransactionDetailsPage:
                             bgcolor="#dc3545",
                             padding=ft.padding.symmetric(horizontal=15, vertical=12),
                         ),
-                        height=45
+                        height=btn_height
                     ),
                     ft.Container(height=8),
                     ft.ElevatedButton(
                         content=ft.Row([
-                            ft.Icon(ft.Icons.EXPLORE, size=16),
-                            ft.Text("View in Explorer", size=14, expand=True),
+                            ft.Icon(ft.Icons.EXPLORE, size=icon_size),
+                            ft.Text("View in Explorer", size=btn_text, expand=True),
                         ]),
                         on_click=lambda e: self._view_in_explorer(tx_hash),
                         style=ft.ButtonStyle(
@@ -231,13 +254,13 @@ class TransactionDetailsPage:
                             bgcolor="#28a745",
                             padding=ft.padding.symmetric(horizontal=15, vertical=12),
                         ),
-                        height=45
+                        height=btn_height
                     ),
                     ft.Container(height=8),
                     ft.ElevatedButton(
                         content=ft.Row([
-                            ft.Icon(ft.Icons.SHARE, size=16),
-                            ft.Text("Share Details", size=14, expand=True),
+                            ft.Icon(ft.Icons.SHARE, size=icon_size),
+                            ft.Text("Share Details", size=btn_text, expand=True),
                         ]),
                         on_click=lambda e: self._share_details(),
                         style=ft.ButtonStyle(
@@ -245,11 +268,11 @@ class TransactionDetailsPage:
                             bgcolor="#17a2b8",
                             padding=ft.padding.symmetric(horizontal=15, vertical=12),
                         ),
-                        height=45
+                        height=btn_height
                     ),
                 ])
             ]),
-            padding=15,
+            padding=padding,
             bgcolor="#1a0f0f",
             border_radius=12,
         )

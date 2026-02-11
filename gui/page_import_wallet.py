@@ -1,4 +1,8 @@
 import flet as ft
+import re
+import time
+
+from utils import validate_private_key
 
 class ImportWalletPage:
     def __init__(self, app, on_back, on_wallet_imported):
@@ -134,11 +138,11 @@ class ImportWalletPage:
     
     def import_wallet(self, e):
         # Validate form
-        private_key = self.private_key.value.strip()
+        private_key_raw = self.private_key.value.strip()
         wallet_name = self.wallet_name.value.strip()
         password = self.password.value
         
-        if not private_key:
+        if not private_key_raw:
             self.app.show_snackbar("Please enter private key", "error")
             return
             
@@ -158,6 +162,97 @@ class ImportWalletPage:
             self.app.show_snackbar("Password must be at least 8 characters", "error")
             return
         
+        # Normalize common export formats (e.g., priv_/0x prefixes, whitespace)
+        private_key = re.sub(r"\s+", "", private_key_raw)
+        if private_key.lower().startswith("priv_"):
+            private_key = private_key[5:]
+        if private_key.lower().startswith("0x"):
+            private_key = private_key[2:]
+
+        is_valid, reason = validate_private_key(private_key)
+        if not is_valid:
+            self.app.show_snackbar(f"Invalid private key: {reason}", "error")
+            return
+
+        def _build_wallet_data() -> dict:
+            data = {
+                'private_key': private_key,
+                'label': wallet_name,
+                'public_key': None,
+                'encrypted_private_key': None,
+                'balance': 0.0,
+                'confirmed_balance': 0.0,
+                'pending_balance': 0.0,
+                'available_balance': 0.0,
+                'created': time.time(),
+                'is_locked': False,
+            }
+            try:
+                from lunalib.core.crypto import KeyManager
+
+                key_manager = KeyManager()
+                public_key = None
+                if hasattr(key_manager, "derive_public_key"):
+                    try:
+                        public_key = key_manager.derive_public_key(private_key)
+                    except Exception as key_err:
+                        print(f"DEBUG: derive_public_key failed: {key_err}")
+                if public_key:
+                    data['public_key'] = public_key
+
+                address = None
+                for method in (
+                    "public_key_to_address",
+                    "derive_address_from_public_key",
+                    "address_from_public_key",
+                    "derive_address",
+                ):
+                    if hasattr(key_manager, method):
+                        try:
+                            address = getattr(key_manager, method)(public_key)
+                            if address:
+                                break
+                        except Exception as addr_err:
+                            print(f"DEBUG: {method} failed: {addr_err}")
+                if not address:
+                    for method in (
+                        "private_key_to_address",
+                        "derive_address_from_private_key",
+                        "address_from_private_key",
+                    ):
+                        if hasattr(key_manager, method):
+                            try:
+                                address = getattr(key_manager, method)(private_key)
+                                if address:
+                                    break
+                            except Exception as addr_err:
+                                print(f"DEBUG: {method} failed: {addr_err}")
+
+                if address:
+                    data['address'] = address
+            except Exception as e:
+                print(f"DEBUG: Failed to build wallet data: {e}")
+
+            # Best-effort encryption for compatibility with lunalib import
+            if password:
+                try:
+                    from lunalib.core import wallet as wallet_module
+
+                    encrypted = wallet_module._encrypt_with_password(
+                        private_key.encode("utf-8"),
+                        password,
+                    )
+                    # lunalib validate_wallet_import json.dumps requires serializable values
+                    if isinstance(encrypted, (bytes, bytearray)):
+                        import base64
+
+                        data['encrypted_private_key'] = base64.b64encode(encrypted).decode("ascii")
+                    else:
+                        data['encrypted_private_key'] = encrypted
+                except Exception as enc_err:
+                    print(f"DEBUG: Failed to encrypt private key: {enc_err}")
+            return data
+
         # Import wallet
         try:
             # 既存ウォレットがある場合はアンロックを試みる
@@ -172,21 +267,26 @@ class ImportWalletPage:
                     self.app.show_snackbar("Invalid password for existing wallet", "error")
                     return
 
-            # lunalib 1.9.3 import API (try new signature first, then fallback)
+            # lunalib import API (try wallet_data first, then fallback)
             result = None
             try:
-                result = self.app.wallet_core.import_wallet(private_key, wallet_name, password)
+                wallet_data = _build_wallet_data()
+                if wallet_data.get('address') or wallet_data.get('public_key'):
+                    result = self.app.wallet_core.import_wallet(wallet_data, password)
+                if not result:
+                    result = self.app.wallet_core.import_wallet(private_key, wallet_name, password)
             except TypeError:
                 try:
-                    wallet_data = {
-                        'private_key': private_key,
-                        'label': wallet_name,
-                    }
+                    wallet_data = _build_wallet_data()
                     result = self.app.wallet_core.import_wallet(wallet_data, password)
                 except TypeError:
                     result = self.app.wallet_core.import_wallet(private_key, password)
             if result:
-                self.app.wallet_core.save_wallet(password)
+                # Persist using app storage helper when available
+                if hasattr(self.app, "save_wallet_data"):
+                    self.app.save_wallet_data(force_save=True)
+                elif hasattr(self.app.wallet_core, "save_wallet_data"):
+                    self.app.wallet_core.save_wallet_data()
                 self.on_wallet_imported()
             else:
                 self.app.show_snackbar("Failed to import wallet - invalid private key or password", "error")

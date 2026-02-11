@@ -663,7 +663,19 @@ def validate_password(password: str) -> tuple[bool, str]:
 def validate_private_key(private_key: str) -> tuple[bool, str]:
     """Validate private key format using lunalib crypto"""
     key_manager = KeyManager()
-    return key_manager.validate_private_key(private_key)
+    if hasattr(key_manager, "validate_private_key"):
+        return key_manager.validate_private_key(private_key)
+    # Fallback: accept 64-char hex strings only
+    if not isinstance(private_key, str):
+        return False, "Private key must be a string"
+    key = private_key.strip()
+    if len(key) != 64:
+        return False, f"Expected 64 hex characters, got {len(key)}"
+    try:
+        int(key, 16)
+    except ValueError:
+        return False, "Private key must be hexadecimal"
+    return True, "OK"
 
 def calculate_fee(amount: float, fee_rate: float = 0.001) -> float:
     """Calculate transaction fee using lunalib transactions"""

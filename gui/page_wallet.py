@@ -54,9 +54,12 @@ class WalletPage:
             auto_scroll=False
         )
         # UI elements
-        self.balance_text = ft.Text("--.-- LKC", size=28, weight="bold", color="#999999")
-        self.pending_balance_text = ft.Text("--.-- LKC", size=16, weight="500", color="#999999")
-        self.address_text = ft.Text("", size=12, color="#f8d7da")
+        balance_size = 24 if self.is_mobile else 28
+        pending_size = 12 if self.is_mobile else 16
+        address_size = 10 if self.is_mobile else 12
+        self.balance_text = ft.Text("--.-- LKC", size=balance_size, weight="bold", color="#999999")
+        self.pending_balance_text = ft.Text("--.-- LKC", size=pending_size, weight="500", color="#999999")
+        self.address_text = ft.Text("", size=address_size, color="#f8d7da")
         # Sync status UI (inline, non-blocking)
         self.refs['sync_text'] = ft.Ref[ft.Text]()
         self.refs['sync_percent'] = ft.Ref[ft.Text]()
@@ -428,7 +431,7 @@ class WalletPage:
                 self.create_transaction_history(),
             ], spacing=15),
             expand=True,
-            padding=12 if self.is_mobile else 20,
+            padding=8 if self.is_mobile else 20,
             bgcolor="#2c1a1a"
         )
     
@@ -1331,6 +1334,8 @@ class WalletPage:
             print(f"DEBUG: Error hiding sync status: {e}")
     
     def create_balance_card(self):
+        card_padding = 12 if self.is_mobile else 15
+        address_width = 260 if self.is_mobile else 300
         return ft.Container(
             ref=self.refs['balance_card'],
             content=ft.Column([
@@ -1347,11 +1352,11 @@ class WalletPage:
                     padding=8,
                     bgcolor="#1a0f0f",
                     border_radius=8,
-                    width=300
+                    width=address_width
                 ),
                 self.create_quick_stats()
             ], spacing=8),
-            padding=15,
+            padding=card_padding,
             bgcolor="#1a0f0f",
             border_radius=12
         )
@@ -1362,46 +1367,52 @@ class WalletPage:
         return self.stats_row
     
     def create_action_buttons(self):
+        icon_size = 12 if self.is_mobile else 14
+        text_size = 11 if self.is_mobile else 12
+        btn_height = 32 if self.is_mobile else 36
+        btn_padding = ft.padding.symmetric(horizontal=10, vertical=6) if self.is_mobile else ft.padding.symmetric(horizontal=12, vertical=8)
+        row_spacing = 12 if self.is_mobile else 8
+        container_padding = ft.padding.symmetric(horizontal=6, vertical=6) if self.is_mobile else ft.padding.symmetric(vertical=5)
         return ft.Container(
             content=ft.Row([
                 ft.ElevatedButton(
-                    content=icon_label("send", "Send", size=14, color="#ffffff", text_size=12),
+                    content=icon_label("send", "Send", size=icon_size, color="#ffffff", text_size=text_size),
                     on_click=lambda e: self.on_send(),
                     style=ft.ButtonStyle(
                         color="#ffffff",
                         bgcolor="#dc3545",
-                        padding=ft.padding.symmetric(horizontal=12, vertical=8),
+                        padding=btn_padding,
                         shape=ft.RoundedRectangleBorder(radius=8)
                     ),
-                    height=36,
+                    height=btn_height,
                     expand=True
                 ),
                 ft.ElevatedButton(
-                    content=icon_label("download", "Receive", size=14, color="#ffffff", text_size=12),
+                    content=icon_label("download", "Receive", size=icon_size, color="#ffffff", text_size=text_size),
                     on_click=lambda e: self.on_receive(),
                     style=ft.ButtonStyle(
                         color="#ffffff",
                         bgcolor="#dc3545",
-                        padding=ft.padding.symmetric(horizontal=12, vertical=8),
+                        padding=btn_padding,
                         shape=ft.RoundedRectangleBorder(radius=8)
                     ),
-                    height=36,
+                    height=btn_height,
                     expand=True
                 ),
                 ft.ElevatedButton(
-                    content=icon_label("key", "Key", size=14, color="#ffffff", text_size=12),
+                    content=icon_label("key", "Key", size=icon_size, color="#ffffff", text_size=text_size),
                     on_click=lambda e: self.on_export_key(),
                     style=ft.ButtonStyle(
                         color="#ffffff",
                         bgcolor="#dc3545",
-                        padding=ft.padding.symmetric(horizontal=12, vertical=8),
+                        padding=btn_padding,
                         shape=ft.RoundedRectangleBorder(radius=8)
                     ),
-                    height=36,
+                    height=btn_height,
                     expand=True
                 ),
-            ], spacing=8),
-            padding=ft.padding.symmetric(vertical=5)
+            ], spacing=row_spacing),
+            padding=container_padding
         )
     
     def create_transaction_history(self):
@@ -1422,9 +1433,9 @@ class WalletPage:
                         content=icon_label(
                             "list",
                             "Recent Transactions",
-                            size=16,
+                            size=14 if self.is_mobile else 16,
                             color="#f8d7da",
-                            text_size=16,
+                            text_size=14 if self.is_mobile else 16,
                             text_weight=ft.FontWeight.BOLD,
                         ),
                         expand=True,
@@ -1432,7 +1443,7 @@ class WalletPage:
                     ft.IconButton(
                         icon=ft.Icons.REFRESH,
                         icon_color="#f8d7da",
-                        icon_size=16,
+                        icon_size=14 if self.is_mobile else 16,
                         on_click=lambda e: self.refresh_transaction_history(force_scan=True),
                         tooltip="Refresh Transactions",
                         style=ft.ButtonStyle(padding=3)
@@ -1443,7 +1454,7 @@ class WalletPage:
                     padding=10,
                     bgcolor="#1a0f0f",
                     border_radius=12,
-                    height=250,
+                    height=210 if self.is_mobile else 250,
                     expand=True
                 )
             ], spacing=8),
