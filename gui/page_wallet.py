@@ -2099,10 +2099,13 @@ class WalletPage:
                                 expand=True),
                             feather_icon(status_icon_name, size=12, color=status_color),
                         ]),
-                        subtitle=ft.Row([
-                            ft.Text(date_str, size=11, color="#a8a8a8", expand=True),
-                            ft.Text(description, size=11, color="#a8a8a8"),
-                        ]),
+                        subtitle=ft.Column(
+                            [
+                                ft.Text(date_str, size=11, color="#a8a8a8"),
+                                ft.Text(description, size=11, color="#a8a8a8"),
+                            ],
+                            spacing=2,
+                        ),
                         trailing=ft.Icon(
                             ft.Icons.EXPAND_MORE,
                             color="#a8a8a8",

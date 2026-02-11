@@ -10,6 +10,7 @@ class ImportWalletPage:
         self.on_back = on_back
         self.on_wallet_imported = on_wallet_imported
         self._field_width = 420 if not app.is_mobile else 320
+        self.is_importing = False
         
         # Form fields
         self.private_key = ft.TextField(
@@ -54,6 +55,24 @@ class ImportWalletPage:
             prefix_icon=ft.Icons.LOCK,
             on_submit=self.import_wallet,
         )
+
+        self.import_button = ft.ElevatedButton(
+            "Import",
+            on_click=self.import_wallet,
+            style=ft.ButtonStyle(
+                color="#ffffff",
+                bgcolor="#dc3545", 
+                padding=ft.padding.symmetric(horizontal=18, vertical=12),
+                shape=ft.RoundedRectangleBorder(radius=8)
+            ),
+            width=160
+        )
+        self.progress_indicator = ft.ProgressRing(
+            color="#dc3545",
+            visible=False,
+            width=20,
+            height=20
+        )
         
     def create(self):
         top_padding = 24 if self.app.is_mobile else 10
@@ -90,17 +109,10 @@ class ImportWalletPage:
                         
                         ft.Container(height=16),
                         
-                        ft.ElevatedButton(
-                            "Import",
-                            on_click=self.import_wallet,
-                            style=ft.ButtonStyle(
-                                color="#ffffff",
-                                bgcolor="#dc3545", 
-                                padding=ft.padding.symmetric(horizontal=18, vertical=12),
-                                shape=ft.RoundedRectangleBorder(radius=8)
-                            ),
-                            width=160
-                        )
+                        ft.Row([
+                            self.import_button,
+                            self.progress_indicator
+                        ], alignment=ft.MainAxisAlignment.CENTER, spacing=10)
                     ], horizontal_alignment=ft.CrossAxisAlignment.CENTER),
                     padding=20,
                     margin=ft.margin.symmetric(vertical=6),
@@ -138,6 +150,8 @@ class ImportWalletPage:
         return False
     
     def import_wallet(self, e):
+        if self.is_importing:
+            return
         # Validate form
         private_key_raw = self.private_key.value.strip()
         wallet_name = self.wallet_name.value.strip()
@@ -174,6 +188,8 @@ class ImportWalletPage:
         if not is_valid:
             self.app.show_snackbar(f"Invalid private key: {reason}", "error")
             return
+
+        self._show_loading_state(True)
 
         def _build_wallet_data() -> dict:
             data = {
@@ -254,43 +270,52 @@ class ImportWalletPage:
                     print(f"DEBUG: Failed to encrypt private key: {enc_err}")
             return data
 
-        # Import wallet
-        try:
-            # 既存ウォレットがある場合はアンロックを試みる
-            if self.app.wallet_core.wallets:
-                # 既存ウォレットのいずれかのアドレスでアンロック
-                unlocked = False
-                for addr in self.app.wallet_core.wallets:
-                    if self.app.wallet_core.unlock_wallet(addr, password):
-                        unlocked = True
-                        break
-                if not unlocked:
-                    self.app.show_snackbar("Invalid password for existing wallet", "error")
-                    return
-
-            # lunalib import API (try wallet_data first, then fallback)
-            result = None
+        def do_import():
             try:
-                wallet_data = _build_wallet_data()
-                if wallet_data.get('address') or wallet_data.get('public_key'):
-                    result = self.app.wallet_core.import_wallet(wallet_data, password)
-                if not result:
-                    result = self.app.wallet_core.import_wallet(private_key, wallet_name, password)
-            except TypeError:
+                # 既存ウォレットがある場合はアンロックを試みる
+                if self.app.wallet_core.wallets:
+                    unlocked = False
+                    for addr in self.app.wallet_core.wallets:
+                        if self.app.wallet_core.unlock_wallet(addr, password):
+                            unlocked = True
+                            break
+                    if not unlocked:
+                        self.app.show_snackbar("Invalid password for existing wallet", "error")
+                        return
+
+                result = None
                 try:
                     wallet_data = _build_wallet_data()
-                    result = self.app.wallet_core.import_wallet(wallet_data, password)
+                    if wallet_data.get('address') or wallet_data.get('public_key'):
+                        result = self.app.wallet_core.import_wallet(wallet_data, password)
+                    if not result:
+                        result = self.app.wallet_core.import_wallet(private_key, wallet_name, password)
                 except TypeError:
-                    result = self.app.wallet_core.import_wallet(private_key, password)
-            if result:
-                # Persist using app storage helper when available
-                if hasattr(self.app, "save_wallet_data"):
-                    self.app.save_wallet_data(force_save=True)
-                elif hasattr(self.app.wallet_core, "save_wallet_data"):
-                    self.app.wallet_core.save_wallet_data()
-                self.on_wallet_imported()
-            else:
-                self.app.show_snackbar("Failed to import wallet - invalid private key or password", "error")
+                    try:
+                        wallet_data = _build_wallet_data()
+                        result = self.app.wallet_core.import_wallet(wallet_data, password)
+                    except TypeError:
+                        result = self.app.wallet_core.import_wallet(private_key, password)
 
-        except Exception as ex:
-            self.app.show_snackbar(f"Error importing wallet: {str(ex)}", "error")
+                if result:
+                    if hasattr(self.app, "save_wallet_data"):
+                        self.app.save_wallet_data(force_save=True)
+                    elif hasattr(self.app.wallet_core, "save_wallet_data"):
+                        self.app.wallet_core.save_wallet_data()
+                    self.on_wallet_imported()
+                else:
+                    self.app.show_snackbar("Failed to import wallet - invalid private key or password", "error")
+            except Exception as ex:
+                self.app.show_snackbar(f"Error importing wallet: {str(ex)}", "error")
+            finally:
+                self._show_loading_state(False)
+
+        import threading
+        threading.Thread(target=do_import, daemon=True).start()
+
+    def _show_loading_state(self, loading: bool):
+        self.is_importing = loading
+        self.import_button.disabled = loading
+        self.progress_indicator.visible = loading
+        if hasattr(self.app, 'page') and self.app.page:
+            self.app.page.update()

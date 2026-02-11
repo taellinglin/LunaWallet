@@ -418,7 +418,7 @@ class TabTransactions:
                                 )
                             ]),
                             
-                            # Second row: Direction and Date
+                            # Second row: Direction
                             ft.Row([
                                 ft.Icon(
                                     icon,
@@ -430,15 +430,26 @@ class TabTransactions:
                                     size=14,
                                     color="#f8d7da",
                                     expand=True
-                                ),
+                                )
+                            ]),
+
+                            # Third row: Time and Memo
+                            ft.Column([
                                 ft.Text(
                                     date_str,
                                     size=12,
                                     color="#a8a8a8"
-                                )
-                            ]),
-                            
-                            # Third row: Type and Memo (if available)
+                                ),
+                                ft.Text(
+                                    tx.get('memo', ''),
+                                    size=12,
+                                    color="#a8a8a8",
+                                    max_lines=1,
+                                    overflow="ellipsis"
+                                ) if tx.get('memo') else ft.Container()
+                            ], spacing=2),
+
+                            # Fourth row: Type tag
                             ft.Row([
                                 ft.Container(
                                     content=ft.Text(
@@ -450,24 +461,16 @@ class TabTransactions:
                                     bgcolor="#5c2e2e",
                                     padding=ft.padding.symmetric(horizontal=8, vertical=4),
                                     border_radius=8
-                                ),
-                                ft.Text(
-                                    tx.get('memo', ''),
-                                    size=12,
-                                    color="#a8a8a8",
-                                    expand=True,
-                                    max_lines=1,
-                                    overflow="ellipsis"
-                                ) if tx.get('memo') else ft.Container()
+                                )
                             ])
                         ], spacing=8),
                         
                         # Card styling
                         bgcolor="#2c1a1a",
                         padding=15,
-                        border=ft.border.all(1, "#5c2e2e"),
+                        border=ft.border.all(1, "#3a2222"),
                         border_radius=12,
-                        margin=ft.margin.symmetric(vertical=2)
+                        margin=ft.margin.symmetric(vertical=3)
                     )
                     
                     mobile_list.controls.append(transaction_card)
