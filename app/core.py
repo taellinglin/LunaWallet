@@ -13,6 +13,7 @@ import base64
 from typing import Dict, List, Optional
 import sys
 from pathlib import Path
+import inspect
 
 # Import unified balance utilities
 from utils import (
@@ -359,6 +360,11 @@ class LunaWalletApp:
             print(f"DEBUG: Failed to apply runtime settings: {e}")
 
         try:
+            self._load_security_settings()
+        except Exception as e:
+            print(f"DEBUG: Failed to load security settings: {e}")
+
+        try:
             from app.debug_logger import debug_log
             storage_type = "BrowserStorage" if is_web() else "SQLiteStorage"
             flet_storage = os.getenv("FLET_APP_STORAGE")
@@ -434,6 +440,13 @@ class LunaWalletApp:
         # NEW: Initialize data directory and load any existing wallet metadata
         self._ensure_data_directory()
         self._load_wallet_metadata()
+
+        # Biometric/security state
+        self.biometric_enabled = False
+        self.biometric_secret_present = False
+        self._local_auth = None
+        self._secure_storage = None
+        self._biometric_busy = False
 
         # Background sync state
         self.background_sync_active = False
@@ -1624,7 +1637,6 @@ class LunaWalletApp:
 
         # Set icon for taskbar (use .ico on Windows for best compatibility)
         try:
-            import os
             base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
             icon_path = os.path.join(base_dir, "wallet_icon.ico")
             if os.path.exists(icon_path):
@@ -1962,6 +1974,12 @@ class LunaWalletApp:
         )
         self.page.add(centered_content)
         self.page.update()
+
+        try:
+            if self.current_lock_page and hasattr(self.current_lock_page, "maybe_prompt_biometrics"):
+                self.current_lock_page.maybe_prompt_biometrics()
+        except Exception as e:
+            print(f"DEBUG: biometric prompt failed: {e}")
 
     def attempt_wallet_load(self):
         """Attempt to load wallet metadata without password to confirm existence"""
@@ -2487,6 +2505,9 @@ class LunaWalletApp:
                 _global_trace("Wallet unlocked successfully", "UNLOCK")
                 self.is_locked = False
                 self._play_sound("unlock")
+
+                if self.biometric_enabled:
+                    self._store_biometric_secret(password)
 
                 # Clear lock page reference
                 self.current_lock_page = None
@@ -3583,6 +3604,194 @@ class LunaWalletApp:
                 except Exception as e:
                     print(f"DEBUG: Continuous scan error: {e}")
                     time.sleep(self.scan_interval)
+
+    def _load_security_settings(self):
+        self.biometric_enabled = False
+        self.biometric_secret_present = False
+        if not getattr(self, "storage", None):
+            return
+        try:
+            raw = self.storage.get("security")
+            if not raw:
+                return
+            data = json.loads(raw)
+            self.biometric_enabled = bool(data.get("biometric_enabled", False))
+            self.biometric_secret_present = bool(data.get("biometric_secret_present", False))
+        except Exception:
+            pass
+
+    def _save_security_settings(self):
+        if not getattr(self, "storage", None):
+            return
+        try:
+            payload = {
+                "biometric_enabled": bool(self.biometric_enabled),
+                "biometric_secret_present": bool(self.biometric_secret_present),
+            }
+            self.storage.set("security", json.dumps(payload))
+        except Exception as e:
+            print(f"DEBUG: Failed to save security settings: {e}")
+
+    def _get_local_auth(self):
+        if self._local_auth is not None:
+            return self._local_auth
+        try:
+            from flet_local_auth import LocalAuth
+
+            self._local_auth = LocalAuth()
+            if hasattr(self, "page") and self.page and hasattr(self.page, "overlay"):
+                if self._local_auth not in self.page.overlay:
+                    self.page.overlay.append(self._local_auth)
+            return self._local_auth
+        except Exception as e:
+            print(f"DEBUG: LocalAuth unavailable: {e}")
+            self._local_auth = None
+            return None
+
+    def _get_secure_storage(self):
+        if self._secure_storage is not None:
+            return self._secure_storage
+        try:
+            from flet_secure_storage import SecureStorage
+
+            self._secure_storage = SecureStorage("luna_wallet")
+            if hasattr(self, "page") and self.page and hasattr(self.page, "overlay"):
+                if self._secure_storage not in self.page.overlay:
+                    self.page.overlay.append(self._secure_storage)
+            return self._secure_storage
+        except Exception as e:
+            print(f"DEBUG: SecureStorage unavailable: {e}")
+            self._secure_storage = None
+            return None
+
+    def set_biometric_enabled(self, enabled: bool):
+        self.biometric_enabled = bool(enabled)
+        if not self.biometric_enabled:
+            self._clear_biometric_secret()
+        self._save_security_settings()
+
+    def is_biometric_available(self) -> bool:
+        if not getattr(self, "is_mobile", False):
+            return False
+        return self._get_local_auth() is not None
+
+    def can_biometric_unlock(self) -> bool:
+        return self.is_biometric_available() and self.biometric_enabled and self.biometric_secret_present
+
+    async def _await_if_needed(self, result):
+        if inspect.isawaitable(result):
+            return await result
+        return result
+
+    async def _authenticate_biometrics(self) -> bool:
+        auth = self._get_local_auth()
+        if not auth:
+            return False
+        if hasattr(auth, "authenticate"):
+            try:
+                result = auth.authenticate("Unlock Luna Wallet")
+                ok = await self._await_if_needed(result)
+                return bool(ok)
+            except Exception as e:
+                print(f"DEBUG: biometric authenticate failed: {e}")
+                return False
+        return False
+
+    async def _read_biometric_secret(self):
+        storage = self._get_secure_storage()
+        if not storage:
+            return None
+        for method in ("read", "get", "get_data"):
+            if hasattr(storage, method):
+                try:
+                    result = getattr(storage, method)("biometric_password")
+                    return await self._await_if_needed(result)
+                except Exception as e:
+                    print(f"DEBUG: SecureStorage read failed: {e}")
+                    return None
+        return None
+
+    def _store_biometric_secret(self, password: str) -> bool:
+        storage = self._get_secure_storage()
+        if not storage:
+            return False
+        for method in ("write", "set", "set_data"):
+            if hasattr(storage, method):
+                try:
+                    result = getattr(storage, method)("biometric_password", password)
+                    if inspect.isawaitable(result) and hasattr(self.page, "run_task"):
+                        async def _await_store():
+                            try:
+                                await result
+                            except Exception as e:
+                                print(f"DEBUG: SecureStorage write failed: {e}")
+                        self.page.run_task(_await_store)
+                    self.biometric_secret_present = True
+                    self._save_security_settings()
+                    return True
+                except Exception as e:
+                    print(f"DEBUG: SecureStorage write error: {e}")
+                    return False
+        return False
+
+    def _clear_biometric_secret(self):
+        storage = self._get_secure_storage()
+        self.biometric_secret_present = False
+        if not storage:
+            self._save_security_settings()
+            return
+        for method in ("delete", "remove", "clear"):
+            if hasattr(storage, method):
+                try:
+                    result = getattr(storage, method)("biometric_password")
+                    if inspect.isawaitable(result) and hasattr(self.page, "run_task"):
+                        async def _await_clear():
+                            try:
+                                await result
+                            except Exception as e:
+                                print(f"DEBUG: SecureStorage delete failed: {e}")
+                        self.page.run_task(_await_clear)
+                    break
+                except Exception as e:
+                    print(f"DEBUG: SecureStorage delete error: {e}")
+                    break
+        self._save_security_settings()
+
+    def try_biometric_unlock(self, auto: bool = False):
+        if self._biometric_busy:
+            return
+        if not self.can_biometric_unlock():
+            if not auto:
+                self.show_snackbar("Biometric unlock not available", "error")
+            return
+        if hasattr(self, "current_lock_page") and self.current_lock_page:
+            self.current_lock_page.show_loading()
+        self._biometric_busy = True
+
+        async def _run():
+            try:
+                ok = await self._authenticate_biometrics()
+                if not ok:
+                    if not auto:
+                        self.show_snackbar("Biometric authentication failed", "error")
+                    return
+                secret = await self._read_biometric_secret()
+                if not secret:
+                    self.show_snackbar("Biometric unlock not configured", "error")
+                    return
+                if hasattr(self.page, "run_thread"):
+                    self.page.run_thread(self.unlock_wallet, secret)
+                else:
+                    threading.Thread(target=self.unlock_wallet, args=(secret,), daemon=True).start()
+            finally:
+                self._biometric_busy = False
+                if hasattr(self, "current_lock_page") and self.current_lock_page:
+                    self.current_lock_page.hide_loading()
+
+        if hasattr(self.page, "run_task"):
+            self.page.run_task(_run)
+        else:
+            threading.Thread(target=lambda: self.page.run_task(_run), daemon=True).start()
 
     def copy_to_clipboard(self, text: str) -> bool:
         """Copy text to clipboard with mobile-safe fallbacks."""

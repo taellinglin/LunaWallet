@@ -32,6 +32,10 @@ class SettingsPage:
             'flat_lkc_display': False
         }
 
+        self.security_settings = {
+            'biometric_enabled': False
+        }
+
         # UI elements
         self.cache_size_text = ft.Text("Calculating...", color="#f8d7da")
         self.cache_age_text = ft.Text("Calculating...", color="#f8d7da")
@@ -55,6 +59,12 @@ class SettingsPage:
                     payload = json.loads(raw)
                     self.cache_settings.update(payload.get("cache", {}))
                     self.runtime_settings.update(payload.get("runtime", {}))
+                raw_security = self.app.storage.get("security")
+                if raw_security:
+                    payload = json.loads(raw_security)
+                    self.security_settings.update({
+                        'biometric_enabled': bool(payload.get('biometric_enabled', False))
+                    })
         except Exception as e:
             print(f"Error loading settings: {e}")
 
@@ -74,6 +84,14 @@ class SettingsPage:
                     "runtime": self.runtime_settings,
                 }
                 self.app.storage.set("settings", json.dumps(payload))
+
+                security_payload = {
+                    "biometric_enabled": bool(self.security_settings.get("biometric_enabled", False))
+                }
+                self.app.storage.set("security", json.dumps(security_payload))
+
+                if hasattr(self.app, "set_biometric_enabled"):
+                    self.app.set_biometric_enabled(self.security_settings.get("biometric_enabled", False))
 
             # Apply environment variables for lunalib/runtime
             self.apply_runtime_settings()
@@ -114,6 +132,8 @@ class SettingsPage:
                 self.create_blockchain_section(),
                 ft.Container(height=20),
                 self.create_runtime_section(),
+                ft.Container(height=20),
+                self.create_security_section(),
                 ft.Container(height=20),
                 self.create_ui_section(),
                 ft.Container(height=20),
@@ -342,6 +362,36 @@ class SettingsPage:
             padding=5
         )
 
+    def create_security_section(self):
+        biometric_supported = bool(getattr(self.app, "is_biometric_available", lambda: False)())
+        return ft.Container(
+            content=ft.Column([
+                icon_label(
+                    "shield",
+                    "Security",
+                    size=16,
+                    color="#f8d7da",
+                    text_size=18,
+                    text_weight=ft.FontWeight.BOLD,
+                ),
+                ft.Divider(color="#5c2e2e", height=20),
+                ft.Row([
+                    ft.Switch(
+                        value=self.security_settings['biometric_enabled'],
+                        on_change=lambda e: self.update_security_setting('biometric_enabled', e.control.value),
+                        disabled=not biometric_supported,
+                    ),
+                    ft.Text("Enable biometric unlock", color="#f8d7da"),
+                ], spacing=8),
+                ft.Text(
+                    "Biometric unlock uses device authentication and secure storage.",
+                    size=12,
+                    color="#a89a9a",
+                ),
+            ]),
+            padding=5
+        )
+
     def create_ui_section(self):
         return ft.Container(
             content=ft.Column([
@@ -466,6 +516,9 @@ class SettingsPage:
 
     def update_runtime_setting(self, key, value):
         self.runtime_settings[key] = value
+
+    def update_security_setting(self, key, value):
+        self.security_settings[key] = value
 
     def _safe_int(self, value, default):
         try:

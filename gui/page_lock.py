@@ -10,6 +10,8 @@ class LockPage:
         self.subtitle = subtitle
         self.show_create_option = show_create_option
         self.is_unlocking = False
+        self.biometrics_toggle = None
+        self.biometrics_button = None
             
         field_width = 320 if getattr(self.app, "is_mobile", False) else 300
         self.password_field = ft.TextField(
@@ -39,6 +41,9 @@ class LockPage:
     
     def _create_unlock_ui(self):
         """Create UI for unlocking existing wallet - ONLY unlock options"""
+        biometrics_available = bool(getattr(self.app, "is_biometric_available", lambda: False)())
+        biometrics_ready = bool(getattr(self.app, "can_biometric_unlock", lambda: False)())
+
         self.unlock_button = ft.ElevatedButton(
             content=ft.Row(
                 [
@@ -56,6 +61,37 @@ class LockPage:
             ),
             width=200
         )
+
+        if biometrics_available:
+            self.biometrics_button = ft.OutlinedButton(
+                content=ft.Row(
+                    [
+                        ft.Icon(ft.Icons.FINGERPRINT, color="#dc3545"),
+                        ft.Text("Unlock with biometrics", color="#dc3545"),
+                    ],
+                    alignment=ft.MainAxisAlignment.CENTER,
+                    tight=True,
+                ),
+                on_click=self._biometric_unlock,
+                style=ft.ButtonStyle(
+                    color="#dc3545",
+                    side=ft.BorderSide(color="#dc3545", width=2),
+                    padding=ft.padding.symmetric(horizontal=20, vertical=12),
+                ),
+                width=220,
+                visible=biometrics_ready,
+            )
+
+            self.biometrics_toggle = ft.Row(
+                [
+                    ft.Switch(
+                        value=getattr(self.app, "biometric_enabled", False),
+                        on_change=self._toggle_biometrics,
+                    ),
+                    ft.Text("Enable biometric unlock", color="#f8d7da")
+                ],
+                spacing=8,
+            )
         
         self.loading_container = ft.Container(
             visible=False,
@@ -96,6 +132,8 @@ class LockPage:
             ft.Container(height=20),
             
             self.unlock_button,
+            self.biometrics_button if self.biometrics_button else ft.Container(),
+            self.biometrics_toggle if self.biometrics_toggle else ft.Container(),
             self.loading_container,
             
             ft.Container(expand=True),
@@ -108,6 +146,33 @@ class LockPage:
             bgcolor="#2c1a1a",
             alignment=ft.Alignment(0, 0)
         )
+
+    def _toggle_biometrics(self, e):
+        enabled = bool(e.control.value)
+        if hasattr(self.app, "set_biometric_enabled"):
+            self.app.set_biometric_enabled(enabled)
+        if self.biometrics_button:
+            self.biometrics_button.visible = enabled and getattr(self.app, "biometric_secret_present", False)
+        if self.app and hasattr(self.app, "page"):
+            self.app.page.update()
+
+    def _biometric_unlock(self, e):
+        if self.is_unlocking:
+            return
+        if hasattr(self.app, "try_biometric_unlock"):
+            self.is_unlocking = True
+            self.show_loading()
+            self.app.try_biometric_unlock(auto=False)
+
+    def maybe_prompt_biometrics(self):
+        if not hasattr(self.app, "can_biometric_unlock"):
+            return
+        if not self.app.can_biometric_unlock():
+            return
+        if hasattr(self.app.page, "run_thread"):
+            self.app.page.run_thread(lambda: self.app.try_biometric_unlock(auto=True))
+        else:
+            threading.Thread(target=lambda: self.app.try_biometric_unlock(auto=True), daemon=True).start()
     
     def _create_setup_ui(self):
         """Create UI for new wallet setup - ONLY create/import options"""
