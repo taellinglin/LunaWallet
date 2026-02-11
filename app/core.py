@@ -1595,8 +1595,20 @@ class LunaWalletApp:
         self.page = page
 
         # Detect if we're on mobile
-        self.is_mobile = page.platform in ["ios", "android"]
-        self.is_android = page.platform == "android"
+        platform_name = str(getattr(page, "platform", "")).lower()
+        env_platform = str(os.getenv("FLET_PLATFORM", "")).lower()
+        sys_platform = str(sys.platform).lower()
+        self.is_mobile = (
+            ("android" in platform_name or "ios" in platform_name)
+            or env_platform in ("android", "ios")
+            or sys_platform.startswith("android")
+            or sys_platform.startswith("ios")
+        )
+        self.is_android = (
+            "android" in platform_name
+            or env_platform == "android"
+            or sys_platform.startswith("android")
+        )
         self.detect_orientation()
 
         page.title = "Luna Wallet"

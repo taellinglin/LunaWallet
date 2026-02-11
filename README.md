@@ -54,6 +54,7 @@ flet run
 ### 5) Troubleshooting
 - Dependency issues: re‑run `pip install -r requirements.txt`
 - UI not updating: restart the app and wait for sync to finish
+- Linux packaged app error `MissingPlatformDirectoryException`: build via `./build_linux.sh` (runs `scripts/patch_flet_build.py`) or run `python3 scripts/patch_flet_build.py` after `flet build linux`. If needed, install and run `xdg-user-dirs-update`.
 
 ## License
 This project is licensed under the MIT License.
@@ -116,6 +117,7 @@ flet run
 ### 5) 常见问题
 - 依赖问题：重新执行 `pip install -r requirements.txt`
 - 界面未更新：重启应用并等待同步完成
+- Linux 打包运行报错 `MissingPlatformDirectoryException`：请用 `./build_linux.sh`（会执行 `scripts/patch_flet_build.py`）构建，或在 `flet build linux` 后执行 `python3 scripts/patch_flet_build.py`。必要时安装并运行 `xdg-user-dirs-update`。
 
 ## 许可证
 本项目采用 MIT 许可证。
