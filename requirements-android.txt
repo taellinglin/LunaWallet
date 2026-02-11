@@ -1,4 +1,4 @@
-flet
+flet==0.80.5
 flet-secure-storage
 cryptography>=42.0.5
 requests

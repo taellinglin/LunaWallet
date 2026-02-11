@@ -12,7 +12,7 @@ authors = [
 readme = "README.md"
 requires-python = ">=3.8"
 dependencies = [
-    "flet==0.80.4",
+    "flet==0.80.5",
     "flet-secure-storage",
     "qrcode>=7.4.0",
     "pillow",
