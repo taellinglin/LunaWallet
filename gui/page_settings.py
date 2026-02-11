@@ -364,22 +364,26 @@ class SettingsPage:
 
     def create_security_section(self):
         biometric_supported = bool(getattr(self.app, "is_biometric_available", lambda: False)())
-        return ft.Container(
-            content=ft.Column([
-                icon_label(
-                    "shield",
-                    "Security",
-                    size=16,
-                    color="#f8d7da",
-                    text_size=18,
-                    text_weight=ft.FontWeight.BOLD,
-                ),
-                ft.Divider(color="#5c2e2e", height=20),
+        biometric_ready = bool(getattr(self.app, "is_biometric_ready", lambda: False)())
+
+        controls = [
+            icon_label(
+                "shield",
+                "Security",
+                size=16,
+                color="#f8d7da",
+                text_size=18,
+                text_weight=ft.FontWeight.BOLD,
+            ),
+            ft.Divider(color="#5c2e2e", height=20),
+        ]
+
+        if biometric_ready:
+            controls.extend([
                 ft.Row([
                     ft.Switch(
                         value=self.security_settings['biometric_enabled'],
                         on_change=lambda e: self.update_security_setting('biometric_enabled', e.control.value),
-                        disabled=not biometric_supported,
                     ),
                     ft.Text("Enable biometric unlock", color="#f8d7da"),
                 ], spacing=8),
@@ -388,9 +392,43 @@ class SettingsPage:
                     size=12,
                     color="#a89a9a",
                 ),
-            ]),
+            ])
+        else:
+            status_text = "Biometric storage not available on this build."
+            if biometric_supported:
+                status_text = "Biometric storage needs verification on this device."
+            controls.append(ft.Text(status_text, size=12, color="#a89a9a"))
+            if biometric_supported:
+                controls.append(
+                    ft.ElevatedButton(
+                        content=icon_label("check", "Check biometrics", size=16, color="#ffffff", text_size=14),
+                        on_click=self.check_biometrics_click,
+                        style=ft.ButtonStyle(
+                            color="#ffffff",
+                            bgcolor="#dc3545",
+                            padding=10
+                        )
+                    )
+                )
+
+        return ft.Container(
+            content=ft.Column(controls),
             padding=5
         )
+
+    def check_biometrics_click(self, e):
+        ready = False
+        if hasattr(self.app, "ensure_biometric_ready"):
+            ready = bool(self.app.ensure_biometric_ready())
+        if ready:
+            self.app.show_snackbar("Biometrics ready", "success")
+        else:
+            self.app.show_snackbar("Biometric storage not supported", "error")
+        try:
+            if hasattr(self.app, "on_settings"):
+                self.app.on_settings()
+        except Exception:
+            pass
 
     def create_ui_section(self):
         return ft.Container(

@@ -41,7 +41,7 @@ class LockPage:
     
     def _create_unlock_ui(self):
         """Create UI for unlocking existing wallet - ONLY unlock options"""
-        biometrics_available = bool(getattr(self.app, "is_biometric_available", lambda: False)())
+        biometrics_available = bool(getattr(self.app, "is_biometric_ready", lambda: False)())
         biometrics_ready = bool(getattr(self.app, "can_biometric_unlock", lambda: False)())
 
         self.unlock_button = ft.ElevatedButton(

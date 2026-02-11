@@ -446,6 +446,7 @@ class LunaWalletApp:
         self.biometric_secret_present = False
         self._local_auth = None
         self._secure_storage = None
+        self._secure_storage_failed = False
         self._biometric_busy = False
 
         # Background sync state
@@ -3678,9 +3679,19 @@ class LunaWalletApp:
         except Exception as e:
             print(f"DEBUG: Failed to save security settings: {e}")
 
+    def _secure_storage_module_available(self) -> bool:
+        try:
+            import importlib
+
+            return importlib.util.find_spec("flet_secure_storage") is not None
+        except Exception:
+            return False
+
     def _get_secure_storage(self):
         if self._secure_storage is not None:
             return self._secure_storage
+        if self._secure_storage_failed:
+            return None
         if not self._secure_storage_supported():
             return None
         try:
@@ -3710,15 +3721,32 @@ class LunaWalletApp:
                 )
             if hasattr(self, "page") and self.page and hasattr(self.page, "overlay"):
                 if self._secure_storage not in self.page.overlay:
-                    self.page.overlay.append(self._secure_storage)
+                    try:
+                        self.page.overlay.append(self._secure_storage)
+                        self.page.update()
+                    except Exception as overlay_err:
+                        print(f"DEBUG: SecureStorage overlay failed: {overlay_err}")
+                        self._secure_storage = None
+                        self._secure_storage_failed = True
+                        self.biometric_enabled = False
+                        self.biometric_secret_present = False
+                        self._save_security_settings()
+                        try:
+                            self.show_snackbar("Biometric storage not supported on this build", "error")
+                        except Exception:
+                            pass
+                        return None
             return self._secure_storage
         except Exception as e:
             print(f"DEBUG: SecureStorage unavailable: {e}")
             self._secure_storage = None
+            self._secure_storage_failed = True
             return None
 
     def _secure_storage_supported(self) -> bool:
         if not getattr(self, "is_mobile", False):
+            return False
+        if not self._secure_storage_module_available():
             return False
         try:
             page = getattr(self, "page", None)
@@ -3735,16 +3763,33 @@ class LunaWalletApp:
             return False
 
     def set_biometric_enabled(self, enabled: bool):
+        if enabled:
+            if not self.ensure_biometric_ready():
+                self.biometric_enabled = False
+                self.biometric_secret_present = False
+                self._save_security_settings()
+                return
         self.biometric_enabled = bool(enabled)
         if not self.biometric_enabled:
             self._clear_biometric_secret()
         self._save_security_settings()
 
     def is_biometric_available(self) -> bool:
-        return self._get_secure_storage() is not None
+        return self._secure_storage_supported()
+
+    def is_biometric_ready(self) -> bool:
+        return self._secure_storage is not None
+
+    def ensure_biometric_ready(self) -> bool:
+        if self._secure_storage_failed:
+            return False
+        if self._secure_storage is not None:
+            return True
+        storage = self._get_secure_storage()
+        return storage is not None
 
     def can_biometric_unlock(self) -> bool:
-        return self.is_biometric_available() and self.biometric_enabled and self.biometric_secret_present
+        return self.is_biometric_ready() and self.biometric_enabled and self.biometric_secret_present
 
     async def _await_if_needed(self, result):
         if inspect.isawaitable(result):
