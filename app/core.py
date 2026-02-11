@@ -3653,22 +3653,6 @@ class LunaWalletApp:
         except Exception as e:
             print(f"DEBUG: Failed to save security settings: {e}")
 
-    def _get_local_auth(self):
-        if self._local_auth is not None:
-            return self._local_auth
-        try:
-            from flet_local_auth import LocalAuth
-
-            self._local_auth = LocalAuth()
-            if hasattr(self, "page") and self.page and hasattr(self.page, "overlay"):
-                if self._local_auth not in self.page.overlay:
-                    self.page.overlay.append(self._local_auth)
-            return self._local_auth
-        except Exception as e:
-            print(f"DEBUG: LocalAuth unavailable: {e}")
-            self._local_auth = None
-            return None
-
     def _get_secure_storage(self):
         if self._secure_storage is not None:
             return self._secure_storage
@@ -3715,7 +3699,7 @@ class LunaWalletApp:
     def is_biometric_available(self) -> bool:
         if not getattr(self, "is_mobile", False):
             return False
-        return self._get_local_auth() is not None
+        return self._get_secure_storage() is not None
 
     def can_biometric_unlock(self) -> bool:
         return self.is_biometric_available() and self.biometric_enabled and self.biometric_secret_present
@@ -3724,20 +3708,6 @@ class LunaWalletApp:
         if inspect.isawaitable(result):
             return await result
         return result
-
-    async def _authenticate_biometrics(self) -> bool:
-        auth = self._get_local_auth()
-        if not auth:
-            return False
-        if hasattr(auth, "authenticate"):
-            try:
-                result = auth.authenticate("Unlock Luna Wallet")
-                ok = await self._await_if_needed(result)
-                return bool(ok)
-            except Exception as e:
-                print(f"DEBUG: biometric authenticate failed: {e}")
-                return False
-        return False
 
     async def _read_biometric_secret(self):
         storage = self._get_secure_storage()
@@ -3812,11 +3782,6 @@ class LunaWalletApp:
 
         async def _run():
             try:
-                ok = await self._authenticate_biometrics()
-                if not ok:
-                    if not auto:
-                        self.show_snackbar("Biometric authentication failed", "error")
-                    return
                 secret = await self._read_biometric_secret()
                 if not secret:
                     self.show_snackbar("Biometric unlock not configured", "error")

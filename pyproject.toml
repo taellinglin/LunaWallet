@@ -13,6 +13,7 @@ readme = "README.md"
 requires-python = ">=3.8"
 dependencies = [
     "flet==0.80.4",
+    "flet-secure-storage",
     "qrcode>=7.4.0",
     "pillow",
     "lunalib @ git+https://github.com/taellinglin/LunaLib.git@master",
@@ -86,3 +87,6 @@ target_arch = "x64"
 [tool.flet.android.permission]
 "android.permission.USE_BIOMETRIC" = true
 "android.permission.USE_FINGERPRINT" = true
+
+[tool.flet.ios.info_plist]
+"NSFaceIDUsageDescription" = "Use Face ID to unlock your wallet"
