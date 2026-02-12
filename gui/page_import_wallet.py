@@ -324,7 +324,11 @@ class ImportWalletPage:
                     try:
                         if hasattr(self.app, "show_snackbar"):
                             self.app.show_snackbar("Rescanning blockchain...", "info")
-                        if hasattr(self.app, "force_rescan_blockchain"):
+                        if hasattr(self.app, "rescan_wallets_after_import"):
+                            self.app.rescan_wallets_after_import(
+                                [imported_address] if imported_address else None
+                            )
+                        elif hasattr(self.app, "force_rescan_blockchain"):
                             self.app.force_rescan_blockchain()
                         elif hasattr(self.app, "scan_all_wallets_for_changes"):
                             self.app.scan_all_wallets_for_changes(force_full_scan=True)

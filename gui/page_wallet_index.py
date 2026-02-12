@@ -9,8 +9,10 @@ class WalletIndexPage:
         self.on_import_wallet = on_import_wallet
 
     def create(self):
-        top_padding = 24 if getattr(self.app, "is_mobile", False) else 16
+        is_mobile = bool(getattr(self.app, "is_mobile", False))
+        top_padding = 24 if is_mobile else 16
         side_padding = 16
+        bottom_padding = 80 if is_mobile else side_padding
         wallets = []
         if hasattr(self.app, "wallet_core") and getattr(self.app.wallet_core, "wallets", None):
             if isinstance(self.app.wallet_core.wallets, dict):
@@ -64,33 +66,36 @@ class WalletIndexPage:
                 )
             )
 
-        actions = ft.Row(
-            [
-                ft.ElevatedButton(
-                    "Create Wallet",
-                    icon=ft.Icons.ADD_CIRCLE_OUTLINE,
-                    on_click=lambda e: self.on_create_wallet(),
-                    style=ft.ButtonStyle(
-                        color="#ffffff",
-                        bgcolor="#dc3545",
-                        padding=ft.padding.symmetric(horizontal=16, vertical=12),
-                        shape=ft.RoundedRectangleBorder(radius=8),
+        actions = ft.Container(
+            content=ft.Row(
+                [
+                    ft.ElevatedButton(
+                        "Create Wallet",
+                        icon=ft.Icons.ADD_CIRCLE_OUTLINE,
+                        on_click=lambda e: self.on_create_wallet(),
+                        style=ft.ButtonStyle(
+                            color="#ffffff",
+                            bgcolor="#dc3545",
+                            padding=ft.padding.symmetric(horizontal=16, vertical=12),
+                            shape=ft.RoundedRectangleBorder(radius=8),
+                        ),
                     ),
-                ),
-                ft.OutlinedButton(
-                    "Import",
-                    icon=ft.Icons.IMPORT_EXPORT,
-                    on_click=lambda e: self.on_import_wallet(),
-                    style=ft.ButtonStyle(
-                        color="#dc3545",
-                        side=ft.BorderSide(color="#dc3545", width=2),
-                        padding=ft.padding.symmetric(horizontal=16, vertical=12),
-                        shape=ft.RoundedRectangleBorder(radius=8),
+                    ft.OutlinedButton(
+                        "Import",
+                        icon=ft.Icons.IMPORT_EXPORT,
+                        on_click=lambda e: self.on_import_wallet(),
+                        style=ft.ButtonStyle(
+                            color="#dc3545",
+                            side=ft.BorderSide(color="#dc3545", width=2),
+                            padding=ft.padding.symmetric(horizontal=16, vertical=12),
+                            shape=ft.RoundedRectangleBorder(radius=8),
+                        ),
                     ),
-                ),
-            ],
-            alignment=ft.MainAxisAlignment.CENTER,
-            spacing=12,
+                ],
+                alignment=ft.MainAxisAlignment.CENTER,
+                spacing=12,
+            ),
+            padding=ft.padding.only(bottom=24 if is_mobile else 0),
         )
 
         return ft.Container(
@@ -111,7 +116,7 @@ class WalletIndexPage:
                 top=top_padding,
                 left=side_padding,
                 right=side_padding,
-                bottom=side_padding,
+                bottom=bottom_padding,
             ),
             bgcolor="#2c1a1a",
         )

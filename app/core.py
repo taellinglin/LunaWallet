@@ -3292,6 +3292,126 @@ class LunaWalletApp:
         except Exception as e:
             print(f"DEBUG: force_rescan_blockchain failed: {e}")
 
+    def _reset_wallet_scan_state(self, address: str) -> None:
+        if not address:
+            return
+
+        manager = self._ensure_wallet_state_manager()
+        if manager:
+            for method in (
+                "reset_wallet_state",
+                "reset_wallet",
+                "clear_wallet_cache",
+                "clear_wallet_state",
+                "clear_wallet_transactions",
+            ):
+                try:
+                    if hasattr(manager, method):
+                        getattr(manager, method)(address)
+                        break
+                except Exception:
+                    continue
+            for method in (
+                "set_wallet_current_block",
+                "set_current_block",
+                "update_wallet_current_block",
+            ):
+                try:
+                    if hasattr(manager, method):
+                        getattr(manager, method)(address, 0)
+                        break
+                except Exception:
+                    continue
+
+        try:
+            if hasattr(self, 'wallet_core') and isinstance(getattr(self.wallet_core, 'wallets', None), dict):
+                wallet_obj = self.wallet_core.wallets.get(address)
+                if isinstance(wallet_obj, dict):
+                    wallet_obj['current_block'] = 0
+                    wallet_obj['last_scanned_block'] = 0
+        except Exception:
+            pass
+
+    def rescan_wallets_after_import(self, addresses: Optional[List[str]] = None) -> None:
+        """Force a per-wallet rescan to repopulate history after import (lunalib 2.6.9+)."""
+        try:
+            if not addresses:
+                addresses = list(getattr(self.wallet_core, 'wallets', {}).keys()) if self.wallet_core else []
+            if not addresses:
+                return
+
+            try:
+                self._register_wallets_with_manager()
+            except Exception:
+                pass
+
+            for address in addresses:
+                self._reset_wallet_scan_state(address)
+
+            if not hasattr(self, 'blockchain_manager') or not self.blockchain_manager:
+                return
+
+            latest_block = self.blockchain_manager.get_latest_block()
+            end_height = latest_block.get('index', 0) if latest_block else None
+            if end_height is None:
+                try:
+                    end_height = self.blockchain_manager.get_blockchain_height()
+                except Exception:
+                    end_height = None
+
+            blockchain_txs = self._get_blockchain_txs_with_fallback(addresses, end_height=end_height)
+
+            mempool_txs = {}
+            if self.mempool_manager and hasattr(self.mempool_manager, 'get_pending_transactions_for_addresses'):
+                mempool_txs = self.mempool_manager.get_pending_transactions_for_addresses(addresses, fetch_remote=True)
+
+            manager = self._ensure_wallet_state_manager()
+            if manager and hasattr(manager, 'sync_wallets_from_sources'):
+                manager.sync_wallets_from_sources(blockchain_txs, mempool_txs)
+            else:
+                self._sync_wallets_with_lunalib()
+
+            try:
+                for addr, txs in (blockchain_txs or {}).items():
+                    for tx in txs or []:
+                        self._store_transaction(addr, tx, status=tx.get('status'))
+                for addr, txs in (mempool_txs or {}).items():
+                    for tx in txs or []:
+                        tx_copy = dict(tx)
+                        tx_copy['status'] = 'pending'
+                        self._store_transaction(addr, tx_copy, status='pending')
+            except Exception as store_err:
+                print(f"DEBUG: Failed to store rescan transactions: {store_err}")
+
+            if manager and hasattr(manager, 'get_balance'):
+                for addr in addresses:
+                    try:
+                        bal = manager.get_balance(addr) or {}
+                        confirmed = float(bal.get('confirmed_balance', bal.get('confirmed', 0) or 0) or 0)
+                        pending_in = float(bal.get('pending_incoming', 0) or 0)
+                        pending_out = float(bal.get('pending_outgoing', 0) or 0)
+                        pending = pending_in - pending_out
+                        if hasattr(self.wallet_core, 'wallets') and addr in self.wallet_core.wallets:
+                            self.wallet_core.wallets[addr]['available_balance'] = confirmed
+                            self.wallet_core.wallets[addr]['confirmed_balance'] = confirmed
+                            self.wallet_core.wallets[addr]['pending_balance'] = pending
+                            self.wallet_core.wallets[addr]['balance'] = confirmed + pending
+                    except Exception:
+                        continue
+
+            self.last_scanned_block = end_height or 0
+            self.initial_scan_complete = True
+            try:
+                self._refresh_ui_after_scan(force_update=True)
+            except Exception:
+                pass
+            try:
+                self.save_wallet_data(force_save=True)
+            except Exception:
+                pass
+        except Exception as e:
+            print(f"DEBUG: rescan_wallets_after_import failed: {e}")
+
     def _sync_wallets_with_lunalib(self) -> bool:
         try:
             # Prefer wallet's built-in sync if available
