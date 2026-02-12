@@ -37,6 +37,8 @@ class SettingsPage:
             'biometric_enabled': False
         }
 
+        self.initial_wallet_address = None
+
         # UI elements
         self.cache_size_text = ft.Text("Calculating...", color="#f8d7da")
         self.cache_age_text = ft.Text("Calculating...", color="#f8d7da")
@@ -60,6 +62,13 @@ class SettingsPage:
                     payload = json.loads(raw)
                     self.cache_settings.update(payload.get("cache", {}))
                     self.runtime_settings.update(payload.get("runtime", {}))
+                try:
+                    if hasattr(self.app, "get_initial_wallet_address"):
+                        self.initial_wallet_address = self.app.get_initial_wallet_address()
+                    if not self.initial_wallet_address:
+                        self.initial_wallet_address = self.app.storage.get("initial_wallet_address")
+                except Exception:
+                    self.initial_wallet_address = None
                 raw_security = self.app.storage.get("security")
                 if raw_security:
                     payload = json.loads(raw_security)
@@ -137,6 +146,8 @@ class SettingsPage:
                 self.create_runtime_section(),
                 ft.Container(height=section_gap),
                 self.create_security_section(),
+                ft.Container(height=section_gap),
+                self.create_wallet_section(),
                 ft.Container(height=section_gap),
                 self.create_ui_section(),
                 ft.Container(height=section_gap),
@@ -437,6 +448,113 @@ class SettingsPage:
             content=ft.Column(controls),
             padding=card_padding
         )
+
+    def _build_wallet_options(self):
+        options = []
+        wallets = getattr(self.app, "wallet_core", None)
+        wallets_dict = getattr(wallets, "wallets", {}) if wallets else {}
+        if isinstance(wallets_dict, dict):
+            for address, data in wallets_dict.items():
+                label = None
+                if isinstance(data, dict):
+                    label = data.get("label")
+                display_label = label.strip() if isinstance(label, str) and label.strip() else address
+                if address and len(address) > 12:
+                    display_label = f"{display_label} ({address[:12]}...)"
+                options.append(ft.dropdown.Option(key=address, text=display_label))
+        return options
+
+    def _resolve_initial_wallet_value(self):
+        if self.initial_wallet_address:
+            return self.initial_wallet_address
+        try:
+            wallet_core = getattr(self.app, "wallet_core", None)
+            current_addr = getattr(wallet_core, "current_wallet_address", None) if wallet_core else None
+            if current_addr:
+                return current_addr
+        except Exception:
+            pass
+        return None
+
+    def create_wallet_section(self):
+        card_padding = 10 if self.is_mobile else 15
+        title_size = 14 if self.is_mobile else 16
+        field_width = 320 if self.is_mobile else 420
+
+        options = self._build_wallet_options()
+        self.initial_wallet_dropdown = ft.Dropdown(
+            label="Initial Wallet",
+            options=options,
+            value=self._resolve_initial_wallet_value(),
+            width=field_width,
+            bgcolor="#1a0f0f",
+            border_color="#5c2e2e",
+            focused_border_color="#dc3545",
+            color="#f8d7da",
+            label_style=ft.TextStyle(color="#f8d7da"),
+            text_style=ft.TextStyle(color="#f8d7da"),
+        )
+
+        return ft.Container(
+            content=ft.Column([
+                icon_label(
+                    "key",
+                    "Initial Wallet",
+                    size=16,
+                    color="#f8d7da",
+                    text_size=title_size + 2,
+                    text_weight=ft.FontWeight.BOLD,
+                ),
+                ft.Divider(color="#5c2e2e", height=20),
+                ft.Container(
+                    content=ft.Column([
+                        ft.Text(
+                            "Select the wallet used to unlock all wallets on startup.",
+                            size=12,
+                            color="#a89a9a",
+                        ),
+                        self.initial_wallet_dropdown,
+                        ft.ElevatedButton(
+                            content=icon_label("check", "Set Initial Wallet", size=16, color="#ffffff", text_size=14),
+                            on_click=self.set_initial_wallet_click,
+                            style=ft.ButtonStyle(
+                                color="#ffffff",
+                                bgcolor="#dc3545",
+                                padding=10
+                            )
+                        )
+                    ]),
+                    padding=card_padding,
+                    bgcolor="#1a0f0f",
+                    border_radius=10
+                )
+            ]),
+            padding=5
+        )
+
+    def set_initial_wallet_click(self, e):
+        address = None
+        if hasattr(self, "initial_wallet_dropdown") and self.initial_wallet_dropdown:
+            address = self.initial_wallet_dropdown.value
+        if not address:
+            self.app.show_snackbar("Please select a wallet", "error")
+            return
+
+        updated = False
+        if hasattr(self.app, "set_initial_wallet_address"):
+            updated = bool(self.app.set_initial_wallet_address(address))
+        elif hasattr(self.app, "storage") and self.app.storage:
+            try:
+                self.app.storage.set("initial_wallet_address", address)
+                updated = True
+            except Exception:
+                updated = False
+
+        if updated:
+            self.initial_wallet_address = address
+            self.app.show_snackbar("Initial wallet updated", "success")
+        else:
+            self.app.show_snackbar("Failed to update initial wallet", "error")
 
     def check_biometrics_click(self, e):
         ready = False

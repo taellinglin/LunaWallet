@@ -202,6 +202,7 @@ class ImportWalletPage:
                 'pending_balance': 0.0,
                 'available_balance': 0.0,
                 'created': time.time(),
+                'created_at': time.time(),
                 'is_locked': False,
             }
             try:
@@ -284,6 +285,7 @@ class ImportWalletPage:
                         return
 
                 result = None
+                wallet_data = None
                 try:
                     wallet_data = _build_wallet_data()
                     if wallet_data.get('address') or wallet_data.get('public_key'):
@@ -302,6 +304,18 @@ class ImportWalletPage:
                         self.app.save_wallet_data(force_save=True)
                     elif hasattr(self.app.wallet_core, "save_wallet_data"):
                         self.app.wallet_core.save_wallet_data()
+                    try:
+                        imported_address = None
+                        if isinstance(result, dict):
+                            imported_address = result.get("address")
+                        if not imported_address and wallet_data:
+                            imported_address = wallet_data.get("address")
+                        if not imported_address:
+                            imported_address = getattr(self.app.wallet_core, "current_wallet_address", None)
+                        if hasattr(self.app, "_ensure_initial_wallet_address"):
+                            self.app._ensure_initial_wallet_address(imported_address, time.time())
+                    except Exception:
+                        pass
                     try:
                         if hasattr(self.app, "_register_wallets_with_manager"):
                             self.app._register_wallets_with_manager()

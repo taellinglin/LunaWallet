@@ -100,54 +100,62 @@ class SendPage:
                 else:
                     return False, "Wallet switching not supported"
 
-            # Ensure wallet is unlocked
-            if getattr(wallet, 'is_locked', True):
-                print("DEBUG: Wallet is locked, attempting to unlock...")
-                if hasattr(wallet, 'unlock_wallet'):
-                    current_address = getattr(wallet, 'address', None) or getattr(wallet, 'current_wallet_address', None)
-                    if current_address and password:
-                        unlock_success = wallet.unlock_wallet(current_address, password)
-                        if not unlock_success:
-                            return False, "Failed to unlock wallet with provided password"
-                        
-                        # CRITICAL FIX: Ensure public_key is set after unlock
-                        # This fixes the "Invalid cryptographic keys" error
-                        print(f"DEBUG: Checking cryptographic keys after unlock...")
-                        print(f"DEBUG: - private_key exists: {bool(hasattr(wallet, 'private_key') and wallet.private_key)}")
-                        print(f"DEBUG: - public_key exists: {bool(hasattr(wallet, 'public_key') and wallet.public_key)}")
-                        
-                        if not hasattr(wallet, 'public_key') or not wallet.public_key:
-                            print("DEBUG: public_key missing after unlock, attempting to retrieve/regenerate")
-                            
-                            # Try to get from wallet data first
-                            if hasattr(wallet, 'wallets') and current_address in wallet.wallets:
-                                wallet_data = wallet.wallets[current_address]
-                                if 'public_key' in wallet_data and wallet_data['public_key']:
-                                    wallet.public_key = wallet_data['public_key']
-                                    print(f"DEBUG: Set public_key from wallet data: {wallet.public_key[:20]}...")
-                                else:
-                                    # If no public_key in wallet data, derive from private key
-                                    print("DEBUG: No public_key in wallet data, deriving from private key")
-                                    try:
-                                        from lunalib.core.crypto import KeyManager
-                                        key_manager = KeyManager()
-                                        # Derive public key from private key
-                                        derived_public_key = key_manager.derive_public_key(wallet.private_key)
-                                        wallet.public_key = derived_public_key
-                                        wallet_data['public_key'] = derived_public_key
-                                        print(f"DEBUG: Derived public_key: {derived_public_key[:20]}...")
-                                    except Exception as key_error:
-                                        print(f"DEBUG: Failed to derive public key: {key_error}")
-                                        import traceback
-                                        traceback.print_exc()
-                                        return False, f"Failed to derive public key: {key_error}"
-                        
-                        print(f"DEBUG: Final key check - private_key length: {len(wallet.private_key) if hasattr(wallet, 'private_key') and wallet.private_key else 0}")
-                        print(f"DEBUG: Final key check - public_key length: {len(wallet.public_key) if hasattr(wallet, 'public_key') and wallet.public_key else 0}")
+            # Always validate the password against the sending wallet
+            target_address = self.from_address or getattr(wallet, 'current_wallet_address', None) or getattr(wallet, 'address', None)
+            if hasattr(wallet, 'unlock_wallet'):
+                if target_address and password:
+                    unlock_result = wallet.unlock_wallet(target_address, password)
+                    if isinstance(unlock_result, dict):
+                        unlock_success = bool(unlock_result.get("success", False))
                     else:
-                        return False, "No wallet address found or password missing"
+                        unlock_success = bool(unlock_result)
+                    if not unlock_success:
+                        return False, "Failed to unlock selected wallet with provided password"
                 else:
-                    return False, "Wallet unlock method not available"
+                    return False, "No wallet address found or password missing"
+            else:
+                return False, "Wallet unlock method not available"
+
+            if target_address:
+                if hasattr(wallet, 'current_wallet_address'):
+                    wallet.current_wallet_address = target_address
+                if hasattr(wallet, 'address'):
+                    wallet.address = target_address
+
+            # CRITICAL FIX: Ensure public_key is set after unlock
+            # This fixes the "Invalid cryptographic keys" error
+            print(f"DEBUG: Checking cryptographic keys after unlock...")
+            print(f"DEBUG: - private_key exists: {bool(hasattr(wallet, 'private_key') and wallet.private_key)}")
+            print(f"DEBUG: - public_key exists: {bool(hasattr(wallet, 'public_key') and wallet.public_key)}")
+
+            if not hasattr(wallet, 'public_key') or not wallet.public_key:
+                print("DEBUG: public_key missing after unlock, attempting to retrieve/regenerate")
+
+                # Try to get from wallet data first
+                if hasattr(wallet, 'wallets') and target_address in wallet.wallets:
+                    wallet_data = wallet.wallets[target_address]
+                    if 'public_key' in wallet_data and wallet_data['public_key']:
+                        wallet.public_key = wallet_data['public_key']
+                        print(f"DEBUG: Set public_key from wallet data: {wallet.public_key[:20]}...")
+                    else:
+                        # If no public_key in wallet data, derive from private key
+                        print("DEBUG: No public_key in wallet data, deriving from private key")
+                        try:
+                            from lunalib.core.crypto import KeyManager
+                            key_manager = KeyManager()
+                            # Derive public key from private key
+                            derived_public_key = key_manager.derive_public_key(wallet.private_key)
+                            wallet.public_key = derived_public_key
+                            wallet_data['public_key'] = derived_public_key
+                            print(f"DEBUG: Derived public_key: {derived_public_key[:20]}...")
+                        except Exception as key_error:
+                            print(f"DEBUG: Failed to derive public key: {key_error}")
+                            import traceback
+                            traceback.print_exc()
+                            return False, f"Failed to derive public key: {key_error}"
+
+            print(f"DEBUG: Final key check - private_key length: {len(wallet.private_key) if hasattr(wallet, 'private_key') and wallet.private_key else 0}")
+            print(f"DEBUG: Final key check - public_key length: {len(wallet.public_key) if hasattr(wallet, 'public_key') and wallet.public_key else 0}")
 
             # Verify private key is available
             if not hasattr(wallet, 'private_key') or not wallet.private_key:

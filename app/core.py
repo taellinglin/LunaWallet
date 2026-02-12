@@ -904,8 +904,12 @@ class LunaWalletApp:
             self.wallet_count = len(wallet_addresses)
 
             if self.wallet_count > 0:
-                self.existing_wallet_address = wallet_addresses[0]
-                print(f"DEBUG: Found {self.wallet_count} wallets in storage, first address: {self.existing_wallet_address}")
+                initial_address = self._resolve_initial_wallet_address(wallet_addresses)
+                self.existing_wallet_address = initial_address or wallet_addresses[0]
+                print(
+                    "DEBUG: Found "
+                    f"{self.wallet_count} wallets in storage, initial address: {self.existing_wallet_address}"
+                )
             else:
                 self.existing_wallet_address = None
                 print("DEBUG: No wallets found in storage")
@@ -916,6 +920,122 @@ class LunaWalletApp:
             traceback.print_exc()
             self.wallet_count = 0
             self.existing_wallet_address = None
+
+    def _get_initial_wallet_address(self) -> Optional[str]:
+        if not self.storage:
+            return None
+        try:
+            initial = self.storage.get("initial_wallet_address")
+            return initial or None
+        except Exception:
+            return None
+
+    def _set_initial_wallet_address(self, address: str) -> None:
+        if not self.storage or not address:
+            return
+        try:
+            self.storage.set("initial_wallet_address", address)
+        except Exception:
+            pass
+
+    def _ensure_initial_wallet_address(self, address: Optional[str], created_at: Optional[float] = None) -> None:
+        if not address:
+            return
+        try:
+            if hasattr(self, "wallet_core") and hasattr(self.wallet_core, "wallets"):
+                wallets = self.wallet_core.wallets
+                if isinstance(wallets, dict) and address in wallets:
+                    wallet_obj = wallets[address]
+                    if created_at and "created_at" not in wallet_obj:
+                        wallet_obj["created_at"] = created_at
+                    if "created" not in wallet_obj and "created_at" in wallet_obj:
+                        wallet_obj["created"] = wallet_obj["created_at"]
+        except Exception:
+            pass
+
+        if not self._get_initial_wallet_address():
+            self._set_initial_wallet_address(address)
+
+    def _resolve_initial_wallet_address(self, wallet_addresses: List[str]) -> Optional[str]:
+        if not wallet_addresses:
+            return None
+
+        stored_initial = self._get_initial_wallet_address()
+        if stored_initial and stored_initial in wallet_addresses:
+            return stored_initial
+
+        resolved = self._infer_initial_wallet_address(wallet_addresses) or wallet_addresses[0]
+        self._set_initial_wallet_address(resolved)
+        return resolved
+
+    def _infer_initial_wallet_address(self, wallet_addresses: List[str]) -> Optional[str]:
+        if not wallet_addresses:
+            return None
+
+        oldest_addr = None
+        oldest_ts = None
+        if self.storage:
+            for address in wallet_addresses:
+                try:
+                    raw = self.storage.get(f"wallet:{address}")
+                    if not raw:
+                        continue
+                    wallet_data = json.loads(raw, object_hook=self._decode_wallet_data)
+                    created = wallet_data.get("created_at") or wallet_data.get("created")
+                    if isinstance(created, (int, float)):
+                        if oldest_ts is None or created < oldest_ts:
+                            oldest_ts = created
+                            oldest_addr = address
+                except Exception:
+                    continue
+
+        if oldest_addr:
+            return oldest_addr
+
+        # SQLite-specific fallback: use insertion order (rowid) when available.
+        try:
+            conn = getattr(self.storage, "conn", None)
+            if conn:
+                cursor = conn.execute(
+                    "SELECT key FROM kv WHERE key LIKE 'wallet:%' ORDER BY rowid ASC LIMIT 1"
+                )
+                row = cursor.fetchone()
+                if row and row[0].startswith("wallet:"):
+                    candidate = row[0][7:]
+                    if candidate in wallet_addresses:
+                        return candidate
+        except Exception:
+            pass
+
+        # Browser storage tends to keep insertion order; prefer the first in key order.
+        try:
+            keys = self.storage.keys() if self.storage else []
+            for key in keys:
+                if key.startswith("wallet:"):
+                    candidate = key[7:]
+                    if candidate in wallet_addresses:
+                        return candidate
+        except Exception:
+            pass
+
+        return None
+
+    def get_initial_wallet_address(self) -> Optional[str]:
+        return self._get_initial_wallet_address()
+
+    def set_initial_wallet_address(self, address: str) -> bool:
+        if not address:
+            return False
+        self._set_initial_wallet_address(address)
+        self.existing_wallet_address = address
+        try:
+            if hasattr(self.wallet_core, 'wallets') and isinstance(self.wallet_core.wallets, dict):
+                addr_list = list(self.wallet_core.wallets.keys())
+                if address in addr_list:
+                    self.selected_wallet_index = addr_list.index(address)
+        except Exception:
+            pass
+        return True
 
     def _get_wallet_file_path(self):
         """Get the path for wallet data file"""
@@ -1449,6 +1569,12 @@ class LunaWalletApp:
                         print(f"DEBUG: Error loading wallet {address[:12]}...: {e}")
 
             print(f"DEBUG: Successfully loaded {loaded_count} wallets")
+            if loaded_count > 0:
+                try:
+                    addresses = list(self.wallet_core.wallets.keys()) if isinstance(self.wallet_core.wallets, dict) else []
+                    self._resolve_initial_wallet_address(addresses)
+                except Exception:
+                    pass
             return loaded_count > 0
 
         except Exception as e:
@@ -2250,10 +2376,17 @@ class LunaWalletApp:
         """Handle send transaction action"""
         print("DEBUG: on_send_transaction called")
         back_target = self.show_wallet_index_page if (self.is_mobile and self._mobile_return_to_index) else lambda: self.show_wallet_page(reuse=True)
+        current_addr = None
+        try:
+            if hasattr(self, "wallet_core") and self.wallet_core:
+                current_addr = getattr(self.wallet_core, "current_wallet_address", None)
+        except Exception:
+            current_addr = None
         send_page = SendPage(
             self,
             on_back=back_target,
-            on_send_complete=self.on_transaction_sent
+            on_send_complete=self.on_transaction_sent,
+            from_address=current_addr,
         )
         self.current_page = send_page.create()
         self._set_page_context(kind="send", back_action=back_target)
@@ -2533,9 +2666,11 @@ class LunaWalletApp:
             print("[UNLOCK] Attempting to unlock with core method...")
             success = False
             
-            # Try to unlock each wallet
+            # Unlock only the initial wallet (not alphabetical order)
             if hasattr(self.wallet_core, 'wallets') and self.wallet_core.wallets:
-                for wallet_address in self.wallet_core.wallets.keys():
+                wallet_addresses = list(self.wallet_core.wallets.keys())
+                wallet_address = self._resolve_initial_wallet_address(wallet_addresses)
+                if wallet_address:
                     try:
                         from app.debug_logger import debug_log
                         wallet_obj = self.wallet_core.wallets.get(wallet_address, {})
@@ -2548,23 +2683,25 @@ class LunaWalletApp:
                         debug_log(f"[UNLOCK] wallet={wallet_address[:12]} token_prefix={prefix}")
                     except Exception:
                         pass
+
                     unlock_result = self.wallet_core.unlock_wallet(wallet_address, password)
                     if isinstance(unlock_result, dict):
                         unlock_success = bool(unlock_result.get("success", False))
                     else:
                         unlock_success = bool(unlock_result)
+
                     if unlock_success:
-                                    # Ensure balance fields exist
                         wallet_obj = self.wallet_core.wallets.get(wallet_address)
                         if wallet_obj:
                             for field in ['available_balance', 'confirmed_balance', 'pending_balance', 'balance']:
                                 if field not in wallet_obj:
                                     wallet_obj[field] = 0.0
-                        
-                        # Switch to wallet
-                        self.wallet_core.switch_wallet(wallet_address)
+
+                        if hasattr(self.wallet_core, 'switch_wallet'):
+                            self.wallet_core.switch_wallet(wallet_address)
+                        elif hasattr(self.wallet_core, 'current_wallet_address'):
+                            self.wallet_core.current_wallet_address = wallet_address
                         success = True
-                        break
             
             # Hide loading
             if hasattr(self, 'current_lock_page') and self.current_lock_page:

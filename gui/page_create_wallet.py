@@ -265,6 +265,15 @@ class CreateWalletPage:
                 print(f"DEBUG: Wallet creation result: {wallet_data}")
                 if wallet_data:
                     print("DEBUG: Wallet created successfully!")
+
+                    created_at = time.time()
+                    address = None
+                    if isinstance(wallet_data, dict):
+                        address = wallet_data.get("address")
+                    if not address:
+                        address = getattr(self.app.wallet_core, "current_wallet_address", None)
+                    if hasattr(self.app, "_ensure_initial_wallet_address"):
+                        self.app._ensure_initial_wallet_address(address, created_at)
                     
                     # Save to storage for persistence
                     try:
