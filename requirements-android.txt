@@ -4,7 +4,7 @@ cryptography>=42.0.5
 requests
 qrcode
 pillow
-git+https://github.com/taellinglin/LunaLib.git@main#egg=lunalib
+git+https://github.com/taellinglin/LunaLib.git@master#egg=lunalib
 pyperclip
 base58
 tqdm
